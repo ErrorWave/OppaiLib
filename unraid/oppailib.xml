@@ -1,0 +1,38 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>OppaiLib</Name>
+  <Repository>ghcr.io/youruser/oppailib:latest</Repository>
+  <Registry>https://ghcr.io/youruser/oppailib</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support/>
+  <Project/>
+  <Overview>OppaiLib — a private, self-hosted, encrypted media library for adult content (videos, GIFs, images, comics, and game entries) with tagging, URL scraping, and fully local AI auto-tagging. Everything stays on your box: no cloud storage, no cloud AI, no telemetry.</Overview>
+  <Category>MediaApp:Other</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <TemplateURL/>
+  <Icon>https://raw.githubusercontent.com/youruser/oppailib/main/web/public/icon.png</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Description>Self-hosted encrypted NSFW media library. Set a strong master passphrase — it encrypts all stored media and CANNOT be recovered if lost.</Description>
+
+  <Config Name="WebUI Port" Target="8080" Default="8080" Mode="tcp" Description="Web interface / API port" Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+
+  <Config Name="Media (encrypted store)" Target="/media" Default="/mnt/user/appdata/oppailib/media" Mode="rw" Description="Encrypted blob storage" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/oppailib/media</Config>
+  <Config Name="Config" Target="/config" Default="/mnt/user/appdata/oppailib/config" Mode="rw" Description="Keystore, AI models, site parsers" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/oppailib/config</Config>
+  <Config Name="Database" Target="/db" Default="/mnt/user/appdata/oppailib/db" Mode="rw" Description="SQLite metadata database" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/oppailib/db</Config>
+
+  <Config Name="Master Passphrase" Target="OPPAI_PASSPHRASE" Default="" Mode="" Description="Encrypts all media. SAVE THIS — losing it means losing your library. Leave blank on first run to have one generated (check the logs)." Type="Variable" Display="always" Required="false" Mask="true"></Config>
+  <Config Name="Admin Username" Target="OPPAI_ADMIN_USER" Default="admin" Mode="" Description="First-run admin account" Type="Variable" Display="always" Required="false" Mask="false">admin</Config>
+  <Config Name="Admin Password" Target="OPPAI_ADMIN_PASSWORD" Default="" Mode="" Description="First-run admin password" Type="Variable" Display="always" Required="false" Mask="true"></Config>
+
+  <Config Name="AI Auto-tagging" Target="OPPAI_AI_ENABLED" Default="true" Mode="" Description="Enable local AI auto-tagging" Type="Variable" Display="advanced" Required="false" Mask="false">true</Config>
+  <Config Name="AI Device" Target="OPPAI_AI_DEVICE" Default="cpu" Mode="" Description="cpu or cuda (cuda needs GPU passthrough)" Type="Variable" Display="advanced" Required="false" Mask="false">cpu</Config>
+  <Config Name="Scrape Delay (ms)" Target="OPPAI_SCRAPE_DELAY_MS" Default="1500" Mode="" Description="Politeness delay between scraper requests" Type="Variable" Display="advanced" Required="false" Mask="false">1500</Config>
+</Container>

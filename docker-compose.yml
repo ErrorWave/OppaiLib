@@ -1,0 +1,28 @@
+services:
+  oppailib:
+    build: .
+    # Or pull a prebuilt image once published:
+    # image: ghcr.io/youruser/oppailib:latest
+    container_name: oppailib
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      OPPAI_PASSPHRASE: "${OPPAI_PASSPHRASE:-}"
+      OPPAI_ADMIN_USER: "${OPPAI_ADMIN_USER:-admin}"
+      OPPAI_ADMIN_PASSWORD: "${OPPAI_ADMIN_PASSWORD:-}"
+      OPPAI_AI_ENABLED: "${OPPAI_AI_ENABLED:-true}"
+      OPPAI_AI_DEVICE: "${OPPAI_AI_DEVICE:-cpu}"
+      OPPAI_SCRAPE_DELAY_MS: "${OPPAI_SCRAPE_DELAY_MS:-1500}"
+    volumes:
+      - ./data/media:/media       # encrypted blob store
+      - ./data/config:/config     # keystore, models, parsers
+      - ./data/db:/db             # sqlite metadata
+    # For GPU acceleration (Unraid + Nvidia), uncomment:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
