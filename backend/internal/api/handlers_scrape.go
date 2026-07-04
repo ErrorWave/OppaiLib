@@ -3,11 +3,15 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
+	"sync"
 
 	"github.com/youruser/oppailib/internal/crypto"
 	"github.com/youruser/oppailib/internal/db"
 	"github.com/youruser/oppailib/internal/models"
 )
+
+const maxBulkURLs = 50
 
 type scrapeReq struct {
 	URL string `json:"url"`
@@ -28,6 +32,69 @@ func (s *Server) handleScrape(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+type scrapeBulkReq struct {
+	URLs []string `json:"urls"`
+}
+
+type scrapeBulkItem struct {
+	URL    string               `json:"url"`
+	Result *models.ScrapeResult `json:"result,omitempty"`
+	Error  string               `json:"error,omitempty"`
+}
+
+// handleScrapeBulk previews several page URLs in one request. Each URL is
+// fetched independently; a failure on one doesn't sink the others. The scraper
+// engine still throttles per host, so this stays polite.
+func (s *Server) handleScrapeBulk(w http.ResponseWriter, r *http.Request) {
+	var req scrapeBulkReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	urls := dedupeNonEmpty(req.URLs)
+	if len(urls) == 0 {
+		writeErr(w, http.StatusBadRequest, "no urls")
+		return
+	}
+	if len(urls) > maxBulkURLs {
+		writeErr(w, http.StatusBadRequest, "too many urls")
+		return
+	}
+
+	items := make([]scrapeBulkItem, len(urls))
+	var wg sync.WaitGroup
+	for i, u := range urls {
+		wg.Add(1)
+		go func(i int, u string) {
+			defer wg.Done()
+			items[i].URL = u
+			res, err := s.scraper.Scrape(r.Context(), u)
+			if err != nil {
+				items[i].Error = err.Error()
+				s.log.Warn("bulk scrape failed", "url", u, "err", err)
+				return
+			}
+			items[i].Result = res
+		}(i, u)
+	}
+	wg.Wait()
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func dedupeNonEmpty(in []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(in))
+	for _, v := range in {
+		v = strings.TrimSpace(v)
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	return out
 }
 
 type scrapeImportReq struct {

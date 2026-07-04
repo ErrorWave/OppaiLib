@@ -42,7 +42,10 @@ func Load() *Config {
 		AIModelDir:      env("OPPAI_AI_MODEL_DIR", "/config/models"),
 		AIDevice:        env("OPPAI_AI_DEVICE", "cpu"),
 		ScrapeDelay:         time.Duration(envInt("OPPAI_SCRAPE_DELAY_MS", 1500)) * time.Millisecond,
-		ScrapeUserAgent:     env("OPPAI_SCRAPE_USER_AGENT", "OppaiLib/0.1 (+self-hosted)"),
+		// A browser-like UA by default: many sites only emit OpenGraph/Twitter
+		// card metadata (or serve any HTML at all) to recognized agents.
+		// Override with OPPAI_SCRAPE_USER_AGENT to advertise the tool honestly.
+		ScrapeUserAgent:     env("OPPAI_SCRAPE_USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"),
 		ScrapeRespectRobots: envBool("OPPAI_SCRAPE_RESPECT_ROBOTS", true),
 		SessionTTL:      time.Duration(envInt("OPPAI_SESSION_TTL_HOURS", 720)) * time.Hour,
 		Debug:           envBool("OPPAI_DEBUG", false),

@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -82,12 +83,22 @@ func (e *Engine) pick(u *url.URL) Parser {
 
 // Scrape fetches rawURL and returns extracted metadata + media links.
 func (e *Engine) Scrape(ctx context.Context, rawURL string) (*models.ScrapeResult, error) {
-	u, err := url.Parse(rawURL)
+	u, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil {
 		return nil, fmt.Errorf("bad url: %w", err)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return nil, fmt.Errorf("unsupported scheme %q", u.Scheme)
+	}
+	// Fast path: the URL points straight at a media file (Discord CDN links,
+	// direct image/video hotlinks, …). No HTML to parse — use it as-is.
+	if kind := mediaKindFromPath(u.Path); kind != "" {
+		return &models.ScrapeResult{
+			Kind:      string(kind),
+			Title:     titleFromURL(u),
+			MediaURLs: []string{u.String()},
+			SourceURL: u.String(),
+		}, nil
 	}
 	if e.robots != nil {
 		allowed, err := e.robots.allowed(ctx, u)
@@ -97,7 +108,28 @@ func (e *Engine) Scrape(ctx context.Context, rawURL string) (*models.ScrapeResul
 	}
 	e.throttle(u.Host)
 
-	doc, err := e.fetch(ctx, u)
+	resp, err := e.get(ctx, u)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("scrape: %s returned %d", u, resp.StatusCode)
+	}
+
+	// The server may hand back media directly (extensionless CDN links that only
+	// reveal their type via Content-Type). Treat that as a direct-media result.
+	final := resp.Request.URL // follow any redirects the client took
+	if kind := mediaKindFromContentType(resp.Header.Get("Content-Type")); kind != "" {
+		return &models.ScrapeResult{
+			Kind:      string(kind),
+			Title:     titleFromURL(final),
+			MediaURLs: []string{final.String()},
+			SourceURL: final.String(),
+		}, nil
+	}
+
+	doc, err := goquery.NewDocumentFromReader(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
 		return nil, err
 	}
@@ -106,26 +138,21 @@ func (e *Engine) Scrape(ctx context.Context, rawURL string) (*models.ScrapeResul
 		return nil, err
 	}
 	res.SourceURL = u.String()
-	res.MediaURLs = resolveAll(u, res.MediaURLs)
+	res.MediaURLs = resolveAll(final, res.MediaURLs)
 	return res, nil
 }
 
-func (e *Engine) fetch(ctx context.Context, u *url.URL) (*goquery.Document, error) {
+// get issues a browser-like GET so sites that gate OpenGraph tags (or block
+// unknown agents outright) still serve us the real page.
+func (e *Engine) get(ctx context.Context, u *url.URL) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", e.userAgent)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml")
-	resp, err := e.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("scrape: %s returned %d", u, resp.StatusCode)
-	}
-	return goquery.NewDocumentFromReader(io.LimitReader(resp.Body, 16<<20))
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	return e.client.Do(req)
 }
 
 // throttle enforces a per-host minimum delay between requests.

@@ -1,5 +1,5 @@
 import { LitElement, html, css } from "lit";
-import { customElement, state } from "lit/decorators.js";
+import { customElement, state, query } from "lit/decorators.js";
 import { api, setToken, type User } from "../api.js";
 import { motionStyles } from "../theme.js";
 
@@ -56,8 +56,20 @@ export class OppaiLogin extends LitElement {
     `,
   ];
 
+  @query("form") private form!: HTMLFormElement;
+
+  // Material web text fields live in shadow DOM, so Enter doesn't trigger the
+  // form's native implicit submission. Wire it up explicitly.
+  private onKeydown = (e: KeyboardEvent) => {
+    if (e.key === "Enter" && !this.busy) {
+      e.preventDefault();
+      this.form.requestSubmit();
+    }
+  };
+
   private async submit(e: Event) {
     e.preventDefault();
+    if (this.busy) return;
     this.error = "";
     this.busy = true;
     const form = e.target as HTMLFormElement;
@@ -78,10 +90,10 @@ export class OppaiLogin extends LitElement {
 
   render() {
     return html`
-      <form class="card" @submit=${this.submit}>
+      <form class="card" @submit=${this.submit} @keydown=${this.onKeydown}>
         <h1 class="brand">OppaiLib</h1>
         <p class="tagline">Your private media library</p>
-        <md-filled-text-field label="Username" name="username" required></md-filled-text-field>
+        <md-filled-text-field label="Username" name="username" autofocus required></md-filled-text-field>
         <md-filled-text-field label="Password" name="password" type="password" required>
         </md-filled-text-field>
         <div class="err">${this.error}</div>

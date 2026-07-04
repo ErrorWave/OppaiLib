@@ -44,6 +44,12 @@ export interface ScrapeResult {
   kind: string;
 }
 
+export interface BulkScrapeItem {
+  url: string;
+  result?: ScrapeResult;
+  error?: string;
+}
+
 const TOKEN_KEY = "oppai_token";
 
 export function getToken(): string | null {
@@ -115,6 +121,11 @@ export const api = {
 
   scrape: (url: string) =>
     request<ScrapeResult>("/api/scrape", { method: "POST", body: JSON.stringify({ url }) }),
+  scrapeBulk: (urls: string[]) =>
+    request<{ items: BulkScrapeItem[] }>("/api/scrape/bulk", {
+      method: "POST",
+      body: JSON.stringify({ urls }),
+    }),
   scrapeImport: (payload: { url?: string; mediaUrls?: string[]; title?: string; tags?: string[] }) =>
     request<{ imported: number[]; count: number }>("/api/scrape/import", {
       method: "POST",

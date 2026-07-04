@@ -57,6 +57,7 @@ func (s *Server) Handler() http.Handler {
 
 	// Scraper (protected).
 	mux.HandleFunc("POST /api/scrape", s.requireAuth(s.handleScrape))
+	mux.HandleFunc("POST /api/scrape/bulk", s.requireAuth(s.handleScrapeBulk))
 	mux.HandleFunc("POST /api/scrape/import", s.requireAuth(s.handleScrapeImport))
 
 	// Static web UI (SPA) for everything else.
