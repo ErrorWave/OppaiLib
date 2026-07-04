@@ -71,7 +71,7 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	sc := scraper.New(scraper.Options{
 		UserAgent:     cfg.ScrapeUserAgent,
 		Delay:         cfg.ScrapeDelay,
-		RespectRobots: true,
+		RespectRobots: cfg.ScrapeRespectRobots,
 		SiteParsers:   parsers,
 	})
 

@@ -29,13 +29,14 @@ export const KIND_META: Record<Kind, KindMeta> = {
 // Order used by the nav rail and the home dashboard.
 export const KIND_ORDER: Kind[] = ["image", "gif", "video", "game", "comic"];
 
-// Deterministic placeholder gradients, straight from the design's SWATCHES.
+// Deterministic placeholder gradients — warm orange/tan family to match the
+// Material 3 theme (hues span amber → orange → terracotta → brown).
 const SWATCHES = [
-  "linear-gradient(135deg, oklch(30% 0.045 150), oklch(20% 0.04 150))",
-  "linear-gradient(135deg, oklch(30% 0.045 200), oklch(20% 0.04 200))",
-  "linear-gradient(135deg, oklch(30% 0.045 260), oklch(20% 0.04 260))",
-  "linear-gradient(135deg, oklch(32% 0.05 60), oklch(20% 0.04 60))",
-  "linear-gradient(135deg, oklch(30% 0.05 15), oklch(20% 0.04 15))",
+  "linear-gradient(135deg, oklch(34% 0.06 60), oklch(22% 0.05 55))",
+  "linear-gradient(135deg, oklch(33% 0.07 45), oklch(21% 0.05 40))",
+  "linear-gradient(135deg, oklch(32% 0.07 30), oklch(20% 0.05 25))",
+  "linear-gradient(135deg, oklch(34% 0.055 75), oklch(22% 0.045 70))",
+  "linear-gradient(135deg, oklch(32% 0.06 20), oklch(20% 0.05 15))",
 ];
 
 export function swatchFor(m: Media): string {

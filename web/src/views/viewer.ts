@@ -1,7 +1,7 @@
 import { LitElement, html, css, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { api, type Media } from "../api.js";
-import { iconStyles } from "../theme.js";
+import { iconStyles, motionStyles } from "../theme.js";
 import { KIND_META, swatchFor, statFor } from "../media-meta.js";
 
 // Inline single-item viewer, rendered inside the library content column (the
@@ -18,6 +18,7 @@ export class OppaiViewer extends LitElement {
 
   static styles = [
     iconStyles,
+    motionStyles,
     css`
       :host {
         display: block;
@@ -25,6 +26,29 @@ export class OppaiViewer extends LitElement {
       .wrap {
         max-width: 1100px;
         margin: 0 auto;
+        animation: oppai-fade-in-up 0.4s var(--oppai-ease-emphasized) both;
+      }
+      .round-btn,
+      .icon-round,
+      .btn-primary,
+      .btn-outline {
+        transition: transform 0.18s var(--oppai-ease-spring), filter 0.15s ease,
+          background 0.2s ease;
+      }
+      .round-btn:hover:not([disabled]),
+      .icon-round:hover,
+      .btn-outline:hover {
+        transform: translateY(-1px);
+        filter: brightness(1.08);
+      }
+      .btn-primary:hover {
+        transform: translateY(-1px);
+        filter: brightness(1.05);
+      }
+      .btn-primary:active,
+      .btn-outline:active,
+      .icon-round:active {
+        transform: scale(0.96);
       }
       .stage {
         border-radius: 20px;
@@ -74,9 +98,9 @@ export class OppaiViewer extends LitElement {
         width: 44px;
         height: 44px;
         border-radius: 22px;
-        background: #262b24;
+        background: var(--oppai-surface-2);
         border: none;
-        color: #e1e4dc;
+        color: var(--oppai-text);
         display: flex;
         align-items: center;
         justify-content: center;
@@ -105,7 +129,7 @@ export class OppaiViewer extends LitElement {
       }
       .sub {
         font-size: 13px;
-        color: #8c9388;
+        color: var(--oppai-text-muted);
         margin-bottom: 18px;
       }
       .actions {
@@ -118,8 +142,8 @@ export class OppaiViewer extends LitElement {
         height: 44px;
         padding: 0 24px;
         border-radius: 22px;
-        background: #74db94;
-        color: #00391a;
+        background: var(--oppai-primary);
+        color: var(--oppai-on-primary);
         border: none;
         font-size: 14px;
         font-weight: 600;
@@ -134,8 +158,8 @@ export class OppaiViewer extends LitElement {
         padding: 0 20px;
         border-radius: 22px;
         background: none;
-        color: #e1e4dc;
-        border: 1px solid #42483f;
+        color: var(--oppai-text);
+        border: 1px solid var(--oppai-border-strong);
         font-size: 14px;
         font-weight: 600;
         cursor: pointer;
@@ -146,7 +170,7 @@ export class OppaiViewer extends LitElement {
       .desc {
         font-size: 14px;
         line-height: 1.6;
-        color: #c2c9bd;
+        color: var(--oppai-text-dim);
         max-width: 640px;
       }
       .meta {
@@ -167,7 +191,7 @@ export class OppaiViewer extends LitElement {
         width: 44px;
         height: 44px;
         border-radius: 22px;
-        background: #262b24;
+        background: var(--oppai-surface-2);
         border: none;
         display: flex;
         align-items: center;
@@ -187,16 +211,16 @@ export class OppaiViewer extends LitElement {
         border-radius: 14px;
       }
       .chip-accent {
-        background: #354b38;
-        color: #d0e8d1;
+        background: var(--oppai-accent);
+        color: var(--oppai-on-accent);
       }
       .chip-muted {
-        background: #262b24;
-        color: #c2c9bd;
+        background: var(--oppai-surface-2);
+        color: var(--oppai-text-dim);
       }
       .meta-note {
         font-size: 12px;
-        color: #8c9388;
+        color: var(--oppai-text-muted);
         margin-top: 12px;
       }
     `,
@@ -245,7 +269,7 @@ export class OppaiViewer extends LitElement {
   private favIcon() {
     return html`<span
       class="material-symbols-rounded fill-icon"
-      style="font-size:22px; color:${this.favorite ? "#ffb4ab" : "#e1e4dc"};"
+      style="font-size:22px; color:${this.favorite ? "var(--oppai-fav)" : "var(--oppai-text)"};"
       >${this.favorite ? "favorite" : "favorite_border"}</span
     >`;
   }
@@ -297,7 +321,7 @@ export class OppaiViewer extends LitElement {
         <div class="reader-page" style="background:${swatchFor(m)};">
           <span class="material-symbols-rounded" style="font-size:40px; color:#fff;">auto_stories</span>
           <span class="mono">PAGE 1 OF ${pages}</span>
-          <a href=${api.streamURL(m.id)} download style="color:#92f8ac; font-size:12px; margin-top:6px;"
+          <a href=${api.streamURL(m.id)} download style="color:var(--oppai-primary-bright); font-size:12px; margin-top:6px;"
             >Download to read</a
           >
         </div>
@@ -326,7 +350,7 @@ export class OppaiViewer extends LitElement {
             <button class="btn-outline" @click=${this.toggleFav}>
               <span
                 class="material-symbols-rounded"
-                style="font-size:20px; color:${this.favorite ? "#ffb4ab" : "#e1e4dc"};"
+                style="font-size:20px; color:${this.favorite ? "var(--oppai-fav)" : "var(--oppai-text)"};"
                 >${this.favorite ? "favorite" : "favorite_border"}</span
               >
               Favorite
@@ -349,7 +373,7 @@ export class OppaiViewer extends LitElement {
         <div class="meta-head">
           <h2 class="meta-title">${m.title}</h2>
           <button class="icon-round" title="Auto-tag" @click=${this.retag} ?disabled=${this.tagging}>
-            <span class="material-symbols-rounded" style="font-size:22px; color:#c2c9bd;"
+            <span class="material-symbols-rounded" style="font-size:22px; color:var(--oppai-text-dim);"
               >${this.tagging ? "hourglass_empty" : "auto_awesome"}</span
             >
           </button>
@@ -362,7 +386,7 @@ export class OppaiViewer extends LitElement {
         ${this.renderTags(m)}
         ${m.source
           ? html`<div class="meta-note">
-              Source: <a href=${m.source} target="_blank" rel="noreferrer" style="color:#92f8ac;">link</a>
+              Source: <a href=${m.source} target="_blank" rel="noreferrer" style="color:var(--oppai-primary-bright);">link</a>
             </div>`
           : nothing}
         <p class="desc" style="margin-top:16px;">

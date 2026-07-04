@@ -21,8 +21,9 @@ type Config struct {
 	AIModelDir string
 	AIDevice   string // cpu|cuda
 
-	ScrapeDelay     time.Duration
-	ScrapeUserAgent string
+	ScrapeDelay         time.Duration
+	ScrapeUserAgent     string
+	ScrapeRespectRobots bool
 
 	SessionTTL time.Duration
 	Debug      bool
@@ -40,8 +41,9 @@ func Load() *Config {
 		AIEnabled:       envBool("OPPAI_AI_ENABLED", true),
 		AIModelDir:      env("OPPAI_AI_MODEL_DIR", "/config/models"),
 		AIDevice:        env("OPPAI_AI_DEVICE", "cpu"),
-		ScrapeDelay:     time.Duration(envInt("OPPAI_SCRAPE_DELAY_MS", 1500)) * time.Millisecond,
-		ScrapeUserAgent: env("OPPAI_SCRAPE_USER_AGENT", "OppaiLib/0.1 (+self-hosted)"),
+		ScrapeDelay:         time.Duration(envInt("OPPAI_SCRAPE_DELAY_MS", 1500)) * time.Millisecond,
+		ScrapeUserAgent:     env("OPPAI_SCRAPE_USER_AGENT", "OppaiLib/0.1 (+self-hosted)"),
+		ScrapeRespectRobots: envBool("OPPAI_SCRAPE_RESPECT_ROBOTS", true),
 		SessionTTL:      time.Duration(envInt("OPPAI_SESSION_TTL_HOURS", 720)) * time.Hour,
 		Debug:           envBool("OPPAI_DEBUG", false),
 	}

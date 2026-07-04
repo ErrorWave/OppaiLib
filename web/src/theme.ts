@@ -1,76 +1,143 @@
 import { css } from "lit";
 
-// Material 3 design tokens, tuned to the "OppaiLib Media Server UI" design:
-// a deep-green dark scheme. @material/web components read these
-// --md-sys-color-* custom properties. Dark by default; a light override is
-// provided under [data-theme="light"]. The raw design hex values are also
-// exposed as --oppai-* tokens for the hand-authored shell in library.ts.
+// Material 3 design tokens for the OppaiLib Media Server UI: a warm
+// orange/tan scheme. @material/web components read the --md-sys-color-*
+// custom properties; the hand-authored shell (library.ts, viewer.ts, …) reads
+// the parallel --oppai-* tokens. Both are defined for a full dark scheme and a
+// full light override under [data-theme="light"]. Because CSS custom
+// properties inherit through shadow boundaries, these values reach every
+// component's shadow root — themes just work.
+//
+// NOTE: a COMPLETE --md-sys-color-* set is intentional. Material Web filled
+// fields fall back to their light-theme defaults for any token you leave
+// undefined (surface-container-highest in particular), which is what produced
+// the old "white text field on a white fill" login boxes.
 export const globalStyles = `
   :root {
     color-scheme: dark;
 
-    /* M3 tokens (green scheme) */
-    --md-sys-color-primary: #74DB94;
-    --md-sys-color-on-primary: #00391A;
-    --md-sys-color-primary-container: #0B5A2C;
-    --md-sys-color-on-primary-container: #92F8AC;
-    --md-sys-color-secondary-container: #354B38;
-    --md-sys-color-on-secondary-container: #D0E8D1;
-    --md-sys-color-surface: #0F130E;
-    --md-sys-color-surface-container-low: #161A15;
-    --md-sys-color-surface-container: #1C201B;
-    --md-sys-color-surface-container-high: #262B24;
-    --md-sys-color-on-surface: #E1E4DC;
-    --md-sys-color-on-surface-variant: #C2C9BD;
-    --md-sys-color-outline: #42483F;
-    --md-sys-color-outline-variant: #262B24;
+    /* ── M3 tokens · dark (orange/tan) ───────────────────────────── */
+    --md-sys-color-primary: #FFB77C;
+    --md-sys-color-on-primary: #4E2600;
+    --md-sys-color-primary-container: #6F3A0C;
+    --md-sys-color-on-primary-container: #FFDCC2;
+    --md-sys-color-secondary: #E4C0A4;
+    --md-sys-color-on-secondary: #422B18;
+    --md-sys-color-secondary-container: #5B412C;
+    --md-sys-color-on-secondary-container: #FFDCC2;
+    --md-sys-color-tertiary: #D2C78C;
+    --md-sys-color-on-tertiary: #383010;
+
+    --md-sys-color-surface: #191410;
+    --md-sys-color-surface-dim: #191410;
+    --md-sys-color-surface-bright: #413A34;
+    --md-sys-color-surface-container-lowest: #130F0B;
+    --md-sys-color-surface-container-low: #211B15;
+    --md-sys-color-surface-container: #251F19;
+    --md-sys-color-surface-container-high: #302A23;
+    --md-sys-color-surface-container-highest: #3B342D;
+
+    --md-sys-color-on-surface: #EFE0D5;
+    --md-sys-color-on-surface-variant: #D7C3B4;
+    --md-sys-color-outline: #9F8C7E;
+    --md-sys-color-outline-variant: #52453A;
     --md-sys-color-error: #FFB4AB;
-    --md-sys-color-background: #0F130E;
+    --md-sys-color-on-error: #690005;
+    --md-sys-color-background: #191410;
+    --md-sys-color-on-background: #EFE0D5;
     --md-icon-font: 'Material Symbols Rounded';
 
-    /* Raw design palette, used by the hand-authored shell */
-    --oppai-bg: #0F130E;
-    --oppai-nav: #161A15;
-    --oppai-surface: #1C201B;
-    --oppai-surface-2: #262B24;
-    --oppai-accent: #354B38;
-    --oppai-primary: #74DB94;
-    --oppai-primary-bright: #92F8AC;
-    --oppai-primary-container: #0B5A2C;
-    --oppai-on-primary: #00391A;
-    --oppai-text: #E1E4DC;
-    --oppai-text-dim: #C2C9BD;
-    --oppai-text-muted: #8C9388;
-    --oppai-border: #262B24;
-    --oppai-border-strong: #42483F;
+    /* ── Raw shell palette (parallel to the M3 tokens above) ─────── */
+    --oppai-bg: #191410;
+    --oppai-nav: #211B15;
+    --oppai-nav-hover: #2C2620;
+    --oppai-surface: #251F19;
+    --oppai-surface-2: #302A23;
+    --oppai-accent: #5B412C;
+    --oppai-on-accent: #FFDCC2;
+    --oppai-primary: #FFB77C;
+    --oppai-primary-bright: #FFD3B0;
+    --oppai-primary-container: #6F3A0C;
+    --oppai-on-primary: #4E2600;
+    --oppai-text: #EFE0D5;
+    --oppai-text-dim: #D7C3B4;
+    --oppai-text-muted: #A8917F;
+    --oppai-border: #2C2620;
+    --oppai-border-strong: #52453A;
     --oppai-fav: #FFB4AB;
+    --oppai-scrim: rgba(0, 0, 0, 0.55);
+
+    /* Motion — Material 3 easing sets */
+    --oppai-ease-emphasized: cubic-bezier(0.2, 0, 0, 1);
+    --oppai-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+    --oppai-ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
 
     --oppai-radius: 16px;
     font-family: "Roboto", system-ui, -apple-system, sans-serif;
   }
+
   :root[data-theme="light"] {
     color-scheme: light;
-    --md-sys-color-primary: #006D3B;
-    --md-sys-color-on-primary: #ffffff;
-    --md-sys-color-primary-container: #92F8AC;
-    --md-sys-color-on-primary-container: #00210E;
-    --md-sys-color-surface: #F5FBF2;
-    --md-sys-color-surface-container: #E9EFE6;
-    --md-sys-color-surface-container-high: #E3E9E0;
-    --md-sys-color-on-surface: #191D18;
-    --md-sys-color-on-surface-variant: #414941;
-    --md-sys-color-outline: #717970;
-    --md-sys-color-background: #F5FBF2;
+
+    /* ── M3 tokens · light (orange/tan) ──────────────────────────── */
+    --md-sys-color-primary: #8F4C00;
+    --md-sys-color-on-primary: #FFFFFF;
+    --md-sys-color-primary-container: #FFDCC2;
+    --md-sys-color-on-primary-container: #2E1500;
+    --md-sys-color-secondary: #755847;
+    --md-sys-color-on-secondary: #FFFFFF;
+    --md-sys-color-secondary-container: #FFDCC2;
+    --md-sys-color-on-secondary-container: #2A1707;
+    --md-sys-color-tertiary: #6A5F30;
+
+    --md-sys-color-surface: #FFF8F4;
+    --md-sys-color-surface-dim: #E8D7CC;
+    --md-sys-color-surface-bright: #FFF8F4;
+    --md-sys-color-surface-container-lowest: #FFFFFF;
+    --md-sys-color-surface-container-low: #FEF1E8;
+    --md-sys-color-surface-container: #F8EBE1;
+    --md-sys-color-surface-container-high: #F2E5DB;
+    --md-sys-color-surface-container-highest: #ECE0D6;
+
+    --md-sys-color-on-surface: #211A14;
+    --md-sys-color-on-surface-variant: #52453A;
+    --md-sys-color-outline: #857567;
+    --md-sys-color-outline-variant: #D8C3B4;
+    --md-sys-color-error: #BA1A1A;
+    --md-sys-color-background: #FFF8F4;
+    --md-sys-color-on-background: #211A14;
+
+    /* ── Raw shell palette · light ───────────────────────────────── */
+    --oppai-bg: #FFF8F4;
+    --oppai-nav: #FEF1E8;
+    --oppai-nav-hover: #F2E5DB;
+    --oppai-surface: #F8EBE1;
+    --oppai-surface-2: #F2E5DB;
+    --oppai-accent: #FFDCC2;
+    --oppai-on-accent: #2A1707;
+    --oppai-primary: #8F4C00;
+    --oppai-primary-bright: #8F4C00;
+    --oppai-primary-container: #FFDCC2;
+    --oppai-on-primary: #FFFFFF;
+    --oppai-text: #211A14;
+    --oppai-text-dim: #52453A;
+    --oppai-text-muted: #857567;
+    --oppai-border: #EADBCF;
+    --oppai-border-strong: #D8C3B4;
+    --oppai-fav: #BA1A1A;
+    --oppai-scrim: rgba(60, 40, 24, 0.32);
   }
+
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; }
   body {
     background: var(--md-sys-color-background);
     color: var(--md-sys-color-on-surface);
     font-family: "Roboto", system-ui, -apple-system, sans-serif;
+    transition: background 0.3s var(--oppai-ease-standard), color 0.3s var(--oppai-ease-standard);
   }
   ::-webkit-scrollbar { width: 8px; height: 8px; }
-  ::-webkit-scrollbar-thumb { background: #42483F; border-radius: 8px; }
+  ::-webkit-scrollbar-thumb { background: var(--oppai-border-strong); border-radius: 8px; }
   ::-webkit-scrollbar-track { background: transparent; }
 `;
 
@@ -96,6 +163,38 @@ export const iconStyles = css`
   }
   .fill-icon {
     font-variation-settings: "opsz" 24, "wght" 500, "FILL" 1, "GRAD" 0;
+  }
+`;
+
+// Shared motion primitives: M3-flavoured keyframes + easing helpers. Included
+// in each component's shadow root (keyframes don't cross shadow boundaries).
+// Honors prefers-reduced-motion by collapsing every animation to a no-op.
+export const motionStyles = css`
+  @keyframes oppai-fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes oppai-fade-in-up {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes oppai-scale-in {
+    from { opacity: 0; transform: scale(0.94) translateY(8px); }
+    to { opacity: 1; transform: scale(1) translateY(0); }
+  }
+  @keyframes oppai-pop {
+    0% { transform: scale(1); }
+    40% { transform: scale(1.28); }
+    100% { transform: scale(1); }
+  }
+  .anim-fade { animation: oppai-fade-in 0.28s var(--oppai-ease-standard) both; }
+  .anim-rise { animation: oppai-fade-in-up 0.42s var(--oppai-ease-emphasized) both; }
+  .anim-pop { animation: oppai-scale-in 0.32s var(--oppai-ease-spring) both; }
+  @media (prefers-reduced-motion: reduce) {
+    *, .anim-fade, .anim-rise, .anim-pop {
+      animation: none !important;
+      transition: none !important;
+    }
   }
 `;
 

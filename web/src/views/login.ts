@@ -1,29 +1,60 @@
 import { LitElement, html, css } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { api, setToken, type User } from "../api.js";
+import { motionStyles } from "../theme.js";
 
 @customElement("oppai-login")
 export class OppaiLogin extends LitElement {
   @state() private error = "";
   @state() private busy = false;
 
-  static styles = css`
-    :host { display: grid; place-items: center; height: 100vh; padding: 1rem; }
-    .card {
-      background: var(--md-sys-color-surface-container);
-      border-radius: 28px;
-      padding: 2rem;
-      width: min(380px, 100%);
-      display: flex;
-      flex-direction: column;
-      gap: 1rem;
-      box-shadow: 0 4px 24px rgba(0,0,0,.4);
-    }
-    h1 { margin: 0 0 .5rem; text-align: center; letter-spacing: .5px; }
-    .brand { text-align: center; color: var(--md-sys-color-primary); }
-    md-filled-text-field { width: 100%; }
-    .err { color: var(--md-sys-color-error); font-size: .85rem; min-height: 1.2em; }
-  `;
+  static styles = [
+    motionStyles,
+    css`
+      :host {
+        display: grid;
+        place-items: center;
+        min-height: 100vh;
+        padding: 1rem;
+        background:
+          radial-gradient(1200px 600px at 50% -10%, color-mix(in srgb, var(--md-sys-color-primary) 14%, transparent), transparent 70%),
+          var(--md-sys-color-background);
+      }
+      .card {
+        background: var(--md-sys-color-surface-container);
+        border: 1px solid var(--md-sys-color-outline-variant);
+        border-radius: 28px;
+        padding: 2.25rem 2rem;
+        width: min(380px, 100%);
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+        animation: oppai-scale-in 0.42s var(--oppai-ease-spring) both;
+      }
+      h1 {
+        margin: 0 0 0.25rem;
+        text-align: center;
+        letter-spacing: 0.5px;
+        font-weight: 600;
+      }
+      .brand { text-align: center; color: var(--md-sys-color-primary); }
+      .tagline {
+        text-align: center;
+        margin: 0 0 0.5rem;
+        font-size: 0.85rem;
+        color: var(--md-sys-color-on-surface-variant);
+      }
+      md-filled-text-field { width: 100%; }
+      md-filled-button { --md-filled-button-container-shape: 14px; }
+      .err {
+        color: var(--md-sys-color-error);
+        font-size: 0.85rem;
+        min-height: 1.2em;
+        text-align: center;
+      }
+    `,
+  ];
 
   private async submit(e: Event) {
     e.preventDefault();
@@ -49,6 +80,7 @@ export class OppaiLogin extends LitElement {
     return html`
       <form class="card" @submit=${this.submit}>
         <h1 class="brand">OppaiLib</h1>
+        <p class="tagline">Your private media library</p>
         <md-filled-text-field label="Username" name="username" required></md-filled-text-field>
         <md-filled-text-field label="Password" name="password" type="password" required>
         </md-filled-text-field>

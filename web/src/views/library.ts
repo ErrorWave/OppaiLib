@@ -1,7 +1,7 @@
 import { LitElement, html, css, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { api, type Media, type User } from "../api.js";
-import { iconStyles } from "../theme.js";
+import { iconStyles, motionStyles } from "../theme.js";
 import {
   KIND_META,
   KIND_ORDER,
@@ -50,13 +50,14 @@ export class OppaiLibrary extends LitElement {
 
   static styles = [
     iconStyles,
+    motionStyles,
     css`
       :host {
         display: flex;
         width: 100vw;
         height: 100vh;
-        background: #0f130e;
-        color: #e1e4dc;
+        background: var(--oppai-bg);
+        color: var(--oppai-text);
         overflow: hidden;
         position: relative;
         font-family: "Roboto", system-ui, sans-serif;
@@ -65,7 +66,7 @@ export class OppaiLibrary extends LitElement {
         font-family: inherit;
       }
       input::placeholder {
-        color: #939c8e;
+        color: var(--oppai-text-muted);
       }
 
       /* Nav rail */
@@ -73,8 +74,8 @@ export class OppaiLibrary extends LitElement {
         width: 96px;
         flex-shrink: 0;
         height: 100%;
-        background: #161a15;
-        border-right: 1px solid #262b24;
+        background: var(--oppai-nav);
+        border-right: 1px solid var(--oppai-surface-2);
         display: flex;
         flex-direction: column;
         align-items: center;
@@ -85,18 +86,27 @@ export class OppaiLibrary extends LitElement {
         width: 56px;
         height: 56px;
         border-radius: 16px;
-        background: #0b5a2c;
+        background: var(--oppai-primary-container);
         border: none;
-        color: #92f8ac;
+        color: var(--oppai-primary-bright);
         display: flex;
         align-items: center;
         justify-content: center;
         cursor: pointer;
         box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
-        transition: filter 0.12s ease;
+        transition: transform 0.2s var(--oppai-ease-spring), filter 0.15s ease,
+          box-shadow 0.2s ease;
       }
       .add-btn:hover {
-        filter: brightness(1.15);
+        filter: brightness(1.1);
+        transform: translateY(-2px) rotate(90deg);
+        box-shadow: 0 6px 16px rgba(0, 0, 0, 0.45);
+      }
+      .add-btn:active {
+        transform: scale(0.94) rotate(90deg);
+      }
+      .add-btn span {
+        transition: transform 0.2s var(--oppai-ease-spring);
       }
       .nav-list {
         display: flex;
@@ -123,10 +133,20 @@ export class OppaiLibrary extends LitElement {
         display: flex;
         align-items: center;
         justify-content: center;
-        transition: background 0.12s ease;
+        transition: background 0.22s var(--oppai-ease-emphasized),
+          transform 0.22s var(--oppai-ease-spring);
       }
       .nav-item:hover .nav-pill {
-        background: #21271f;
+        background: var(--oppai-nav-hover);
+      }
+      .nav-item:active .nav-pill {
+        transform: scale(0.9);
+      }
+      .nav-pill span {
+        transition: color 0.2s ease;
+      }
+      .nav-label {
+        transition: color 0.2s ease;
       }
       .nav-label {
         font-size: 11px;
@@ -156,7 +176,7 @@ export class OppaiLibrary extends LitElement {
         align-items: center;
         gap: 16px;
         padding: 0 28px;
-        border-bottom: 1px solid #1e221c;
+        border-bottom: 1px solid var(--oppai-border);
       }
       .h-title {
         font-size: 20px;
@@ -172,7 +192,7 @@ export class OppaiLibrary extends LitElement {
         flex: 1;
         max-width: 520px;
         height: 44px;
-        background: #262b24;
+        background: var(--oppai-surface-2);
         border-radius: 22px;
         display: flex;
         align-items: center;
@@ -184,19 +204,19 @@ export class OppaiLibrary extends LitElement {
         background: none;
         border: none;
         outline: none;
-        color: #e1e4dc;
+        color: var(--oppai-text);
         font-size: 14px;
       }
       .filters-btn {
         background: none;
-        border: 1px solid #42483f;
+        border: 1px solid var(--oppai-border-strong);
         border-radius: 20px;
         height: 40px;
         padding: 0 14px;
         display: flex;
         align-items: center;
         gap: 6px;
-        color: #c2c9bd;
+        color: var(--oppai-text-dim);
         cursor: pointer;
         flex-shrink: 0;
       }
@@ -214,7 +234,7 @@ export class OppaiLibrary extends LitElement {
       }
       .greeting-sub {
         font-size: 14px;
-        color: #c2c9bd;
+        color: var(--oppai-text-dim);
         margin: 0 0 32px;
       }
       .row {
@@ -235,7 +255,7 @@ export class OppaiLibrary extends LitElement {
       .see-all {
         background: none;
         border: none;
-        color: #92f8ac;
+        color: var(--oppai-primary-bright);
         font-size: 13px;
         font-weight: 600;
         cursor: pointer;
@@ -264,7 +284,7 @@ export class OppaiLibrary extends LitElement {
       }
       .grid-count {
         font-size: 13px;
-        color: #8c9388;
+        color: var(--oppai-text-muted);
       }
       .chips {
         display: flex;
@@ -291,7 +311,7 @@ export class OppaiLibrary extends LitElement {
       .empty {
         text-align: center;
         padding: 80px 0;
-        color: #8c9388;
+        color: var(--oppai-text-muted);
       }
 
       /* Tiles */
@@ -302,10 +322,16 @@ export class OppaiLibrary extends LitElement {
         position: relative;
         border-radius: 16px;
         overflow: hidden;
-        transition: transform 0.12s ease;
+        transition: transform 0.28s var(--oppai-ease-emphasized),
+          box-shadow 0.28s var(--oppai-ease-emphasized);
+        will-change: transform;
       }
       .tile:hover .tile-media {
-        transform: translateY(-2px);
+        transform: translateY(-4px) scale(1.02);
+        box-shadow: 0 12px 28px rgba(0, 0, 0, 0.4);
+      }
+      .tile:active .tile-media {
+        transform: translateY(-1px) scale(0.99);
       }
       .tile-media img {
         position: absolute;
@@ -313,6 +339,10 @@ export class OppaiLibrary extends LitElement {
         width: 100%;
         height: 100%;
         object-fit: cover;
+        transition: transform 0.4s var(--oppai-ease-emphasized);
+      }
+      .tile:hover .tile-media img {
+        transform: scale(1.06);
       }
       .tile-overlay {
         position: absolute;
@@ -342,6 +372,22 @@ export class OppaiLibrary extends LitElement {
         align-items: center;
         justify-content: center;
         cursor: pointer;
+        opacity: 0;
+        transform: scale(0.8);
+        transition: opacity 0.2s ease, transform 0.2s var(--oppai-ease-spring),
+          background 0.2s ease;
+        backdrop-filter: blur(2px);
+      }
+      .tile:hover .fav-btn,
+      .fav-btn.is-fav {
+        opacity: 1;
+        transform: scale(1);
+      }
+      .fav-btn:hover {
+        background: rgba(0, 0, 0, 0.6);
+      }
+      .fav-btn:active .material-symbols-rounded {
+        animation: oppai-pop 0.35s var(--oppai-ease-spring);
       }
       .tile-stat {
         position: absolute;
@@ -360,14 +406,14 @@ export class OppaiLibrary extends LitElement {
       .tile-title {
         font-size: 13px;
         font-weight: 500;
-        color: #e1e4dc;
+        color: var(--oppai-text);
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
       }
       .tile-tag {
         font-size: 12px;
-        color: #8c9388;
+        color: var(--oppai-text-muted);
         margin-top: 2px;
       }
 
@@ -375,18 +421,21 @@ export class OppaiLibrary extends LitElement {
       .scrim {
         position: absolute;
         inset: 0;
-        background: rgba(0, 0, 0, 0.55);
+        background: var(--oppai-scrim);
         display: flex;
         align-items: center;
         justify-content: center;
         z-index: 20;
+        animation: oppai-fade-in 0.2s var(--oppai-ease-standard) both;
       }
       .dialog {
         width: 480px;
         max-width: calc(100vw - 32px);
-        background: #262b24;
+        background: var(--oppai-surface-2);
         border-radius: 28px;
         padding: 28px;
+        box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+        animation: oppai-scale-in 0.32s var(--oppai-ease-spring) both;
       }
       .dialog h2 {
         font-size: 20px;
@@ -394,17 +443,17 @@ export class OppaiLibrary extends LitElement {
         margin: 0 0 20px;
       }
       .dropzone {
-        border: 1.5px dashed #6c756a;
+        border: 1.5px dashed var(--oppai-border-strong);
         border-radius: 16px;
         padding: 40px 20px;
         text-align: center;
-        color: #c2c9bd;
+        color: var(--oppai-text-dim);
         cursor: pointer;
         transition: border-color 0.12s ease, background 0.12s ease;
       }
       .dropzone.drag {
-        border-color: #74db94;
-        background: rgba(116, 219, 148, 0.08);
+        border-color: var(--oppai-primary);
+        background: color-mix(in srgb, var(--oppai-primary) 12%, transparent);
       }
       .dialog-actions {
         display: flex;
@@ -418,7 +467,7 @@ export class OppaiLibrary extends LitElement {
         border-radius: 20px;
         background: none;
         border: none;
-        color: #92f8ac;
+        color: var(--oppai-primary-bright);
         font-size: 14px;
         font-weight: 600;
         cursor: pointer;
@@ -427,9 +476,9 @@ export class OppaiLibrary extends LitElement {
         height: 40px;
         padding: 0 20px;
         border-radius: 20px;
-        background: #74db94;
+        background: var(--oppai-primary);
         border: none;
-        color: #00391a;
+        color: var(--oppai-on-primary);
         font-size: 14px;
         font-weight: 600;
         cursor: pointer;
@@ -439,7 +488,7 @@ export class OppaiLibrary extends LitElement {
         margin: 14px auto 0;
         background: none;
         border: none;
-        color: #92f8ac;
+        color: var(--oppai-primary-bright);
         font-size: 13px;
         cursor: pointer;
       }
@@ -604,15 +653,15 @@ export class OppaiLibrary extends LitElement {
               <button class="nav-item" @click=${() => this.selectSection(n.id)}>
                 <span
                   class="nav-pill"
-                  style="background:${active ? "#0b5a2c" : "transparent"};"
+                  style="background:${active ? "var(--oppai-primary-container)" : "transparent"};"
                 >
                   <span
                     class="material-symbols-rounded ${active ? "fill-icon" : ""}"
-                    style="font-size:22px; color:${active ? "#92f8ac" : "#c2c9bd"};"
+                    style="font-size:22px; color:${active ? "var(--oppai-primary-bright)" : "var(--oppai-text-dim)"};"
                     >${n.icon}</span
                   >
                 </span>
-                <span class="nav-label" style="color:${active ? "#e1e4dc" : "#8c9388"};"
+                <span class="nav-label" style="color:${active ? "var(--oppai-text)" : "var(--oppai-text-muted)"};"
                   >${n.label}</span
                 >
               </button>
@@ -626,7 +675,7 @@ export class OppaiLibrary extends LitElement {
           class="icon-btn"
           title="Toggle theme"
           @click=${this.toggleTheme}
-          style="width:48px; height:48px; border-radius:24px; background:#262b24; color:#c2c9bd;"
+          style="width:48px; height:48px; border-radius:24px; background:var(--oppai-surface-2); color:var(--oppai-text-dim);"
         >
           <span class="material-symbols-rounded" style="font-size:22px;">settings</span>
         </button>
@@ -634,7 +683,7 @@ export class OppaiLibrary extends LitElement {
           class="icon-btn"
           title="Sign out (${this.user?.username})"
           @click=${this.logout}
-          style="width:40px; height:40px; border-radius:20px; background:#354b38; color:#d0e8d1; font-size:13px; font-weight:600;"
+          style="width:40px; height:40px; border-radius:20px; background:var(--oppai-accent); color:var(--oppai-on-accent); font-size:13px; font-weight:600;"
         >
           ${initials}
         </button>
@@ -650,7 +699,7 @@ export class OppaiLibrary extends LitElement {
               class="icon-btn"
               title="Back"
               @click=${this.closeItem}
-              style="width:40px; height:40px; border-radius:20px; background:none; color:#e1e4dc; flex-shrink:0;"
+              style="width:40px; height:40px; border-radius:20px; background:none; color:var(--oppai-text); flex-shrink:0;"
             >
               <span class="material-symbols-rounded" style="font-size:24px;">arrow_back</span>
             </button>`
@@ -659,7 +708,7 @@ export class OppaiLibrary extends LitElement {
         <h1 class="h-title">${title}</h1>
 
         <div class="searchbox">
-          <span class="material-symbols-rounded" style="font-size:20px; color:#c2c9bd;">search</span>
+          <span class="material-symbols-rounded" style="font-size:20px; color:var(--oppai-text-dim);">search</span>
           <input
             .value=${this.search}
             @input=${this.onSearchInput}
@@ -669,7 +718,7 @@ export class OppaiLibrary extends LitElement {
             ? html`<button
                 class="icon-btn"
                 @click=${this.clearSearch}
-                style="background:none; color:#c2c9bd;"
+                style="background:none; color:var(--oppai-text-dim);"
               >
                 <span class="material-symbols-rounded" style="font-size:18px;">close</span>
               </button>`
@@ -714,13 +763,15 @@ export class OppaiLibrary extends LitElement {
 
     return html`
       <div>
-        <h2 class="greeting">${greeting}</h2>
-        <p class="greeting-sub">Here's what's new across your library</p>
+        <h2 class="greeting anim-rise">${greeting}</h2>
+        <p class="greeting-sub anim-rise" style="animation-delay:40ms;">
+          Here's what's new across your library
+        </p>
         ${rows.map(
-          (row) => html`
-            <section class="row">
+          (row, i) => html`
+            <section class="row anim-rise" style="animation-delay:${80 + i * 70}ms;">
               <div class="row-head">
-                <span class="material-symbols-rounded" style="font-size:22px; color:#92f8ac;"
+                <span class="material-symbols-rounded" style="font-size:22px; color:var(--oppai-primary-bright);"
                   >${row.icon}</span
                 >
                 <h3 class="row-title">${row.label}</h3>
@@ -781,9 +832,9 @@ export class OppaiLibrary extends LitElement {
                 (c) => html`<button
                   class="chip"
                   @click=${() => this.setFilter(this.section, c.label)}
-                  style="background:${c.active ? "#354b38" : "transparent"}; color:${c.active
-                    ? "#d0e8d1"
-                    : "#c2c9bd"}; border:1px solid ${c.active ? "#354b38" : "#42483f"};"
+                  style="background:${c.active ? "var(--oppai-accent)" : "transparent"}; color:${c.active
+                    ? "var(--oppai-on-accent)"
+                    : "var(--oppai-text-dim)"}; border:1px solid ${c.active ? "var(--oppai-accent)" : "var(--oppai-border-strong)"};"
                 >
                   ${c.active
                     ? html`<span class="material-symbols-rounded" style="font-size:16px;">check</span>`
@@ -805,20 +856,26 @@ export class OppaiLibrary extends LitElement {
                   : "No items match your search or filter."}
               </div>
             </div>`
-          : html`<div class="grid">${gridItems.map((m) => this.renderTile(m, "100%"))}</div>`}
+          : html`<div class="grid">
+              ${gridItems.map((m, i) => this.renderTile(m, "100%", i))}
+            </div>`}
       </div>
     `;
   }
 
-  private renderTile(m: Media, width: string) {
+  private renderTile(m: Media, width: string, index?: number) {
     const meta = KIND_META[m.kind];
     const fav = this.favorites.has(m.id);
     const stat = statFor(m);
+    // Grid tiles (index provided) fade+rise in with a capped stagger; home-row
+    // tiles inherit their section's entrance instead.
+    const anim = index != null ? "anim-rise" : "";
+    const delay = index != null ? `animation-delay:${Math.min(index, 12) * 45}ms;` : "";
     return html`
       <div
-        class="tile"
+        class="tile ${anim}"
         @click=${() => this.openItem(m.id)}
-        style="flex-shrink:0; width:${width};"
+        style="flex-shrink:0; width:${width}; ${delay}"
       >
         <div
           class="tile-media"
@@ -832,10 +889,13 @@ export class OppaiLibrary extends LitElement {
                 >
                 <span class="type-label">${meta.typeLabel}</span>
               </div>`}
-          <button class="fav-btn" @click=${(e: Event) => this.toggleFavorite(m.id, e)}>
+          <button
+            class="fav-btn ${fav ? "is-fav" : ""}"
+            @click=${(e: Event) => this.toggleFavorite(m.id, e)}
+          >
             <span
               class="material-symbols-rounded fill-icon"
-              style="font-size:18px; color:${fav ? "#ffb4ab" : "rgba(255,255,255,0.9)"};"
+              style="font-size:18px; color:${fav ? "var(--oppai-fav)" : "rgba(255,255,255,0.9)"};"
               >${fav ? "favorite" : "favorite_border"}</span
             >
           </button>
@@ -869,7 +929,7 @@ export class OppaiLibrary extends LitElement {
               >upload_file</span
             >
             <div style="font-size:14px;">Drag files here, or click to browse</div>
-            <div style="font-size:12px; color:#8c9388; margin-top:4px;">
+            <div style="font-size:12px; color:var(--oppai-text-muted); margin-top:4px;">
               Photos, GIFs, videos, games, comics
             </div>
           </div>
