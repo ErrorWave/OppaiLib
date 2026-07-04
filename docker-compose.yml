@@ -1,8 +1,8 @@
 services:
   oppailib:
     build: .
-    # Or pull the prebuilt image from the GitLab Container Registry:
-    # image: registry.gitlab.com/personalprojects3492627/oppailib:latest
+    # Or pull the prebuilt image from the GitHub Container Registry:
+    # image: ghcr.io/errorwave/oppailib:latest
     container_name: oppailib
     restart: unless-stopped
     ports:

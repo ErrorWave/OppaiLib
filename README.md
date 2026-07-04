@@ -58,7 +58,7 @@ Web UI ──────┼──▶ Go API ──▶ crypto (envelope AES-256-
 ## Quick start (docker-compose)
 
 ```bash
-git clone https://gitlab.com/personalprojects3492627/OppaiLib.git oppailib && cd oppailib
+git clone https://github.com/ErrorWave/OppaiLib.git oppailib && cd oppailib
 cp .env.example .env
 # edit .env: set OPPAI_PASSPHRASE and OPPAI_ADMIN_PASSWORD
 docker compose up -d
@@ -69,18 +69,18 @@ Open `http://localhost:8080` and sign in with your admin credentials.
 
 ## Unraid install
 
-The image is built and published automatically to the **GitLab Container
-Registry** on every push to `main` and on version tags (see
-[.gitlab-ci.yml](.gitlab-ci.yml)):
+The image is built and published automatically to the **GitHub Container
+Registry (GHCR)** on every push to `main` and on version tags (see
+[.github/workflows/docker-publish.yml](.github/workflows/docker-publish.yml)):
 
 ```
-registry.gitlab.com/personalprojects3492627/oppailib:latest
+ghcr.io/errorwave/oppailib:latest
 ```
 
-> If the GitLab project is **private**, add the registry credentials in Unraid
-> (*Docker → Registries → Add*) using a
-> [deploy token](https://docs.gitlab.com/user/project/deploy_tokens/) with
-> `read_registry` scope before pulling.
+> The GHCR package is created **private** on the first publish. Make it public
+> once at *github.com/users/ErrorWave/packages/container/oppailib/settings →
+> Danger Zone → Change visibility → Public*. After that, Unraid pulls it with
+> **no authentication**.
 
 1. **Community Applications template:** the template lives at
    [unraid/oppailib.xml](unraid/oppailib.xml). Add it via *Docker → Add Container
