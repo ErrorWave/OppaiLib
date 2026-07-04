@@ -398,7 +398,14 @@ export class OppaiViewer extends LitElement {
     switch (m.kind) {
       case "video":
         return html`<div class="stage" style="aspect-ratio:16/9; background:${swatchFor(m)};">
-          <video src=${url} controls autoplay playsinline></video>
+          <video
+            src=${url}
+            poster=${m.hasThumb ? api.thumbURL(m.id) : nothing}
+            controls
+            autoplay
+            playsinline
+            preload="metadata"
+          ></video>
         </div>`;
       case "gif":
         return html`<div class="stage" style="aspect-ratio:16/9; background:${swatchFor(m)};">

@@ -209,8 +209,9 @@ func (s *Server) importOne(r *http.Request, mediaURL string, result *models.Scra
 		sourceEnc, _ = crypto.SealBytes(s.kek, []byte(result.SourceURL), []byte("source"))
 	}
 
-	id, _, err := s.db.InsertMedia(r.Context(), &db.MediaRow{
-		Kind:      kindOrDefault(result.Kind, kindFromFilename(dl.Filename)),
+	kind := kindOrDefault(result.Kind, kindFromFilename(dl.Filename))
+	id, existed, err := s.db.InsertMedia(r.Context(), &db.MediaRow{
+		Kind:      kind,
 		SHA256:    put.SHA256,
 		Size:      put.Size,
 		BlobPath:  put.RelPath,
@@ -219,6 +220,9 @@ func (s *Server) importOne(r *http.Request, mediaURL string, result *models.Scra
 	})
 	if err != nil {
 		return 0, err
+	}
+	if !existed {
+		s.generateThumbAsync(id, put.RelPath, kind, 0)
 	}
 	// Attach scraped tags.
 	for _, t := range result.Tags {

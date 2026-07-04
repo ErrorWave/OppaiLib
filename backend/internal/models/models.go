@@ -27,6 +27,7 @@ type Media struct {
 	Width     int       `json:"width,omitempty"`
 	Height    int       `json:"height,omitempty"`
 	PageCount int       `json:"pageCount,omitempty"`
+	HasThumb  bool      `json:"hasThumb,omitempty"`
 	Tags      []Tag     `json:"tags,omitempty"`
 	CreatedAt int64     `json:"createdAt"`
 	UpdatedAt int64     `json:"updatedAt"`

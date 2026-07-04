@@ -84,9 +84,11 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	// Fire-and-forget AI auto-tagging (no-op if disabled or non-image).
+	// Fire-and-forget AI auto-tagging (no-op if disabled or non-image) and video
+	// poster generation (no-op for non-video / when ffmpeg is absent).
 	if !existed {
 		s.ai.TagMediaAsync(id, res.RelPath, string(kind))
+		s.generateThumbAsync(id, res.RelPath, string(kind), 0)
 	}
 
 	status := http.StatusCreated
@@ -200,6 +202,7 @@ func (s *Server) toModel(row *db.MediaRow) models.Media {
 		Width:     int(row.Width.Int64),
 		Height:    int(row.Height.Int64),
 		PageCount: int(row.PageCount.Int64),
+		HasThumb:  row.ThumbPath.Valid && row.ThumbPath.String != "",
 		CreatedAt: row.CreatedAt,
 		UpdatedAt: row.UpdatedAt,
 	}

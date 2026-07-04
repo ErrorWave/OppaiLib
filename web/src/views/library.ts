@@ -924,7 +924,7 @@ export class OppaiLibrary extends LitElement {
           style="width:100%; aspect-ratio:${meta.aspect}; background:${swatchFor(m)};"
         >
           ${hasThumbnail(m)
-            ? html`<img loading="lazy" src=${api.streamURL(m.id)} alt=${m.title} />`
+            ? html`<img loading="lazy" src=${api.thumbURL(m.id)} alt=${m.title} />`
             : html`<div class="tile-overlay">
                 <span class="material-symbols-rounded" style="font-size:30px; color:#fff;"
                   >${meta.icon}</span

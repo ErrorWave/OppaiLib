@@ -19,9 +19,13 @@ RUN go mod download
 COPY backend/ ./
 # Web assets are embedded via go:embed from this path:
 COPY --from=web /web/dist ./internal/web/dist
+# Build version stamp — pass with `--build-arg OPPAI_VERSION=$(git describe --tags --always)`
+# so the running container can be matched to a source revision (GET /api/health).
+ARG OPPAI_VERSION=docker
 # CGO off → pure-Go sqlite; static-ish binary.
 ENV CGO_ENABLED=0
-RUN go build -ldflags="-s -w" -o /out/oppailib ./cmd/oppailib
+RUN go build -ldflags="-s -w -X github.com/youruser/oppailib/internal/buildinfo.Version=${OPPAI_VERSION}" \
+        -o /out/oppailib ./cmd/oppailib
 
 # --- Stage 3: runtime ---------------------------------------------------
 FROM debian:bookworm-slim AS runtime

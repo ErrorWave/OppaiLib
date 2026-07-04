@@ -32,7 +32,39 @@ func Open(path string) (*DB, error) {
 	if _, err := sqldb.Exec(schemaSQL); err != nil {
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+	// CREATE TABLE IF NOT EXISTS won't add columns to a table that predates them,
+	// so bring older databases forward explicitly.
+	if err := ensureColumn(sqldb, "media", "thumb_path", "TEXT"); err != nil {
+		return nil, err
+	}
 	return &DB{sql: sqldb}, nil
+}
+
+// ensureColumn adds a column to an existing table if it isn't already present.
+// SQLite has no "ADD COLUMN IF NOT EXISTS", so we probe table_info first.
+func ensureColumn(db *sql.DB, table, column, decl string) error {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return rows.Close() // already present
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, decl))
+	return err
 }
 
 func (d *DB) Close() error { return d.sql.Close() }

@@ -23,6 +23,7 @@ export interface Media {
   width?: number;
   height?: number;
   pageCount?: number;
+  hasThumb?: boolean;
   tags?: MediaTag[];
   createdAt: number;
   updatedAt: number;
@@ -121,6 +122,9 @@ export const api = {
   // <img>/<video> can't set headers; auth rides on the HttpOnly session cookie
   // set at login (same-origin request).
   streamURL: (id: number) => `/api/media/${id}/stream`,
+  // Poster/thumbnail: a generated video frame, or the item's own bytes for
+  // image/gif. Cheap enough to use for every grid tile.
+  thumbURL: (id: number) => `/api/media/${id}/thumb`,
   // Route a remote asset through the server so hotlink/referer-guarded hosts
   // still preview (and so a preview matches what import will actually fetch).
   proxyURL: (u: string) => `/api/scrape/proxy?url=${encodeURIComponent(u)}`,

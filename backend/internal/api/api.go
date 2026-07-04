@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/youruser/oppailib/internal/ai"
+	"github.com/youruser/oppailib/internal/buildinfo"
 	"github.com/youruser/oppailib/internal/config"
 	"github.com/youruser/oppailib/internal/db"
 	"github.com/youruser/oppailib/internal/scraper"
@@ -24,10 +27,31 @@ type Server struct {
 	ai      *ai.Manager
 	kek     []byte
 	log     *slog.Logger
+
+	thumbSem  chan struct{} // bounds concurrent ffmpeg thumbnail jobs
+	thumbWarn sync.Once      // warn once if ffmpeg is missing
 }
 
 func NewServer(cfg *config.Config, database *db.DB, store *storage.Store, sc *scraper.Engine, aiMgr *ai.Manager, kek []byte, log *slog.Logger) *Server {
-	return &Server{cfg: cfg, db: database, store: store, scraper: sc, ai: aiMgr, kek: kek, log: log}
+	// Cap thumbnail workers well below core count: ffmpeg is CPU-heavy and this is
+	// background work that must not starve request handling on a lean Unraid box.
+	workers := runtime.GOMAXPROCS(0) / 2
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > 4 {
+		workers = 4
+	}
+	return &Server{
+		cfg: cfg, db: database, store: store, scraper: sc, ai: aiMgr, kek: kek, log: log,
+		thumbSem: make(chan struct{}, workers),
+	}
+}
+
+// StartBackgroundJobs kicks off one-time startup work (thumbnail backfill). Call
+// once after the server is constructed.
+func (s *Server) StartBackgroundJobs() {
+	go s.backfillThumbnails()
 }
 
 // Handler builds the full http.Handler (API + static web UI).
@@ -37,9 +61,10 @@ func (s *Server) Handler() http.Handler {
 	// Health / readiness.
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"status":     "ok",
-			"aiEnabled":  s.ai.Enabled(),
-			"aiTagger":   s.ai.TaggerName(),
+			"status":    "ok",
+			"version":   buildinfo.String(),
+			"aiEnabled": s.ai.Enabled(),
+			"aiTagger":  s.ai.TaggerName(),
 		})
 	})
 
@@ -53,6 +78,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/media", s.requireAuth(s.handleUploadMedia))
 	mux.HandleFunc("GET /api/media/{id}", s.requireAuth(s.handleGetMedia))
 	mux.HandleFunc("GET /api/media/{id}/stream", s.requireAuth(s.handleStreamMedia))
+	mux.HandleFunc("GET /api/media/{id}/thumb", s.requireAuth(s.handleThumb))
 	mux.HandleFunc("POST /api/media/{id}/autotag", s.requireAuth(s.handleAutotag))
 
 	// Scraper (protected).

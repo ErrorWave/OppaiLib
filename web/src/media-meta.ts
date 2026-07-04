@@ -56,10 +56,11 @@ export function swatchFor(m: Media): string {
   return SWATCHES[Math.abs(m.id) % SWATCHES.length];
 }
 
-// image/gif render their own bytes as a thumbnail; other kinds fall back to a
-// gradient swatch + type icon.
+// image/gif render their own bytes as a thumbnail; videos show a generated
+// poster frame once the server has produced one (m.hasThumb). Everything else
+// falls back to a gradient swatch + type icon.
 export function hasThumbnail(m: Media): boolean {
-  return m.kind === "image" || m.kind === "gif";
+  return m.kind === "image" || m.kind === "gif" || !!m.hasThumb;
 }
 
 function formatDuration(seconds: number): string {

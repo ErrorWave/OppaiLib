@@ -21,6 +21,7 @@ type MediaRow struct {
 	Width     sql.NullInt64
 	Height    sql.NullInt64
 	PageCount sql.NullInt64
+	ThumbPath sql.NullString
 	CreatedAt int64
 	UpdatedAt int64
 }
@@ -54,10 +55,10 @@ func (d *DB) GetMedia(ctx context.Context, id int64) (*MediaRow, error) {
 	var fav int
 	err := d.sql.QueryRowContext(ctx, `
 		SELECT id, kind, sha256, size, blob_path, title_enc, notes_enc, source_enc,
-		       rating, favorite, duration, width, height, page_count, created_at, updated_at
+		       rating, favorite, duration, width, height, page_count, thumb_path, created_at, updated_at
 		FROM media WHERE id = ?`, id).Scan(
 		&m.ID, &m.Kind, &m.SHA256, &m.Size, &m.BlobPath, &m.TitleEnc, &m.NotesEnc, &m.SourceEnc,
-		&m.Rating, &fav, &m.Duration, &m.Width, &m.Height, &m.PageCount, &m.CreatedAt, &m.UpdatedAt)
+		&m.Rating, &fav, &m.Duration, &m.Width, &m.Height, &m.PageCount, &m.ThumbPath, &m.CreatedAt, &m.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -73,13 +74,60 @@ func (d *DB) UpdateMediaDimensions(ctx context.Context, id int64, w, h int) erro
 	return err
 }
 
+// SetThumbPath records the relative store path of a generated thumbnail blob.
+func (d *DB) SetThumbPath(ctx context.Context, id int64, rel string) error {
+	_, err := d.sql.ExecContext(ctx,
+		`UPDATE media SET thumb_path = ?, updated_at = ? WHERE id = ?`, rel, now(), id)
+	return err
+}
+
+// UpdateVideoMeta fills in probed video metadata. Zero values are left untouched
+// so a partial probe (e.g. dimensions but no duration) never clobbers good data.
+func (d *DB) UpdateVideoMeta(ctx context.Context, id int64, dur float64, w, h int) error {
+	_, err := d.sql.ExecContext(ctx, `
+		UPDATE media SET
+		    duration = CASE WHEN ? > 0 THEN ? ELSE duration END,
+		    width    = CASE WHEN ? > 0 THEN ? ELSE width END,
+		    height   = CASE WHEN ? > 0 THEN ? ELSE height END,
+		    updated_at = ?
+		WHERE id = ?`,
+		dur, dur, w, w, h, h, now(), id)
+	return err
+}
+
+// VideosMissingThumbs returns id/blob_path for videos that have no thumbnail yet,
+// used to backfill posters for items imported before thumbnailing existed.
+func (d *DB) VideosMissingThumbs(ctx context.Context, limit int) ([]*MediaRow, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 500
+	}
+	rows, err := d.sql.QueryContext(ctx, `
+		SELECT id, kind, blob_path, size, duration
+		FROM media
+		WHERE kind = 'video' AND (thumb_path IS NULL OR thumb_path = '')
+		ORDER BY created_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*MediaRow
+	for rows.Next() {
+		m := &MediaRow{}
+		if err := rows.Scan(&m.ID, &m.Kind, &m.BlobPath, &m.Size, &m.Duration); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 // ListMedia returns rows filtered by kind (empty = all), newest first.
 func (d *DB) ListMedia(ctx context.Context, kind string, limit, offset int) ([]*MediaRow, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
 	q := `SELECT id, kind, sha256, size, blob_path, title_enc, notes_enc, source_enc,
-	             rating, favorite, duration, width, height, page_count, created_at, updated_at
+	             rating, favorite, duration, width, height, page_count, thumb_path, created_at, updated_at
 	      FROM media`
 	args := []any{}
 	if kind != "" {
@@ -101,7 +149,7 @@ func (d *DB) ListMedia(ctx context.Context, kind string, limit, offset int) ([]*
 		var fav int
 		if err := rows.Scan(&m.ID, &m.Kind, &m.SHA256, &m.Size, &m.BlobPath,
 			&m.TitleEnc, &m.NotesEnc, &m.SourceEnc, &m.Rating, &fav,
-			&m.Duration, &m.Width, &m.Height, &m.PageCount, &m.CreatedAt, &m.UpdatedAt); err != nil {
+			&m.Duration, &m.Width, &m.Height, &m.PageCount, &m.ThumbPath, &m.CreatedAt, &m.UpdatedAt); err != nil {
 			return nil, err
 		}
 		m.Favorite = fav != 0

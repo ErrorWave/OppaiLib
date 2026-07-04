@@ -17,6 +17,7 @@ import (
 	"github.com/youruser/oppailib/internal/ai"
 	"github.com/youruser/oppailib/internal/api"
 	"github.com/youruser/oppailib/internal/auth"
+	"github.com/youruser/oppailib/internal/buildinfo"
 	"github.com/youruser/oppailib/internal/config"
 	"github.com/youruser/oppailib/internal/crypto"
 	"github.com/youruser/oppailib/internal/db"
@@ -27,6 +28,9 @@ import (
 func main() {
 	cfg := config.Load()
 	log := newLogger(cfg.Debug)
+	// Log the build identity up front so a deployment can be verified against the
+	// source (also surfaced at GET /api/health as "version").
+	log.Info("OppaiLib starting", "version", buildinfo.String())
 
 	if err := run(cfg, log); err != nil {
 		log.Error("fatal", "err", err)
@@ -84,6 +88,7 @@ func run(cfg *config.Config, log *slog.Logger) error {
 
 	// 7. HTTP server.
 	srv := api.NewServer(cfg, database, store, sc, aiMgr, ks.KEK(), log)
+	srv.StartBackgroundJobs() // backfills missing video thumbnails
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           srv.Handler(),

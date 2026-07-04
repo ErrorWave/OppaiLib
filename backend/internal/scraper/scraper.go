@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -53,7 +54,25 @@ type Options struct {
 }
 
 func New(opts Options) *Engine {
-	client := &http.Client{Timeout: 30 * time.Second}
+	// An explicitly-bounded transport. The bare http.Client{Timeout} used before
+	// only capped the *whole* exchange, so a container that couldn't reach a host
+	// (a common Unraid egress/DNS misconfig) could sit at the connect stage for a
+	// long time and the UI just spun on "Fetching…". These per-phase deadlines make
+	// an unreachable host fail in a few seconds with a clear error instead.
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment, // honor HTTP(S)_PROXY if the box uses one
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second, // TCP connect (incl. DNS)
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 15 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		MaxIdleConns:          64,
+		IdleConnTimeout:       90 * time.Second,
+	}
+	client := &http.Client{Timeout: 30 * time.Second, Transport: transport}
 	e := &Engine{
 		client:    client,
 		userAgent: opts.UserAgent,
