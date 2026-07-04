@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" alt="OppaiLib" width="128" height="128" />
+</p>
+
 # OppaiLib
 
 A private, **self-hosted, encrypted** media library for adult (NSFW) content —
