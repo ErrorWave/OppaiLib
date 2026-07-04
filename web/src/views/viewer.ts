@@ -1,40 +1,232 @@
-import { LitElement, html, css } from "lit";
+import { LitElement, html, css, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { api, type Media } from "../api.js";
+import { iconStyles } from "../theme.js";
+import { KIND_META, swatchFor, statFor } from "../media-meta.js";
 
-// Full-screen media viewer with tag list + AI re-tag action.
+// Inline single-item viewer, rendered inside the library content column (the
+// app bar's back button closes it). Renders a kind-specific stage — video/GIF
+// player, photo, comic reader, or game detail — plus shared metadata, the tag
+// list, and the auto-tag action.
 @customElement("oppai-viewer")
 export class OppaiViewer extends LitElement {
   @property({ attribute: false }) media!: Media;
+  @property({ type: Boolean }) favorite = false;
+
   @state() private full: Media | null = null;
   @state() private tagging = false;
 
-  static styles = css`
-    :host {
-      position: fixed; inset: 0; z-index: 20;
-      background: rgba(0,0,0,.85);
-      display: grid; grid-template-rows: auto 1fr auto;
-    }
-    .bar { display: flex; align-items: center; gap: .5rem; padding: .5rem 1rem; color: #fff; }
-    .bar .title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .stage { display: grid; place-items: center; overflow: auto; padding: 1rem; }
-    .stage img, .stage video { max-width: 100%; max-height: 78vh; border-radius: 8px; }
-    .panel {
-      background: var(--md-sys-color-surface-container);
-      padding: 1rem; display: flex; flex-direction: column; gap: .75rem;
-      max-height: 40vh; overflow: auto;
-    }
-    .meta { font-size: .8rem; opacity: .7; }
-    md-chip-set { flex-wrap: wrap; }
-  `;
+  static styles = [
+    iconStyles,
+    css`
+      :host {
+        display: block;
+      }
+      .wrap {
+        max-width: 1100px;
+        margin: 0 auto;
+      }
+      .stage {
+        border-radius: 20px;
+        overflow: hidden;
+        position: relative;
+      }
+      .stage video,
+      .stage img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        background: #000;
+      }
+      .placeholder {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        gap: 8px;
+        color: #fff;
+      }
+      .mono {
+        font: 600 12px ui-monospace, monospace;
+        color: #fff;
+        letter-spacing: 1px;
+      }
+      .reader {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 24px;
+      }
+      .reader-page {
+        width: 340px;
+        max-width: 60vw;
+        aspect-ratio: 2 / 3;
+        border-radius: 16px;
+        overflow: hidden;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .round-btn {
+        width: 44px;
+        height: 44px;
+        border-radius: 22px;
+        background: #262b24;
+        border: none;
+        color: #e1e4dc;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        flex-shrink: 0;
+      }
+      .game {
+        display: flex;
+        gap: 32px;
+        flex-wrap: wrap;
+      }
+      .game-cover {
+        width: 260px;
+        aspect-ratio: 3 / 4;
+        border-radius: 20px;
+        overflow: hidden;
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .game h2 {
+        font-size: 26px;
+        font-weight: 500;
+        margin: 0 0 8px;
+      }
+      .sub {
+        font-size: 13px;
+        color: #8c9388;
+        margin-bottom: 18px;
+      }
+      .actions {
+        display: flex;
+        gap: 12px;
+        margin-bottom: 20px;
+        flex-wrap: wrap;
+      }
+      .btn-primary {
+        height: 44px;
+        padding: 0 24px;
+        border-radius: 22px;
+        background: #74db94;
+        color: #00391a;
+        border: none;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        text-decoration: none;
+      }
+      .btn-outline {
+        height: 44px;
+        padding: 0 20px;
+        border-radius: 22px;
+        background: none;
+        color: #e1e4dc;
+        border: 1px solid #42483f;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .desc {
+        font-size: 14px;
+        line-height: 1.6;
+        color: #c2c9bd;
+        max-width: 640px;
+      }
+      .meta {
+        margin-top: 24px;
+      }
+      .meta-head {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+      }
+      .meta-title {
+        font-size: 24px;
+        font-weight: 500;
+        margin: 0;
+        flex: 1;
+      }
+      .icon-round {
+        width: 44px;
+        height: 44px;
+        border-radius: 22px;
+        background: #262b24;
+        border: none;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+      }
+      .chips {
+        display: flex;
+        gap: 8px;
+        margin-top: 14px;
+        flex-wrap: wrap;
+      }
+      .chip {
+        font-size: 12px;
+        font-weight: 500;
+        padding: 6px 14px;
+        border-radius: 14px;
+      }
+      .chip-accent {
+        background: #354b38;
+        color: #d0e8d1;
+      }
+      .chip-muted {
+        background: #262b24;
+        color: #c2c9bd;
+      }
+      .meta-note {
+        font-size: 12px;
+        color: #8c9388;
+        margin-top: 12px;
+      }
+    `,
+  ];
 
   connectedCallback() {
     super.connectedCallback();
-    api.getMedia(this.media.id).then((m) => (this.full = m)).catch(() => (this.full = this.media));
+    this.full = this.media;
+    api
+      .getMedia(this.media.id)
+      .then((m) => (this.full = m))
+      .catch(() => (this.full = this.media));
   }
 
-  private close() {
-    this.dispatchEvent(new CustomEvent("close", { bubbles: true, composed: true }));
+  // Re-fetch when the shell swaps in a different item without remounting.
+  updated(changed: Map<string, unknown>) {
+    if (changed.has("media")) {
+      const prev = changed.get("media") as Media | undefined;
+      if (prev && prev.id !== this.media.id) {
+        this.full = this.media;
+        api
+          .getMedia(this.media.id)
+          .then((m) => (this.full = m))
+          .catch(() => (this.full = this.media));
+      }
+    }
+  }
+
+  private toggleFav() {
+    this.dispatchEvent(new CustomEvent("toggle-favorite", { bubbles: true, composed: true }));
   }
 
   private async retag() {
@@ -50,49 +242,158 @@ export class OppaiViewer extends LitElement {
     }
   }
 
-  private stage() {
-    const url = api.streamURL(this.media.id);
-    switch (this.media.kind) {
-      case "video":
-        return html`<video src=${url} controls autoplay></video>`;
-      case "gif":
-      case "image":
-        return html`<img src=${url} alt=${this.media.title} />`;
-      default:
-        return html`<a href=${url} download style="color:#fff">Download ${this.media.title}</a>`;
-    }
+  private favIcon() {
+    return html`<span
+      class="material-symbols-rounded fill-icon"
+      style="font-size:22px; color:${this.favorite ? "#ffb4ab" : "#e1e4dc"};"
+      >${this.favorite ? "favorite" : "favorite_border"}</span
+    >`;
   }
 
   render() {
     const m = this.full ?? this.media;
+    const url = api.streamURL(m.id);
     return html`
-      <div class="bar">
-        <span class="title">${m.title}</span>
-        <md-icon-button @click=${this.retag} ?disabled=${this.tagging} title="Auto-tag">
-          <md-icon>${this.tagging ? "hourglass_empty" : "auto_awesome"}</md-icon>
-        </md-icon-button>
-        <md-icon-button @click=${this.close} title="Close">
-          <md-icon>close</md-icon>
-        </md-icon-button>
-      </div>
-      <div class="stage">${this.stage()}</div>
-      <div class="panel">
-        <div class="meta">
-          ${m.kind} · ${(m.size / 1_000_000).toFixed(1)} MB
-          ${m.width ? html`· ${m.width}×${m.height}` : ""}
-          ${m.source ? html`· <a href=${m.source} target="_blank" style="color:var(--md-sys-color-primary)">source</a>` : ""}
-        </div>
-        <md-chip-set>
-          ${(m.tags ?? []).map(
-            (t) => html`<md-assist-chip label=${t.name} title=${`${t.category}${t.source ? " · " + t.source : ""}`}></md-assist-chip>`,
-          )}
-          ${(m.tags ?? []).length === 0 ? html`<span class="meta">No tags yet</span>` : ""}
-        </md-chip-set>
+      <div class="wrap">
+        ${this.renderStage(m, url)}
+        ${m.kind === "game" ? nothing : this.renderMeta(m)}
       </div>
     `;
+  }
+
+  private renderStage(m: Media, url: string) {
+    switch (m.kind) {
+      case "video":
+        return html`<div class="stage" style="aspect-ratio:16/9; background:${swatchFor(m)};">
+          <video src=${url} controls autoplay playsinline></video>
+        </div>`;
+      case "gif":
+        return html`<div class="stage" style="aspect-ratio:16/9; background:${swatchFor(m)};">
+          <img src=${url} alt=${m.title} />
+        </div>`;
+      case "image":
+        return html`<div
+          class="stage"
+          style="max-height:64vh; background:${swatchFor(m)}; display:flex; align-items:center; justify-content:center;"
+        >
+          <img src=${url} alt=${m.title} style="max-height:64vh;" />
+        </div>`;
+      case "comic":
+        return this.renderComic(m);
+      case "game":
+        return this.renderGame(m, url);
+      default:
+        return nothing;
+    }
+  }
+
+  private renderComic(m: Media) {
+    const pages = m.pageCount ?? "?";
+    return html`
+      <div class="reader">
+        <button class="round-btn" disabled title="Previous page">
+          <span class="material-symbols-rounded" style="font-size:22px;">chevron_left</span>
+        </button>
+        <div class="reader-page" style="background:${swatchFor(m)};">
+          <span class="material-symbols-rounded" style="font-size:40px; color:#fff;">auto_stories</span>
+          <span class="mono">PAGE 1 OF ${pages}</span>
+          <a href=${api.streamURL(m.id)} download style="color:#92f8ac; font-size:12px; margin-top:6px;"
+            >Download to read</a
+          >
+        </div>
+        <button class="round-btn" disabled title="Next page">
+          <span class="material-symbols-rounded" style="font-size:22px;">chevron_right</span>
+        </button>
+      </div>
+      ${this.renderMeta(m)}
+    `;
+  }
+
+  private renderGame(m: Media, url: string) {
+    return html`
+      <div class="game">
+        <div class="game-cover" style="background:${swatchFor(m)};">
+          <span class="material-symbols-rounded" style="font-size:48px; color:#fff;">sports_esports</span>
+        </div>
+        <div style="flex:1; min-width:260px; padding-top:8px;">
+          <h2>${m.title}</h2>
+          <div class="sub">${KIND_META.game.label.replace(/s$/, "")} · ${statFor(m)}</div>
+          <div class="actions">
+            <a class="btn-primary" href=${url} download>
+              <span class="material-symbols-rounded fill-icon" style="font-size:20px;">download</span>
+              Download
+            </a>
+            <button class="btn-outline" @click=${this.toggleFav}>
+              <span
+                class="material-symbols-rounded"
+                style="font-size:20px; color:${this.favorite ? "#ffb4ab" : "#e1e4dc"};"
+                >${this.favorite ? "favorite" : "favorite_border"}</span
+              >
+              Favorite
+            </button>
+          </div>
+          <p class="desc">
+            A locally-installed title from your library. Download to play, or add it to your
+            favorites collection for quick access later.
+          </p>
+          ${this.renderTags(m)}
+        </div>
+      </div>
+    `;
+  }
+
+  private renderMeta(m: Media) {
+    const meta = KIND_META[m.kind];
+    return html`
+      <div class="meta">
+        <div class="meta-head">
+          <h2 class="meta-title">${m.title}</h2>
+          <button class="icon-round" title="Auto-tag" @click=${this.retag} ?disabled=${this.tagging}>
+            <span class="material-symbols-rounded" style="font-size:22px; color:#c2c9bd;"
+              >${this.tagging ? "hourglass_empty" : "auto_awesome"}</span
+            >
+          </button>
+          <button class="icon-round" title="Favorite" @click=${this.toggleFav}>${this.favIcon()}</button>
+        </div>
+        <div class="chips">
+          <span class="chip chip-accent">${statFor(m) || meta.label}</span>
+          <span class="chip chip-muted">${meta.typeLabel}</span>
+        </div>
+        ${this.renderTags(m)}
+        ${m.source
+          ? html`<div class="meta-note">
+              Source: <a href=${m.source} target="_blank" rel="noreferrer" style="color:#92f8ac;">link</a>
+            </div>`
+          : nothing}
+        <p class="desc" style="margin-top:16px;">
+          Part of your personal library. Streamed directly from your OppaiLib server — no
+          re-encoding, no external uploads.
+        </p>
+      </div>
+    `;
+  }
+
+  private renderTags(m: Media) {
+    const tags = m.tags ?? [];
+    if (tags.length === 0) {
+      return html`<div class="meta-note" style="margin-top:14px;">
+        No tags yet — use the ✨ auto-tag button.
+      </div>`;
+    }
+    return html`<div class="chips">
+      ${tags.map(
+        (t) => html`<span
+          class="chip chip-muted"
+          title="${t.category}${t.source ? " · " + t.source : ""}"
+          >${t.name}</span
+        >`,
+      )}
+    </div>`;
   }
 }
 
 declare global {
-  interface HTMLElementTagNameMap { "oppai-viewer": OppaiViewer; }
+  interface HTMLElementTagNameMap {
+    "oppai-viewer": OppaiViewer;
+  }
 }
