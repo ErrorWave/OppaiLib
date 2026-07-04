@@ -54,7 +54,7 @@ Web UI ──────┼──▶ Go API ──▶ crypto (envelope AES-256-
 ## Quick start (docker-compose)
 
 ```bash
-git clone <your-repo> oppailib && cd oppailib
+git clone https://gitlab.com/personalprojects3492627/OppaiLib.git oppailib && cd oppailib
 cp .env.example .env
 # edit .env: set OPPAI_PASSPHRASE and OPPAI_ADMIN_PASSWORD
 docker compose up -d
@@ -65,9 +65,23 @@ Open `http://localhost:8080` and sign in with your admin credentials.
 
 ## Unraid install
 
+The image is built and published automatically to the **GitLab Container
+Registry** on every push to `main` and on version tags (see
+[.gitlab-ci.yml](.gitlab-ci.yml)):
+
+```
+registry.gitlab.com/personalprojects3492627/oppailib:latest
+```
+
+> If the GitLab project is **private**, add the registry credentials in Unraid
+> (*Docker → Registries → Add*) using a
+> [deploy token](https://docs.gitlab.com/user/project/deploy_tokens/) with
+> `read_registry` scope before pulling.
+
 1. **Community Applications template:** the template lives at
    [unraid/oppailib.xml](unraid/oppailib.xml). Add it via *Docker → Add Container
-   → Template* (or host the XML and point CA at it). It pre-fills all paths/ports.
+   → Template* (or host the XML and point CA at it). It pre-fills all paths/ports
+   and already points at the registry image above.
 
 2. **Path mappings** (defaults shown — adjust to your share):
 

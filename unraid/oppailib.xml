@@ -1,19 +1,19 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>OppaiLib</Name>
-  <Repository>ghcr.io/youruser/oppailib:latest</Repository>
-  <Registry>https://ghcr.io/youruser/oppailib</Registry>
+  <Repository>registry.gitlab.com/personalprojects3492627/oppailib:latest</Repository>
+  <Registry>https://gitlab.com/personalprojects3492627/OppaiLib/container_registry</Registry>
   <Network>bridge</Network>
   <MyIP/>
   <Shell>bash</Shell>
   <Privileged>false</Privileged>
-  <Support/>
-  <Project/>
+  <Support>https://gitlab.com/personalprojects3492627/OppaiLib/-/issues</Support>
+  <Project>https://gitlab.com/personalprojects3492627/OppaiLib</Project>
   <Overview>OppaiLib — a private, self-hosted, encrypted media library for adult content (videos, GIFs, images, comics, and game entries) with tagging, URL scraping, and fully local AI auto-tagging. Everything stays on your box: no cloud storage, no cloud AI, no telemetry.</Overview>
   <Category>MediaApp:Other</Category>
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
-  <TemplateURL/>
-  <Icon>https://raw.githubusercontent.com/youruser/oppailib/main/web/public/icon.png</Icon>
+  <TemplateURL>https://gitlab.com/personalprojects3492627/OppaiLib/-/raw/main/unraid/oppailib.xml</TemplateURL>
+  <Icon>https://gitlab.com/personalprojects3492627/OppaiLib/-/raw/main/web/public/icon.png</Icon>
   <ExtraParams/>
   <PostArgs/>
   <CPUset/>
