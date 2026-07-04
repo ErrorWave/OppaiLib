@@ -1,10 +1,12 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/youruser/oppailib/internal/crypto"
 	"github.com/youruser/oppailib/internal/db"
@@ -12,6 +14,13 @@ import (
 )
 
 const maxBulkURLs = 50
+
+// scrapeTimeout bounds a single preview fetch (robots + page, including the
+// polite per-host wait). Because every URL in a bulk request is capped here and
+// they run concurrently, the whole batch can't outlast this — a slow or dead
+// host can't leave the UI stuck on "Fetching…". Large same-host batches at a
+// high OPPAI_SCRAPE_DELAY_MS may hit this on the tail; lower the delay if so.
+const scrapeTimeout = 30 * time.Second
 
 type scrapeReq struct {
 	URL string `json:"url"`
@@ -25,7 +34,9 @@ func (s *Server) handleScrape(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "missing url")
 		return
 	}
-	res, err := s.scraper.Scrape(r.Context(), req.URL)
+	ctx, cancel := context.WithTimeout(r.Context(), scrapeTimeout)
+	defer cancel()
+	res, err := s.scraper.Scrape(ctx, req.URL)
 	if err != nil {
 		s.log.Warn("scrape failed", "url", req.URL, "err", err)
 		writeErr(w, http.StatusBadGateway, err.Error())
@@ -70,7 +81,9 @@ func (s *Server) handleScrapeBulk(w http.ResponseWriter, r *http.Request) {
 		go func(i int, u string) {
 			defer wg.Done()
 			items[i].URL = u
-			res, err := s.scraper.Scrape(r.Context(), u)
+			ctx, cancel := context.WithTimeout(r.Context(), scrapeTimeout)
+			defer cancel()
+			res, err := s.scraper.Scrape(ctx, u)
 			if err != nil {
 				items[i].Error = err.Error()
 				s.log.Warn("bulk scrape failed", "url", u, "err", err)

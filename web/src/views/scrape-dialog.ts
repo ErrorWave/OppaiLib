@@ -13,6 +13,8 @@ export class OppaiScrapeDialog extends LitElement {
   @state() private failures: { url: string; error: string }[] = [];
   @state() private chosen = new Set<string>();
   @state() private busy = false;
+  @state() private phase: "" | "fetching" | "importing" = "";
+  @state() private fetchCount = 0;
   @state() private error = "";
 
   static styles = [
@@ -68,6 +70,15 @@ export class OppaiScrapeDialog extends LitElement {
         animation: oppai-fade-in 0.3s var(--oppai-ease-standard) both;
       }
       .err { color: var(--md-sys-color-error); font-size: .85rem; margin-top: .5rem; }
+      .progress {
+        display: flex;
+        align-items: center;
+        gap: .6rem;
+        margin-top: .9rem;
+        font-size: .85rem;
+        opacity: .85;
+      }
+      .progress md-circular-progress { --md-circular-progress-size: 22px; }
       .tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: .5rem; }
     `,
   ];
@@ -78,6 +89,8 @@ export class OppaiScrapeDialog extends LitElement {
     this.chosen = new Set();
     this.error = "";
     this.urls = "";
+    this.phase = "";
+    this.fetchCount = 0;
     this.dialog.show();
   }
 
@@ -105,6 +118,8 @@ export class OppaiScrapeDialog extends LitElement {
     const urls = this.urlList;
     if (urls.length === 0 || this.busy) return;
     this.busy = true;
+    this.phase = "fetching";
+    this.fetchCount = urls.length;
     this.error = "";
     this.results = [];
     this.failures = [];
@@ -127,6 +142,7 @@ export class OppaiScrapeDialog extends LitElement {
       this.error = (e as Error).message;
     } finally {
       this.busy = false;
+      this.phase = "";
     }
   }
 
@@ -139,6 +155,7 @@ export class OppaiScrapeDialog extends LitElement {
   private async import() {
     if (this.chosen.size === 0 || this.busy) return;
     this.busy = true;
+    this.phase = "importing";
     this.error = "";
     let imported = 0;
     try {
@@ -161,6 +178,7 @@ export class OppaiScrapeDialog extends LitElement {
       this.error = (e as Error).message;
     } finally {
       this.busy = false;
+      this.phase = "";
     }
   }
 
@@ -207,6 +225,12 @@ export class OppaiScrapeDialog extends LitElement {
             Press ${navigator.platform.startsWith("Mac") ? "⌘" : "Ctrl"}+Enter to fetch.
           </p>
           ${this.error ? html`<div class="err">${this.error}</div>` : ""}
+          ${this.phase === "fetching"
+            ? html`<div class="progress">
+                <md-circular-progress indeterminate></md-circular-progress>
+                <span>Fetching ${this.fetchCount} link${this.fetchCount === 1 ? "" : "s"}… some sites can take a few seconds each.</span>
+              </div>`
+            : ""}
           ${this.results.map((r) => this.renderGroup(r))}
           ${this.failures.length
             ? html`<div class="err">

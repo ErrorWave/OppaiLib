@@ -106,7 +106,9 @@ func (e *Engine) Scrape(ctx context.Context, rawURL string) (*models.ScrapeResul
 			return nil, fmt.Errorf("scrape: blocked by robots.txt for %s", u.Path)
 		}
 	}
-	e.throttle(u.Host)
+	if err := e.throttle(ctx, u.Host); err != nil {
+		return nil, err
+	}
 
 	resp, err := e.get(ctx, u)
 	if err != nil {
@@ -155,8 +157,11 @@ func (e *Engine) get(ctx context.Context, u *url.URL) (*http.Response, error) {
 	return e.client.Do(req)
 }
 
-// throttle enforces a per-host minimum delay between requests.
-func (e *Engine) throttle(host string) {
+// throttle enforces a per-host minimum delay between requests. It honors ctx so
+// a cancelled/timed-out request (or a disconnected client) doesn't sit out the
+// full wait — important for bulk fetches, where same-host URLs queue up behind
+// each other and the tail can otherwise sleep for tens of seconds.
+func (e *Engine) throttle(ctx context.Context, host string) error {
 	e.mu.Lock()
 	last, ok := e.lastHost[host]
 	wait := time.Duration(0)
@@ -167,8 +172,16 @@ func (e *Engine) throttle(host string) {
 	}
 	e.lastHost[host] = time.Now().Add(wait)
 	e.mu.Unlock()
-	if wait > 0 {
-		time.Sleep(wait)
+	if wait <= 0 {
+		return nil
+	}
+	t := time.NewTimer(wait)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 

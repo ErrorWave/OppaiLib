@@ -60,14 +60,28 @@ export function setToken(t: string | null) {
   else localStorage.removeItem(TOKEN_KEY);
 }
 
-async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
+async function request<T>(path: string, opts: RequestInit = {}, timeoutMs = 0): Promise<T> {
   const headers = new Headers(opts.headers);
   const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
   if (opts.body && !(opts.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
   }
-  const res = await fetch(path, { ...opts, headers });
+  // A client-side deadline so a slow/unreachable upstream can't leave the UI
+  // stuck forever waiting on the fetch (the server bounds each URL too).
+  const ctl = timeoutMs > 0 ? new AbortController() : null;
+  const timer = ctl ? setTimeout(() => ctl.abort(), timeoutMs) : null;
+  let res: Response;
+  try {
+    res = await fetch(path, { ...opts, headers, signal: ctl?.signal });
+  } catch (e) {
+    if (ctl?.signal.aborted) {
+      throw new Error("Timed out — the site was too slow or unreachable.");
+    }
+    throw e;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
   if (res.status === 401) {
     setToken(null);
     window.dispatchEvent(new CustomEvent("oppai-logout"));
@@ -120,12 +134,19 @@ export const api = {
     request<{ tags: MediaTag[] }>(`/api/media/${id}/autotag`, { method: "POST" }),
 
   scrape: (url: string) =>
-    request<ScrapeResult>("/api/scrape", { method: "POST", body: JSON.stringify({ url }) }),
+    request<ScrapeResult>(
+      "/api/scrape",
+      { method: "POST", body: JSON.stringify({ url }) },
+      45_000,
+    ),
   scrapeBulk: (urls: string[]) =>
-    request<{ items: BulkScrapeItem[] }>("/api/scrape/bulk", {
-      method: "POST",
-      body: JSON.stringify({ urls }),
-    }),
+    request<{ items: BulkScrapeItem[] }>(
+      "/api/scrape/bulk",
+      { method: "POST", body: JSON.stringify({ urls }) },
+      // Server caps each URL at ~30s and fetches them concurrently, so the whole
+      // batch resolves within that; give generous headroom before giving up.
+      75_000,
+    ),
   scrapeImport: (payload: { url?: string; mediaUrls?: string[]; title?: string; tags?: string[] }) =>
     request<{ imported: number[]; count: number }>("/api/scrape/import", {
       method: "POST",

@@ -25,7 +25,9 @@ func (e *Engine) Download(ctx context.Context, rawURL string) (*Media, error) {
 	if err != nil {
 		return nil, err
 	}
-	e.throttle(u.Host)
+	if err := e.throttle(ctx, u.Host); err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
