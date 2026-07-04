@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -94,6 +96,39 @@ func (s *Server) handleScrapeBulk(w http.ResponseWriter, r *http.Request) {
 	}
 	wg.Wait()
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// proxyMaxBytes caps a single proxied asset so a huge/hostile file can't exhaust
+// server memory or bandwidth while previewing.
+const proxyMaxBytes = 64 << 20
+
+// handleScrapeProxy streams a remote asset through the polite scraper client so
+// the import dialog can preview candidate media the browser can't load directly
+// — most image hosts block hotlinking (they reject requests with no/foreign
+// Referer). Routing previews through here means what the user sees is exactly
+// what import will fetch. Auth-gated; http(s) only.
+func (s *Server) handleScrapeProxy(w http.ResponseWriter, r *http.Request) {
+	raw := strings.TrimSpace(r.URL.Query().Get("url"))
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		writeErr(w, http.StatusBadRequest, "bad url")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), scrapeTimeout)
+	defer cancel()
+	dl, err := s.scraper.Download(ctx, u.String())
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	defer dl.Body.Close()
+	ct := dl.ContentType
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	_, _ = io.Copy(w, io.LimitReader(dl.Body, proxyMaxBytes))
 }
 
 func dedupeNonEmpty(in []string) []string {

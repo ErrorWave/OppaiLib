@@ -196,7 +196,7 @@ export class OppaiScrapeDialog extends LitElement {
           ? html`<div class="previews">
               ${r.mediaUrls.map(
                 (u) => html`<div class="pv ${this.chosen.has(u) ? "sel" : ""}" @click=${() => this.toggle(u)}>
-                  <img src=${u} loading="lazy" referrerpolicy="no-referrer" />
+                  <img src=${api.proxyURL(u)} loading="lazy" />
                 </div>`,
               )}
             </div>`

@@ -12,6 +12,7 @@ import {
   primaryTag,
   loadFavorites,
   saveFavorites,
+  isTypingTarget,
 } from "../media-meta.js";
 import "./viewer.js";
 import "./scrape-dialog.js";
@@ -498,10 +499,48 @@ export class OppaiLibrary extends LitElement {
     `,
   ];
 
+  // Ordered ids of the list the viewer was opened from, so arrow keys can page
+  // between neighbours (see onKey / stepItem).
+  private viewerList: number[] = [];
+
   connectedCallback() {
     super.connectedCallback();
     this.refresh();
+    window.addEventListener("keydown", this.onKey);
   }
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    window.removeEventListener("keydown", this.onKey);
+  }
+
+  // In the viewer, Left/Right page between items and Escape closes it. Guarded so
+  // it never fires while typing in the search box or with the upload dialog open.
+  private onKey = (e: KeyboardEvent) => {
+    if (this.selectedId == null || this.uploadOpen) return;
+    if (isTypingTarget(e)) return;
+    switch (e.key) {
+      case "ArrowRight":
+        e.preventDefault();
+        this.stepItem(1);
+        break;
+      case "ArrowLeft":
+        e.preventDefault();
+        this.stepItem(-1);
+        break;
+      case "Escape":
+        this.closeItem();
+        break;
+    }
+  };
+
+  private stepItem = (dir: number) => {
+    if (this.selectedId == null) return;
+    const i = this.viewerList.indexOf(this.selectedId);
+    if (i < 0) return;
+    const j = i + dir;
+    if (j < 0 || j >= this.viewerList.length) return;
+    this.selectedId = this.viewerList[j];
+  };
 
   private async refresh() {
     this.loading = true;
@@ -521,7 +560,9 @@ export class OppaiLibrary extends LitElement {
     this.selectedId = null;
     this.search = "";
   }
-  private openItem(id: number) {
+  private openItem(id: number, list?: Media[]) {
+    if (list && list.length) this.viewerList = list.map((m) => m.id);
+    else if (!this.viewerList.includes(id)) this.viewerList = [id];
     this.selectedId = id;
   }
   private closeItem = () => {
@@ -624,6 +665,7 @@ export class OppaiLibrary extends LitElement {
                 .media=${activeItem}
                 .favorite=${this.favorites.has(activeItem.id)}
                 @toggle-favorite=${() => this.toggleFavorite(activeItem.id)}
+                @navigate=${(e: CustomEvent<{ dir: number }>) => this.stepItem(e.detail.dir)}
                 @changed=${() => this.refresh()}
               ></oppai-viewer>`
             : nothing}
@@ -781,7 +823,7 @@ export class OppaiLibrary extends LitElement {
                 </button>
               </div>
               <div class="row-scroll">
-                ${row.items.map((m) => this.renderTile(m, "200px"))}
+                ${row.items.map((m) => this.renderTile(m, "200px", undefined, row.items))}
               </div>
             </section>
           `,
@@ -857,13 +899,13 @@ export class OppaiLibrary extends LitElement {
               </div>
             </div>`
           : html`<div class="grid">
-              ${gridItems.map((m, i) => this.renderTile(m, "100%", i))}
+              ${gridItems.map((m, i) => this.renderTile(m, "100%", i, gridItems))}
             </div>`}
       </div>
     `;
   }
 
-  private renderTile(m: Media, width: string, index?: number) {
+  private renderTile(m: Media, width: string, index?: number, list?: Media[]) {
     const meta = KIND_META[m.kind];
     const fav = this.favorites.has(m.id);
     const stat = statFor(m);
@@ -874,7 +916,7 @@ export class OppaiLibrary extends LitElement {
     return html`
       <div
         class="tile ${anim}"
-        @click=${() => this.openItem(m.id)}
+        @click=${() => this.openItem(m.id, list)}
         style="flex-shrink:0; width:${width}; ${delay}"
       >
         <div

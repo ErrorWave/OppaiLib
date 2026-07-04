@@ -121,6 +121,9 @@ export const api = {
   // <img>/<video> can't set headers; auth rides on the HttpOnly session cookie
   // set at login (same-origin request).
   streamURL: (id: number) => `/api/media/${id}/stream`,
+  // Route a remote asset through the server so hotlink/referer-guarded hosts
+  // still preview (and so a preview matches what import will actually fetch).
+  proxyURL: (u: string) => `/api/scrape/proxy?url=${encodeURIComponent(u)}`,
   upload: (file: File, title?: string) => {
     const fd = new FormData();
     fd.append("file", file);

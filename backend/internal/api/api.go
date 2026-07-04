@@ -59,6 +59,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/scrape", s.requireAuth(s.handleScrape))
 	mux.HandleFunc("POST /api/scrape/bulk", s.requireAuth(s.handleScrapeBulk))
 	mux.HandleFunc("POST /api/scrape/import", s.requireAuth(s.handleScrapeImport))
+	mux.HandleFunc("GET /api/scrape/proxy", s.requireAuth(s.handleScrapeProxy))
 
 	// Static web UI (SPA) for everything else.
 	mux.Handle("/", oweb.Handler())

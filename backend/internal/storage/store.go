@@ -110,6 +110,32 @@ func (s *Store) Open(rel string) (io.ReadCloser, error) {
 	return pr, nil
 }
 
+// seekCloser adapts a crypto.BlobReader plus its backing file into an
+// io.ReadSeekCloser (the BlobReader supplies Read/Seek; the file supplies Close).
+type seekCloser struct {
+	*crypto.BlobReader
+	f *os.File
+}
+
+func (s seekCloser) Close() error { return s.f.Close() }
+
+// OpenSeeker returns a seekable, decrypting reader over the blob so callers can
+// serve HTTP Range requests (e.g. video scrubbing) without buffering the whole
+// file. size is the plaintext length recorded at ingest (PutResult.Size / the
+// media row's Size). Callers must Close it.
+func (s *Store) OpenSeeker(rel string, size int64) (io.ReadSeekCloser, error) {
+	f, err := os.Open(filepath.Join(s.root, rel))
+	if err != nil {
+		return nil, err
+	}
+	br, err := crypto.NewBlobReader(f, s.kek, size)
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	return seekCloser{br, f}, nil
+}
+
 // Delete removes a blob.
 func (s *Store) Delete(rel string) error {
 	err := os.Remove(filepath.Join(s.root, rel))

@@ -2,7 +2,7 @@ import { LitElement, html, css, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { api, type Media } from "../api.js";
 import { iconStyles, motionStyles } from "../theme.js";
-import { KIND_META, swatchFor, statFor } from "../media-meta.js";
+import { KIND_META, swatchFor, statFor, isTypingTarget } from "../media-meta.js";
 
 // Inline single-item viewer, rendered inside the library content column (the
 // app bar's back button closes it). Renders a kind-specific stage — video/GIF
@@ -233,6 +233,13 @@ export class OppaiViewer extends LitElement {
       .getMedia(this.media.id)
       .then((m) => (this.full = m))
       .catch(() => (this.full = this.media));
+    window.addEventListener("keydown", this.onKey);
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    window.removeEventListener("keydown", this.onKey);
+    this.clearMediaSession();
   }
 
   // Re-fetch when the shell swaps in a different item without remounting.
@@ -247,6 +254,108 @@ export class OppaiViewer extends LitElement {
           .catch(() => (this.full = this.media));
       }
     }
+    // (Re)bind OS/hardware media controls to whatever video is now on stage.
+    this.setupMediaSession();
+  }
+
+  private videoEl(): HTMLVideoElement | null {
+    return this.renderRoot?.querySelector("video") ?? null;
+  }
+
+  // Keyboard shortcuts for the video stage. Arrow keys are intentionally left to
+  // the library shell (they page between items — see library.ts); seeking here
+  // uses j/l plus the on-screen scrubber, which now works thanks to server-side
+  // HTTP Range support.
+  private onKey = (e: KeyboardEvent) => {
+    const m = this.full ?? this.media;
+    if (m.kind !== "video") return;
+    if (isTypingTarget(e)) return;
+    const v = this.videoEl();
+    if (!v) return;
+    switch (e.key) {
+      case " ":
+      case "k":
+        e.preventDefault();
+        v.paused ? void v.play() : v.pause();
+        break;
+      case "j":
+        v.currentTime = Math.max(0, v.currentTime - 10);
+        break;
+      case "l":
+        v.currentTime = Math.min(v.duration || Infinity, v.currentTime + 10);
+        break;
+      case "m":
+        v.muted = !v.muted;
+        break;
+      case "f":
+        e.preventDefault();
+        if (document.fullscreenElement) void document.exitFullscreen();
+        else void v.requestFullscreen?.();
+        break;
+    }
+  };
+
+  private emitNavigate(dir: number) {
+    this.dispatchEvent(
+      new CustomEvent("navigate", { detail: { dir }, bubbles: true, composed: true }),
+    );
+  }
+
+  // Wire the current video to the OS media-session (lock screen / hardware media
+  // keys / notification transport). Prev/next-track page through the library.
+  private setupMediaSession() {
+    const m = this.full ?? this.media;
+    if (m.kind !== "video" || !("mediaSession" in navigator)) return;
+    const v = this.videoEl();
+    if (!v) return;
+    const ms = navigator.mediaSession;
+    try {
+      ms.metadata = new MediaMetadata({ title: m.title, artist: "OppaiLib" });
+    } catch {
+      /* MediaMetadata unavailable */
+    }
+    const set = (a: MediaSessionAction, h: MediaSessionActionHandler | null) => {
+      try {
+        ms.setActionHandler(a, h);
+      } catch {
+        /* unsupported action on this platform */
+      }
+    };
+    set("play", () => void v.play());
+    set("pause", () => v.pause());
+    set("seekbackward", (d) => {
+      v.currentTime = Math.max(0, v.currentTime - (d.seekOffset ?? 10));
+    });
+    set("seekforward", (d) => {
+      v.currentTime = Math.min(v.duration || Infinity, v.currentTime + (d.seekOffset ?? 10));
+    });
+    set("seekto", (d) => {
+      if (d.seekTime != null) v.currentTime = d.seekTime;
+    });
+    set("previoustrack", () => this.emitNavigate(-1));
+    set("nexttrack", () => this.emitNavigate(1));
+  }
+
+  private clearMediaSession() {
+    if (!("mediaSession" in navigator)) return;
+    const ms = navigator.mediaSession;
+    const actions: MediaSessionAction[] = [
+      "play",
+      "pause",
+      "seekbackward",
+      "seekforward",
+      "seekto",
+      "previoustrack",
+      "nexttrack",
+    ];
+    for (const a of actions) {
+      try {
+        ms.setActionHandler(a, null);
+      } catch {
+        /* ignore */
+      }
+    }
+    ms.metadata = null;
   }
 
   private toggleFav() {

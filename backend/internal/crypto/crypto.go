@@ -261,3 +261,140 @@ func readHeader(src io.Reader, kek []byte) ([]byte, cipher.AEAD, error) {
 	}
 	return dek, gcm, nil
 }
+
+// BlobReader provides seekable, on-demand decryption of a blob produced by
+// EncryptStream, implementing io.ReadSeeker over the plaintext. This is what
+// lets the HTTP layer answer Range requests (video/audio scrubbing) without
+// decrypting the whole file: because every non-final chunk is a fixed size on
+// disk, the file offset of the chunk covering any plaintext position is computed
+// directly, and only that chunk is opened.
+//
+// size is the plaintext length recorded at ingest; the caller supplies it so
+// Seek(0, SeekEnd) and range math don't require walking the ciphertext.
+type BlobReader struct {
+	ra        io.ReaderAt
+	gcm       cipher.AEAD
+	dataStart int64 // file offset where the first chunk begins
+	diskChunk int64 // on-disk size of a full (non-final) chunk
+	size      int64 // total plaintext length
+	pos       int64 // current plaintext offset
+
+	cachedIdx  int64  // index of the chunk currently in cache, -1 if none
+	cachedData []byte // decrypted plaintext of the cached chunk
+}
+
+// NewBlobReader parses the blob header (deriving the per-file key) and returns a
+// reader positioned at plaintext offset 0.
+func NewBlobReader(ra io.ReaderAt, kek []byte, size int64) (*BlobReader, error) {
+	// Fixed header prefix: magic || version || wrappedLen(uint16).
+	hdr := make([]byte, len(magic)+1+2)
+	if err := readAtFull(ra, hdr, 0); err != nil {
+		return nil, err
+	}
+	if string(hdr[:len(magic)]) != magic {
+		return nil, ErrBadMagic
+	}
+	if hdr[len(magic)] != version {
+		return nil, fmt.Errorf("crypto: unsupported blob version %d", hdr[len(magic)])
+	}
+	wrappedLen := int(binary.BigEndian.Uint16(hdr[len(magic)+1:]))
+	wrapped := make([]byte, wrappedLen)
+	if err := readAtFull(ra, wrapped, int64(len(hdr))); err != nil {
+		return nil, err
+	}
+	dek, err := UnwrapKey(kek, wrapped)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := newGCM(dek)
+	if err != nil {
+		return nil, err
+	}
+	return &BlobReader{
+		ra:        ra,
+		gcm:       gcm,
+		dataStart: int64(len(hdr) + wrappedLen),
+		diskChunk: int64(nonceSize + 4 + ChunkSize + gcm.Overhead()),
+		size:      size,
+		cachedIdx: -1,
+	}, nil
+}
+
+// loadChunk decrypts chunk idx into the cache (idempotent for repeat reads).
+func (b *BlobReader) loadChunk(idx int64) error {
+	if b.cachedIdx == idx {
+		return nil
+	}
+	off := b.dataStart + idx*b.diskChunk
+	head := make([]byte, nonceSize+4)
+	if err := readAtFull(b.ra, head, off); err != nil {
+		return err
+	}
+	ct := make([]byte, binary.BigEndian.Uint32(head[nonceSize:]))
+	if err := readAtFull(b.ra, ct, off+int64(len(head))); err != nil {
+		return err
+	}
+	nonce := head[:nonceSize]
+	// A non-final chunk authenticates under the non-final AAD, the last chunk
+	// under the final one (mirrors DecryptStream). Try non-final first.
+	plain, err := b.gcm.Open(nil, nonce, ct, chunkAAD(uint64(idx), false))
+	if err != nil {
+		plain, err = b.gcm.Open(nil, nonce, ct, chunkAAD(uint64(idx), true))
+		if err != nil {
+			return ErrAuthFailed
+		}
+	}
+	b.cachedIdx = idx
+	b.cachedData = plain
+	return nil
+}
+
+func (b *BlobReader) Read(p []byte) (int, error) {
+	if b.pos >= b.size {
+		return 0, io.EOF
+	}
+	idx := b.pos / ChunkSize
+	if err := b.loadChunk(idx); err != nil {
+		return 0, err
+	}
+	within := int(b.pos - idx*ChunkSize)
+	if within >= len(b.cachedData) {
+		return 0, io.EOF
+	}
+	n := copy(p, b.cachedData[within:])
+	b.pos += int64(n)
+	return n, nil
+}
+
+func (b *BlobReader) Seek(offset int64, whence int) (int64, error) {
+	var abs int64
+	switch whence {
+	case io.SeekStart:
+		abs = offset
+	case io.SeekCurrent:
+		abs = b.pos + offset
+	case io.SeekEnd:
+		abs = b.size + offset
+	default:
+		return 0, errors.New("crypto: invalid whence")
+	}
+	if abs < 0 {
+		return 0, errors.New("crypto: negative seek position")
+	}
+	b.pos = abs
+	return abs, nil
+}
+
+// readAtFull reads exactly len(p) bytes at off. Unlike a bare ReadAt it treats a
+// completely-filled buffer as success even when the source reports io.EOF at the
+// boundary (which ReaderAt is permitted to do on an exact end-of-file read).
+func readAtFull(ra io.ReaderAt, p []byte, off int64) error {
+	n, err := ra.ReadAt(p, off)
+	if n == len(p) {
+		return nil
+	}
+	if err == nil {
+		err = io.ErrUnexpectedEOF
+	}
+	return err
+}

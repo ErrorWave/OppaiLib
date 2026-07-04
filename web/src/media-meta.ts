@@ -7,6 +7,19 @@ import type { Media } from "./api.js";
 
 export type Kind = Media["kind"];
 
+// True when a keyboard event originates from a text-entry element. Uses
+// composedPath() so it still works across shadow boundaries, where
+// document.activeElement only reports the outer shadow host. Lets global
+// keyboard shortcuts (viewer video keys, library arrow paging) yield while the
+// user is typing in a field.
+export function isTypingTarget(e: Event): boolean {
+  return e.composedPath().some(
+    (n) =>
+      n instanceof HTMLElement &&
+      (n.tagName === "INPUT" || n.tagName === "TEXTAREA" || n.isContentEditable),
+  );
+}
+
 export interface KindMeta {
   /** Nav-section / plural label, e.g. "Photos". */
   label: string;

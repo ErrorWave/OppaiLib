@@ -3,12 +3,12 @@ package api
 import (
 	"database/sql"
 	"errors"
-	"io"
 	"mime"
 	"net/http"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/youruser/oppailib/internal/crypto"
 	"github.com/youruser/oppailib/internal/db"
@@ -147,22 +147,41 @@ func (s *Server) handleStreamMedia(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	rc, err := s.store.Open(row.BlobPath)
+	name := s.decrypt(row.TitleEnc, "title")
+	ct := mime.TypeByExtension(filepath.Ext(name))
+	if ct == "" {
+		// Scraped items are often titled without a file extension; fall back to a
+		// type implied by the stored kind so the browser still plays it inline.
+		ct = contentTypeForKind(row.Kind)
+	}
+	w.Header().Set("Content-Type", ct)
+
+	rs, err := s.store.OpenSeeker(row.BlobPath, row.Size)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "blob error")
 		return
 	}
-	defer rc.Close()
+	defer rs.Close()
+	// ServeContent advertises Accept-Ranges and answers Range requests with 206 +
+	// Content-Range — this is what lets the browser seek/scrub video and audio
+	// (and resume interrupted downloads). A zero modtime skips Last-Modified.
+	http.ServeContent(w, r, name, time.Time{}, rs)
+}
 
-	if ct := mime.TypeByExtension(filepath.Ext(s.decrypt(row.TitleEnc, "title"))); ct != "" {
-		w.Header().Set("Content-Type", ct)
-	} else {
-		w.Header().Set("Content-Type", "application/octet-stream")
+// contentTypeForKind gives a best-effort MIME type from a media kind, used when
+// the stored title carries no usable file extension. These are the most common
+// container per kind; exact-typed items still win via the extension above.
+func contentTypeForKind(kind string) string {
+	switch models.MediaKind(kind) {
+	case models.KindVideo:
+		return "video/mp4"
+	case models.KindGIF:
+		return "image/gif"
+	case models.KindImage:
+		return "image/jpeg"
+	default:
+		return "application/octet-stream"
 	}
-	// NOTE: Range requests are handled in module 3 polish via a seekable
-	// decrypting ReaderAt; for now we stream the whole blob.
-	w.WriteHeader(http.StatusOK)
-	_, _ = io.Copy(w, rc)
 }
 
 // toModel decrypts sensitive columns and builds the API view.
