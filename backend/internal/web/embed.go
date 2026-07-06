@@ -19,26 +19,39 @@ func Handler() http.Handler {
 		panic(err)
 	}
 	fileServer := http.FileServer(http.FS(sub))
+	isAsset := func(p string) bool { return strings.HasPrefix(p, "/assets/") }
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Embedded files report a zero modtime, so http.FileServer emits no
-		// Last-Modified/ETag/Cache-Control at all — which lets browsers *heuristically*
-		// cache index.html and pin themselves to a stale, content-hashed JS bundle long
-		// after the server was updated (the "import fetches forever" report: an old
-		// bundle without the client-side fetch timeout). Set caching explicitly:
-		//   - /assets/* are content-hash-named by Vite, so they're safe to cache forever.
-		//   - everything else (index.html and the SPA fallback) must revalidate so a new
-		//     deploy's bundle reference is picked up immediately.
-		if strings.HasPrefix(r.URL.Path, "/assets/") {
-			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-		} else {
-			w.Header().Set("Cache-Control", "no-cache")
+		_, statErr := fs.Stat(sub, trimLeadingSlash(r.URL.Path))
+
+		// A missing /assets/* file must 404 — never fall back to index.html.
+		// Assets are served "immutable" (below), so answering a missing bundle
+		// with the HTML shell makes the browser pin that text/html under the JS
+		// URL for a year; the app then white-screens on "Expected a JavaScript
+		// module script but the server responded with a MIME type of text/html"
+		// until the cache is manually cleared. Crucially, the cache header is set
+		// only AFTER this check, so a miss is never cached as immutable.
+		if statErr != nil && isAsset(r.URL.Path) {
+			http.NotFound(w, r)
+			return
 		}
-		// If the requested file exists, serve it; else fall back to index.html.
-		if _, err := fs.Stat(sub, trimLeadingSlash(r.URL.Path)); err != nil {
+
+		// SPA fallback: unknown non-asset routes serve index.html so client-side
+		// routing works. index.html must revalidate (no-cache) so a new deploy's
+		// bundle reference is picked up immediately.
+		if statErr != nil {
+			w.Header().Set("Cache-Control", "no-cache")
 			r2 := r.Clone(r.Context())
 			r2.URL.Path = "/"
 			fileServer.ServeHTTP(w, r2)
 			return
+		}
+
+		// A real file exists here. Content-hash-named /assets/* are safe to cache
+		// forever; everything else (index.html, icons, manifest) must revalidate.
+		if isAsset(r.URL.Path) {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
 		}
 		fileServer.ServeHTTP(w, r)
 	})
