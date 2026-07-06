@@ -128,8 +128,17 @@ export class OppaiScrapeDialog extends LitElement {
       const chosen = new Set<string>();
       for (const it of items) {
         if (it.result) {
-          this.results = [...this.results, it.result];
-          it.result.mediaUrls.forEach((u) => chosen.add(u));
+          // Go serializes empty slices as null; normalize to arrays so render()
+          // and import() can rely on .length/.map without crashing (a crash in
+          // render leaves the spinner frozen on screen — "fetch never returns").
+          const res: ScrapeResult = {
+            ...it.result,
+            tags: it.result.tags ?? [],
+            performers: it.result.performers ?? [],
+            mediaUrls: it.result.mediaUrls ?? [],
+          };
+          this.results = [...this.results, res];
+          res.mediaUrls.forEach((u) => chosen.add(u));
         } else {
           this.failures = [...this.failures, { url: it.url, error: it.error || "failed" }];
         }

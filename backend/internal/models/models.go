@@ -63,3 +63,18 @@ type ScrapeResult struct {
 	SourceURL   string   `json:"sourceUrl"`
 	Kind        string   `json:"kind"`
 }
+
+// EnsureSlices replaces nil slices with empty ones so JSON encodes [] rather
+// than null. The web/Android clients type these fields as arrays and call
+// .length/.map on them; a null there crashes the client's render.
+func (r *ScrapeResult) EnsureSlices() {
+	if r.Tags == nil {
+		r.Tags = []string{}
+	}
+	if r.Performers == nil {
+		r.Performers = []string{}
+	}
+	if r.MediaURLs == nil {
+		r.MediaURLs = []string{}
+	}
+}

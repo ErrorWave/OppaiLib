@@ -44,6 +44,7 @@ func (s *Server) handleScrape(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	res.EnsureSlices()
 	writeJSON(w, http.StatusOK, res)
 }
 
@@ -91,6 +92,7 @@ func (s *Server) handleScrapeBulk(w http.ResponseWriter, r *http.Request) {
 				s.log.Warn("bulk scrape failed", "url", u, "err", err)
 				return
 			}
+			res.EnsureSlices()
 			items[i].Result = res
 		}(i, u)
 	}
