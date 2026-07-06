@@ -68,13 +68,30 @@ async function request<T>(path: string, opts: RequestInit = {}, timeoutMs = 0): 
   if (opts.body && !(opts.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
   }
-  // A client-side deadline so a slow/unreachable upstream can't leave the UI
-  // stuck forever waiting on the fetch (the server bounds each URL too).
+  // A client-side deadline covering the WHOLE exchange — response headers *and*
+  // body. The timer is cleared only after the response is fully read, so a
+  // server that sends 200 headers then stalls the body (or trickles it) can't
+  // leave the UI hung forever. Previously the timer was cleared as soon as the
+  // headers arrived, leaving res.json() unbounded.
   const ctl = timeoutMs > 0 ? new AbortController() : null;
   const timer = ctl ? setTimeout(() => ctl.abort(), timeoutMs) : null;
-  let res: Response;
   try {
-    res = await fetch(path, { ...opts, headers, signal: ctl?.signal });
+    const res = await fetch(path, { ...opts, headers, signal: ctl?.signal });
+    if (res.status === 401) {
+      setToken(null);
+      window.dispatchEvent(new CustomEvent("oppai-logout"));
+      throw new Error("unauthorized");
+    }
+    if (!res.ok) {
+      let msg = res.statusText;
+      try {
+        const body = await res.json();
+        if (body?.error) msg = body.error;
+      } catch { /* ignore */ }
+      throw new Error(msg);
+    }
+    if (res.status === 204) return undefined as T;
+    return (await res.json()) as T;
   } catch (e) {
     if (ctl?.signal.aborted) {
       throw new Error("Timed out — the site was too slow or unreachable.");
@@ -83,21 +100,6 @@ async function request<T>(path: string, opts: RequestInit = {}, timeoutMs = 0): 
   } finally {
     if (timer) clearTimeout(timer);
   }
-  if (res.status === 401) {
-    setToken(null);
-    window.dispatchEvent(new CustomEvent("oppai-logout"));
-    throw new Error("unauthorized");
-  }
-  if (!res.ok) {
-    let msg = res.statusText;
-    try {
-      const body = await res.json();
-      if (body?.error) msg = body.error;
-    } catch { /* ignore */ }
-    throw new Error(msg);
-  }
-  if (res.status === 204) return undefined as T;
-  return res.json() as Promise<T>;
 }
 
 export const api = {
