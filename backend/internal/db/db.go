@@ -37,6 +37,12 @@ func Open(path string) (*DB, error) {
 	if err := ensureColumn(sqldb, "media", "thumb_path", "TEXT"); err != nil {
 		return nil, err
 	}
+	if err := ensureColumn(sqldb, "media", "download_enc", "BLOB"); err != nil {
+		return nil, err
+	}
+	if err := ensureColumn(sqldb, "media", "gallery_enc", "BLOB"); err != nil {
+		return nil, err
+	}
 	return &DB{sql: sqldb}, nil
 }
 

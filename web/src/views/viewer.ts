@@ -2,7 +2,7 @@ import { LitElement, html, css, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { api, type Media } from "../api.js";
 import { iconStyles, motionStyles } from "../theme.js";
-import { KIND_META, swatchFor, statFor, isTypingTarget } from "../media-meta.js";
+import { KIND_META, KIND_ORDER, swatchFor, statFor, isTypingTarget } from "../media-meta.js";
 
 // Inline single-item viewer, rendered inside the library content column (the
 // app bar's back button closes it). Renders a kind-specific stage — video/GIF
@@ -15,6 +15,13 @@ export class OppaiViewer extends LitElement {
 
   @state() private full: Media | null = null;
   @state() private tagging = false;
+  @state() private editing = false;
+  @state() private saving = false;
+  @state() private editTitle = "";
+  @state() private editNotes = "";
+  @state() private editKind: Media["kind"] = "image";
+  @state() private editTags: string[] = [];
+  @state() private newTag = "";
 
   static styles = [
     iconStyles,
@@ -223,6 +230,94 @@ export class OppaiViewer extends LitElement {
         color: var(--oppai-text-muted);
         margin-top: 12px;
       }
+
+      /* Edit form */
+      .edit {
+        margin-top: 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        max-width: 560px;
+      }
+      .edit label {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--oppai-text-dim);
+        display: block;
+        margin-bottom: 6px;
+      }
+      .edit input,
+      .edit textarea,
+      .edit select {
+        width: 100%;
+        box-sizing: border-box;
+        background: var(--oppai-surface-2);
+        border: 1px solid var(--oppai-border-strong);
+        border-radius: 12px;
+        color: var(--oppai-text);
+        font: inherit;
+        font-size: 14px;
+        padding: 10px 12px;
+        outline: none;
+      }
+      .edit input:focus,
+      .edit textarea:focus,
+      .edit select:focus {
+        border-color: var(--oppai-primary);
+      }
+      .edit textarea {
+        resize: vertical;
+        min-height: 72px;
+      }
+      .tag-edit {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      .tag-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        background: var(--oppai-surface-2);
+        color: var(--oppai-text-dim);
+        border-radius: 14px;
+        padding: 6px 8px 6px 12px;
+        font-size: 12px;
+        font-weight: 500;
+      }
+      .tag-pill button {
+        background: none;
+        border: none;
+        color: var(--oppai-text-muted);
+        cursor: pointer;
+        display: flex;
+        padding: 0;
+      }
+      .tag-add {
+        flex: 1;
+        min-width: 120px;
+      }
+      .edit-actions {
+        display: flex;
+        gap: 10px;
+        margin-top: 4px;
+      }
+      /* Game gallery */
+      .shots {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+        gap: 10px;
+        margin-top: 18px;
+        max-width: 640px;
+      }
+      .shots img {
+        width: 100%;
+        aspect-ratio: 16 / 9;
+        object-fit: cover;
+        border-radius: 10px;
+        background: var(--oppai-surface-2);
+      }
     `,
   ];
 
@@ -247,6 +342,7 @@ export class OppaiViewer extends LitElement {
     if (changed.has("media")) {
       const prev = changed.get("media") as Media | undefined;
       if (prev && prev.id !== this.media.id) {
+        this.editing = false;
         this.full = this.media;
         api
           .getMedia(this.media.id)
@@ -375,6 +471,128 @@ export class OppaiViewer extends LitElement {
     }
   }
 
+  // --- Edit / delete ------------------------------------------------------
+  private startEdit() {
+    const m = this.full ?? this.media;
+    this.editTitle = m.title;
+    this.editNotes = m.notes ?? "";
+    this.editKind = m.kind;
+    this.editTags = (m.tags ?? []).map((t) => t.name);
+    this.newTag = "";
+    this.editing = true;
+  }
+  private cancelEdit = () => {
+    this.editing = false;
+  };
+  private removeEditTag(name: string) {
+    this.editTags = this.editTags.filter((t) => t !== name);
+  }
+  private commitNewTag() {
+    const t = this.newTag.trim();
+    if (t && !this.editTags.includes(t)) this.editTags = [...this.editTags, t];
+    this.newTag = "";
+  }
+  private onTagKeydown(e: KeyboardEvent) {
+    if (e.key === "Enter" || e.key === ",") {
+      e.preventDefault();
+      this.commitNewTag();
+    }
+  }
+  private async saveEdit() {
+    const m = this.full ?? this.media;
+    this.commitNewTag();
+    const orig = (m.tags ?? []).map((t) => t.name);
+    const addTags = this.editTags.filter((t) => !orig.includes(t));
+    const removeTags = orig.filter((t) => !this.editTags.includes(t));
+    this.saving = true;
+    try {
+      const updated = await api.updateMedia(m.id, {
+        title: this.editTitle,
+        notes: this.editNotes,
+        kind: this.editKind,
+        addTags,
+        removeTags,
+      });
+      this.full = updated;
+      this.editing = false;
+      this.dispatchEvent(new CustomEvent("changed", { bubbles: true, composed: true }));
+    } catch (e) {
+      console.error("save edit", e);
+    } finally {
+      this.saving = false;
+    }
+  }
+  private async doDelete() {
+    const m = this.full ?? this.media;
+    if (!confirm(`Delete "${m.title}"? This cannot be undone.`)) return;
+    try {
+      await api.deleteMedia(m.id);
+      this.dispatchEvent(new CustomEvent("deleted", { detail: { id: m.id }, bubbles: true, composed: true }));
+    } catch (e) {
+      console.error("delete", e);
+    }
+  }
+
+  private renderEdit() {
+    return html`
+      <div class="edit">
+        <div>
+          <label>Title</label>
+          <input
+            .value=${this.editTitle}
+            @input=${(e: Event) => (this.editTitle = (e.target as HTMLInputElement).value)}
+          />
+        </div>
+        <div>
+          <label>Type</label>
+          <select
+            .value=${this.editKind}
+            @change=${(e: Event) => (this.editKind = (e.target as HTMLSelectElement).value as Media["kind"])}
+          >
+            ${KIND_ORDER.map(
+              (k) => html`<option value=${k} ?selected=${k === this.editKind}>${KIND_META[k].label}</option>`,
+            )}
+          </select>
+        </div>
+        <div>
+          <label>Notes</label>
+          <textarea
+            .value=${this.editNotes}
+            @input=${(e: Event) => (this.editNotes = (e.target as HTMLTextAreaElement).value)}
+          ></textarea>
+        </div>
+        <div>
+          <label>Tags</label>
+          <div class="tag-edit">
+            ${this.editTags.map(
+              (t) => html`<span class="tag-pill"
+                >${t}
+                <button title="Remove" @click=${() => this.removeEditTag(t)}>
+                  <span class="material-symbols-rounded" style="font-size:16px;">close</span>
+                </button></span
+              >`,
+            )}
+            <input
+              class="tag-add"
+              placeholder="Add tag…"
+              .value=${this.newTag}
+              @input=${(e: Event) => (this.newTag = (e.target as HTMLInputElement).value)}
+              @keydown=${this.onTagKeydown}
+              @blur=${() => this.commitNewTag()}
+            />
+          </div>
+        </div>
+        <div class="edit-actions">
+          <button class="btn-primary" @click=${this.saveEdit} ?disabled=${this.saving}>
+            <span class="material-symbols-rounded" style="font-size:20px;">save</span>
+            ${this.saving ? "Saving…" : "Save"}
+          </button>
+          <button class="btn-outline" @click=${this.cancelEdit} ?disabled=${this.saving}>Cancel</button>
+        </div>
+      </div>
+    `;
+  }
+
   private favIcon() {
     return html`<span
       class="material-symbols-rounded fill-icon"
@@ -450,35 +668,93 @@ export class OppaiViewer extends LitElement {
   }
 
   private renderGame(m: Media, url: string) {
+    const host = m.download ? this.hostOf(m.download) : "";
     return html`
       <div class="game">
         <div class="game-cover" style="background:${swatchFor(m)};">
-          <span class="material-symbols-rounded" style="font-size:48px; color:#fff;">sports_esports</span>
+          ${m.hasThumb
+            ? html`<img
+                src=${api.thumbURL(m.id)}
+                alt=${m.title}
+                style="width:100%; height:100%; object-fit:cover;"
+              />`
+            : html`<span class="material-symbols-rounded" style="font-size:48px; color:#fff;">sports_esports</span>`}
         </div>
         <div style="flex:1; min-width:260px; padding-top:8px;">
-          <h2>${m.title}</h2>
-          <div class="sub">${KIND_META.game.label.replace(/s$/, "")} · ${statFor(m)}</div>
-          <div class="actions">
-            <a class="btn-primary" href=${url} download>
-              <span class="material-symbols-rounded fill-icon" style="font-size:20px;">download</span>
-              Download
-            </a>
-            <button class="btn-outline" @click=${this.toggleFav}>
-              <span
-                class="material-symbols-rounded"
-                style="font-size:20px; color:${this.favorite ? "var(--oppai-fav)" : "var(--oppai-text)"};"
-                >${this.favorite ? "favorite" : "favorite_border"}</span
-              >
-              Favorite
-            </button>
+          <div class="meta-head">
+            <h2 class="meta-title">${m.title}</h2>
+            ${this.renderActions(false)}
           </div>
-          <p class="desc">
-            A locally-installed title from your library. Download to play, or add it to your
-            favorites collection for quick access later.
-          </p>
-          ${this.renderTags(m)}
+          ${this.editing
+            ? this.renderEdit()
+            : html`
+                <div class="sub">${KIND_META.game.label.replace(/s$/, "")}</div>
+                <div class="actions">
+                  ${m.download
+                    ? html`<a class="btn-primary" href=${m.download} target="_blank" rel="noreferrer">
+                        <span class="material-symbols-rounded fill-icon" style="font-size:20px;">open_in_new</span>
+                        ${host ? `Get it on ${host}` : "Get it"}
+                      </a>`
+                    : html`<a class="btn-primary" href=${url} download>
+                        <span class="material-symbols-rounded fill-icon" style="font-size:20px;">download</span>
+                        Download
+                      </a>`}
+                  <button class="btn-outline" @click=${this.toggleFav}>
+                    <span
+                      class="material-symbols-rounded"
+                      style="font-size:20px; color:${this.favorite ? "var(--oppai-fav)" : "var(--oppai-text)"};"
+                      >${this.favorite ? "favorite" : "favorite_border"}</span
+                    >
+                    Favorite
+                  </button>
+                </div>
+                ${m.notes
+                  ? html`<p class="desc">${m.notes}</p>`
+                  : html`<p class="desc">A title from your library.</p>`}
+                ${this.renderTags(m)}
+                ${m.gallery && m.gallery.length
+                  ? html`<div class="shots">
+                      ${m.gallery.map((u) => html`<img loading="lazy" src=${api.proxyURL(u)} alt="screenshot" />`)}
+                    </div>`
+                  : nothing}
+                ${m.source
+                  ? html`<div class="meta-note">
+                      Source:
+                      <a href=${m.source} target="_blank" rel="noreferrer" style="color:var(--oppai-primary-bright);">link</a>
+                    </div>`
+                  : nothing}
+              `}
         </div>
       </div>
+    `;
+  }
+
+  private hostOf(u: string): string {
+    try {
+      return new URL(u).hostname.replace(/^www\./, "");
+    } catch {
+      return "";
+    }
+  }
+
+  // Shared icon-button cluster (auto-tag, edit, delete, favorite) used by the
+  // generic meta panel and the game detail view.
+  private renderActions(showAutotag = true) {
+    return html`
+      ${showAutotag
+        ? html`<button class="icon-round" title="Auto-tag" @click=${this.retag} ?disabled=${this.tagging}>
+            <span class="material-symbols-rounded" style="font-size:22px; color:var(--oppai-text-dim);"
+              >${this.tagging ? "hourglass_empty" : "auto_awesome"}</span
+            >
+          </button>`
+        : nothing}
+      <button class="icon-round" title="Edit" @click=${() => this.startEdit()}>
+        <span class="material-symbols-rounded" style="font-size:22px; color:var(--oppai-text-dim);">edit</span>
+      </button>
+      <button class="icon-round" title="Delete" @click=${this.doDelete}>
+        <span class="material-symbols-rounded" style="font-size:22px; color:var(--oppai-error, #f2b8b5);">delete</span>
+      </button>
+      <button class="icon-round" title="Favorite" @click=${this.toggleFav}>${this.favIcon()}</button>
     `;
   }
 
@@ -488,27 +764,26 @@ export class OppaiViewer extends LitElement {
       <div class="meta">
         <div class="meta-head">
           <h2 class="meta-title">${m.title}</h2>
-          <button class="icon-round" title="Auto-tag" @click=${this.retag} ?disabled=${this.tagging}>
-            <span class="material-symbols-rounded" style="font-size:22px; color:var(--oppai-text-dim);"
-              >${this.tagging ? "hourglass_empty" : "auto_awesome"}</span
-            >
-          </button>
-          <button class="icon-round" title="Favorite" @click=${this.toggleFav}>${this.favIcon()}</button>
+          ${this.renderActions()}
         </div>
-        <div class="chips">
-          <span class="chip chip-accent">${statFor(m) || meta.label}</span>
-          <span class="chip chip-muted">${meta.typeLabel}</span>
-        </div>
-        ${this.renderTags(m)}
-        ${m.source
-          ? html`<div class="meta-note">
-              Source: <a href=${m.source} target="_blank" rel="noreferrer" style="color:var(--oppai-primary-bright);">link</a>
-            </div>`
-          : nothing}
-        <p class="desc" style="margin-top:16px;">
-          Part of your personal library. Streamed directly from your OppaiLib server — no
-          re-encoding, no external uploads.
-        </p>
+        ${this.editing
+          ? this.renderEdit()
+          : html`
+              <div class="chips">
+                <span class="chip chip-accent">${statFor(m) || meta.label}</span>
+                <span class="chip chip-muted">${meta.typeLabel}</span>
+              </div>
+              ${this.renderTags(m)}
+              ${m.notes
+                ? html`<p class="desc" style="margin-top:16px;">${m.notes}</p>`
+                : nothing}
+              ${m.source
+                ? html`<div class="meta-note">
+                    Source:
+                    <a href=${m.source} target="_blank" rel="noreferrer" style="color:var(--oppai-primary-bright);">link</a>
+                  </div>`
+                : nothing}
+            `}
       </div>
     `;
   }

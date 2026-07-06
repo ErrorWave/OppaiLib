@@ -24,9 +24,22 @@ export interface Media {
   height?: number;
   pageCount?: number;
   hasThumb?: boolean;
+  download?: string; // external download URL (games)
+  gallery?: string[]; // screenshot URLs (games)
   tags?: MediaTag[];
   createdAt: number;
   updatedAt: number;
+}
+
+// Editable subset of a media item. Omitted fields are left unchanged; tags are
+// add/remove lists.
+export interface MediaPatch {
+  title?: string;
+  notes?: string;
+  kind?: Media["kind"];
+  rating?: number;
+  addTags?: string[];
+  removeTags?: string[];
 }
 
 export interface User {
@@ -43,6 +56,9 @@ export interface ScrapeResult {
   mediaUrls: string[];
   sourceUrl: string;
   kind: string;
+  cover?: string;
+  screenshots: string[];
+  downloadUrl?: string;
 }
 
 export interface BulkScrapeItem {
@@ -141,6 +157,15 @@ export const api = {
   },
   autotag: (id: number) =>
     request<{ tags: MediaTag[] }>(`/api/media/${id}/autotag`, { method: "POST" }),
+  updateMedia: (id: number, patch: MediaPatch) =>
+    request<Media>(`/api/media/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  deleteMedia: (id: number) =>
+    request<void>(`/api/media/${id}`, { method: "DELETE" }),
+  bulkMedia: (action: "delete" | "update", ids: number[], patch?: MediaPatch) =>
+    request<{ ok: number[]; failed: number[] }>("/api/media/bulk", {
+      method: "POST",
+      body: JSON.stringify({ action, ids, patch: patch ?? {} }),
+    }),
 
   scrape: (url: string) =>
     request<ScrapeResult>(
@@ -156,7 +181,13 @@ export const api = {
       // batch resolves within that; give generous headroom before giving up.
       75_000,
     ),
-  scrapeImport: (payload: { url?: string; mediaUrls?: string[]; title?: string; tags?: string[] }) =>
+  scrapeImport: (payload: {
+    url?: string;
+    mediaUrls?: string[];
+    title?: string;
+    tags?: string[];
+    kind?: string;
+  }) =>
     request<{ imported: number[]; count: number }>("/api/scrape/import", {
       method: "POST",
       body: JSON.stringify(payload),

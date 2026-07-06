@@ -2,6 +2,7 @@ import { LitElement, html, css } from "lit";
 import { customElement, state, query } from "lit/decorators.js";
 import { api, type ScrapeResult } from "../api.js";
 import { motionStyles } from "../theme.js";
+import { KIND_ORDER, KIND_META } from "../media-meta.js";
 
 // Paste one or more URLs (one per line) → preview extracted metadata + media →
 // import selected assets. A single URL and a bulk paste share the same flow.
@@ -16,6 +17,7 @@ export class OppaiScrapeDialog extends LitElement {
   @state() private phase: "" | "fetching" | "importing" = "";
   @state() private fetchCount = 0;
   @state() private error = "";
+  @state() private kind = "image";
 
   static styles = [
     motionStyles,
@@ -70,6 +72,11 @@ export class OppaiScrapeDialog extends LitElement {
         animation: oppai-fade-in 0.3s var(--oppai-ease-standard) both;
       }
       .err { color: var(--md-sys-color-error); font-size: .85rem; margin-top: .5rem; }
+      .typerow { display: flex; gap: 6px; margin: .9rem 0 .3rem; flex-wrap: wrap; align-items: center; }
+      .typerow .lbl { font-size: .8rem; opacity: .7; margin-right: 4px; }
+      .shots { display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 8px; margin-top: .5rem; }
+      .shots img { width: 100%; aspect-ratio: 16/9; object-fit: cover; border-radius: 8px; }
+      .game-hint { font-size: .8rem; opacity: .75; margin-top: .5rem; }
       .progress {
         display: flex;
         align-items: center;
@@ -91,7 +98,12 @@ export class OppaiScrapeDialog extends LitElement {
     this.urls = "";
     this.phase = "";
     this.fetchCount = 0;
+    this.kind = "image";
     this.dialog.show();
+  }
+
+  private get isGame(): boolean {
+    return this.kind === "game";
   }
 
   private get urlList(): string[] {
@@ -136,6 +148,7 @@ export class OppaiScrapeDialog extends LitElement {
             tags: it.result.tags ?? [],
             performers: it.result.performers ?? [],
             mediaUrls: it.result.mediaUrls ?? [],
+            screenshots: it.result.screenshots ?? [],
           };
           this.results = [...this.results, res];
           res.mediaUrls.forEach((u) => chosen.add(u));
@@ -144,6 +157,10 @@ export class OppaiScrapeDialog extends LitElement {
         }
       }
       this.chosen = chosen;
+      // Default the import type to what the scraper detected (itch.io pages come
+      // back as "game"), letting the user override.
+      const detected = this.results.find((r) => r.kind)?.kind;
+      if (detected) this.kind = detected;
       if (this.results.length === 0 && this.failures.length > 0) {
         this.error = "Nothing could be fetched from those links.";
       }
@@ -162,13 +179,27 @@ export class OppaiScrapeDialog extends LitElement {
   }
 
   private async import() {
-    if (this.chosen.size === 0 || this.busy) return;
+    if (this.busy) return;
+    if (!this.isGame && this.chosen.size === 0) return;
+    if (this.isGame && this.results.length === 0) return;
     this.busy = true;
     this.phase = "importing";
     this.error = "";
     let imported = 0;
     try {
       for (const r of this.results) {
+        if (this.isGame) {
+          // One enriched game entry per page (cover, description, screenshots,
+          // download link) — the server re-scrapes and builds the row.
+          const res = await api.scrapeImport({
+            url: r.sourceUrl,
+            title: r.title,
+            tags: r.tags,
+            kind: "game",
+          });
+          imported += res.count;
+          continue;
+        }
         const picked = r.mediaUrls.filter((u) => this.chosen.has(u));
         if (picked.length === 0) continue;
         const res = await api.scrapeImport({
@@ -176,6 +207,7 @@ export class OppaiScrapeDialog extends LitElement {
           mediaUrls: picked,
           title: r.title,
           tags: r.tags,
+          kind: this.kind,
         });
         imported += res.count;
       }
@@ -201,15 +233,56 @@ export class OppaiScrapeDialog extends LitElement {
               ${r.tags.map((t) => html`<md-filter-chip label=${t} selected></md-filter-chip>`)}
             </div>`
           : ""}
-        ${r.mediaUrls.length
-          ? html`<div class="previews">
-              ${r.mediaUrls.map(
-                (u) => html`<div class="pv ${this.chosen.has(u) ? "sel" : ""}" @click=${() => this.toggle(u)}>
-                  <img src=${api.proxyURL(u)} loading="lazy" />
-                </div>`,
-              )}
-            </div>`
-          : html`<div class="meta">No media found on that page.</div>`}
+        ${this.isGame ? this.renderGameGroup(r) : this.renderMediaGroup(r)}
+      </div>
+    `;
+  }
+
+  private renderMediaGroup(r: ScrapeResult) {
+    return r.mediaUrls.length
+      ? html`<div class="previews">
+          ${r.mediaUrls.map(
+            (u) => html`<div class="pv ${this.chosen.has(u) ? "sel" : ""}" @click=${() => this.toggle(u)}>
+              <img src=${api.proxyURL(u)} loading="lazy" />
+            </div>`,
+          )}
+        </div>`
+      : html`<div class="meta">No media found on that page.</div>`;
+  }
+
+  private renderGameGroup(r: ScrapeResult) {
+    const cover = r.cover || r.mediaUrls[0];
+    return html`
+      ${cover
+        ? html`<div class="previews">
+            <div class="pv sel"><img src=${api.proxyURL(cover)} loading="lazy" /></div>
+          </div>`
+        : html`<div class="meta">No cover image found.</div>`}
+      ${r.screenshots?.length
+        ? html`<div class="shots">
+            ${r.screenshots.slice(0, 8).map((u) => html`<img src=${api.proxyURL(u)} loading="lazy" />`)}
+          </div>`
+        : ""}
+      <div class="game-hint">
+        Imports as one <strong>game</strong> entry — cover art, description, tags${r.screenshots?.length
+          ? `, ${r.screenshots.length} screenshot${r.screenshots.length === 1 ? "" : "s"}`
+          : ""} and a download link.
+      </div>
+    `;
+  }
+
+  private renderTypeRow() {
+    if (this.results.length === 0) return "";
+    return html`
+      <div class="typerow">
+        <span class="lbl">Import as</span>
+        ${KIND_ORDER.map(
+          (k) => html`<md-filter-chip
+            label=${KIND_META[k].label}
+            ?selected=${this.kind === k}
+            @click=${() => (this.kind = k)}
+          ></md-filter-chip>`,
+        )}
       </div>
     `;
   }
@@ -240,6 +313,7 @@ export class OppaiScrapeDialog extends LitElement {
                 <span>Fetching ${this.fetchCount} link${this.fetchCount === 1 ? "" : "s"}… some sites can take a few seconds each.</span>
               </div>`
             : ""}
+          ${this.renderTypeRow()}
           ${this.results.map((r) => this.renderGroup(r))}
           ${this.failures.length
             ? html`<div class="err">
@@ -251,10 +325,13 @@ export class OppaiScrapeDialog extends LitElement {
         <div slot="actions">
           <md-text-button type="button" @click=${() => this.dialog.close()}>Cancel</md-text-button>
           <md-filled-button type="button" @click=${this.import}
-            ?disabled=${this.busy || this.chosen.size === 0}>
+            ?disabled=${this.busy ||
+            (this.isGame ? this.results.length === 0 : this.chosen.size === 0)}>
             ${this.busy && this.results.length
               ? "Importing…"
-              : html`Import ${this.chosen.size || ""}${this.totalMedia ? ` / ${this.totalMedia}` : ""}`}
+              : this.isGame
+                ? html`Import ${this.results.length === 1 ? "game" : `${this.results.length} games`}`
+                : html`Import ${this.chosen.size || ""}${this.totalMedia ? ` / ${this.totalMedia}` : ""}`}
           </md-filled-button>
         </div>
       </md-dialog>

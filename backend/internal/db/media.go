@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"strings"
 )
 
 // MediaRow mirrors the media table; *_enc fields hold ciphertext.
@@ -19,11 +20,13 @@ type MediaRow struct {
 	Favorite  bool
 	Duration  sql.NullFloat64
 	Width     sql.NullInt64
-	Height    sql.NullInt64
-	PageCount sql.NullInt64
-	ThumbPath sql.NullString
-	CreatedAt int64
-	UpdatedAt int64
+	Height      sql.NullInt64
+	PageCount   sql.NullInt64
+	ThumbPath   sql.NullString
+	DownloadEnc []byte
+	GalleryEnc  []byte
+	CreatedAt   int64
+	UpdatedAt   int64
 }
 
 // InsertMedia stores a new row and returns its id. Returns the existing id and
@@ -39,10 +42,12 @@ func (d *DB) InsertMedia(ctx context.Context, m *MediaRow) (id int64, existed bo
 	ts := now()
 	res, err := d.sql.ExecContext(ctx, `
 		INSERT INTO media(kind, sha256, size, blob_path, title_enc, notes_enc, source_enc,
-		                  rating, favorite, duration, width, height, page_count, created_at, updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		                  rating, favorite, duration, width, height, page_count,
+		                  download_enc, gallery_enc, created_at, updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		m.Kind, m.SHA256, m.Size, m.BlobPath, m.TitleEnc, m.NotesEnc, m.SourceEnc,
-		m.Rating, boolToInt(m.Favorite), m.Duration, m.Width, m.Height, m.PageCount, ts, ts)
+		m.Rating, boolToInt(m.Favorite), m.Duration, m.Width, m.Height, m.PageCount,
+		nullBytes(m.DownloadEnc), nullBytes(m.GalleryEnc), ts, ts)
 	if err != nil {
 		return 0, false, err
 	}
@@ -55,10 +60,12 @@ func (d *DB) GetMedia(ctx context.Context, id int64) (*MediaRow, error) {
 	var fav int
 	err := d.sql.QueryRowContext(ctx, `
 		SELECT id, kind, sha256, size, blob_path, title_enc, notes_enc, source_enc,
-		       rating, favorite, duration, width, height, page_count, thumb_path, created_at, updated_at
+		       rating, favorite, duration, width, height, page_count, thumb_path,
+		       download_enc, gallery_enc, created_at, updated_at
 		FROM media WHERE id = ?`, id).Scan(
 		&m.ID, &m.Kind, &m.SHA256, &m.Size, &m.BlobPath, &m.TitleEnc, &m.NotesEnc, &m.SourceEnc,
-		&m.Rating, &fav, &m.Duration, &m.Width, &m.Height, &m.PageCount, &m.ThumbPath, &m.CreatedAt, &m.UpdatedAt)
+		&m.Rating, &fav, &m.Duration, &m.Width, &m.Height, &m.PageCount, &m.ThumbPath,
+		&m.DownloadEnc, &m.GalleryEnc, &m.CreatedAt, &m.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -121,13 +128,111 @@ func (d *DB) VideosMissingThumbs(ctx context.Context, limit int) ([]*MediaRow, e
 	return out, rows.Err()
 }
 
+// nullBytes stores a NULL rather than an empty blob when there's nothing to
+// encrypt, keeping "no value" distinct from an empty ciphertext.
+func nullBytes(b []byte) any {
+	if len(b) == 0 {
+		return nil
+	}
+	return b
+}
+
+// MediaPatch carries an editable subset of a media row. Only fields whose Set*
+// flag is true are written, so a caller can update just the title (or just the
+// kind) without clobbering the rest.
+type MediaPatch struct {
+	SetTitle    bool
+	TitleEnc    []byte
+	SetNotes    bool
+	NotesEnc    []byte
+	SetKind     bool
+	Kind        string
+	SetRating   bool
+	Rating      int
+	SetDownload bool
+	DownloadEnc []byte
+	SetGallery  bool
+	GalleryEnc  []byte
+}
+
+// UpdateMedia applies a MediaPatch, touching only the requested columns. Returns
+// sql.ErrNoRows if no row matched.
+func (d *DB) UpdateMedia(ctx context.Context, id int64, p MediaPatch) error {
+	sets := []string{}
+	args := []any{}
+	if p.SetTitle {
+		sets = append(sets, "title_enc = ?")
+		args = append(args, nullBytes(p.TitleEnc))
+	}
+	if p.SetNotes {
+		sets = append(sets, "notes_enc = ?")
+		args = append(args, nullBytes(p.NotesEnc))
+	}
+	if p.SetKind {
+		sets = append(sets, "kind = ?")
+		args = append(args, p.Kind)
+	}
+	if p.SetRating {
+		sets = append(sets, "rating = ?")
+		args = append(args, p.Rating)
+	}
+	if p.SetDownload {
+		sets = append(sets, "download_enc = ?")
+		args = append(args, nullBytes(p.DownloadEnc))
+	}
+	if p.SetGallery {
+		sets = append(sets, "gallery_enc = ?")
+		args = append(args, nullBytes(p.GalleryEnc))
+	}
+	if len(sets) == 0 {
+		return nil // nothing to do
+	}
+	sets = append(sets, "updated_at = ?")
+	args = append(args, now(), id)
+	q := "UPDATE media SET " + strings.Join(sets, ", ") + " WHERE id = ?"
+	res, err := d.sql.ExecContext(ctx, q, args...)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// DeleteMedia removes the row (media_tags / collection_items / progress cascade
+// via foreign keys) and returns the blob + thumb paths so the caller can unlink
+// the underlying files. Returns sql.ErrNoRows if the id doesn't exist.
+func (d *DB) DeleteMedia(ctx context.Context, id int64) (blobPath, thumbPath string, err error) {
+	var thumb sql.NullString
+	err = d.sql.QueryRowContext(ctx, `SELECT blob_path, thumb_path FROM media WHERE id = ?`, id).
+		Scan(&blobPath, &thumb)
+	if err != nil {
+		return "", "", err
+	}
+	if _, err = d.sql.ExecContext(ctx, `DELETE FROM media WHERE id = ?`, id); err != nil {
+		return "", "", err
+	}
+	return blobPath, thumb.String, nil
+}
+
+// CountByThumbPath reports how many rows still reference a thumbnail blob. Video
+// posters are content-addressed and can dedup-collide, so the caller checks this
+// before unlinking a thumb (blob_path is safe — sha256 is UNIQUE per row).
+func (d *DB) CountByThumbPath(ctx context.Context, rel string) (int, error) {
+	var n int
+	err := d.sql.QueryRowContext(ctx, `SELECT COUNT(*) FROM media WHERE thumb_path = ?`, rel).Scan(&n)
+	return n, err
+}
+
 // ListMedia returns rows filtered by kind (empty = all), newest first.
 func (d *DB) ListMedia(ctx context.Context, kind string, limit, offset int) ([]*MediaRow, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
 	q := `SELECT id, kind, sha256, size, blob_path, title_enc, notes_enc, source_enc,
-	             rating, favorite, duration, width, height, page_count, thumb_path, created_at, updated_at
+	             rating, favorite, duration, width, height, page_count, thumb_path,
+	             download_enc, gallery_enc, created_at, updated_at
 	      FROM media`
 	args := []any{}
 	if kind != "" {
@@ -149,7 +254,8 @@ func (d *DB) ListMedia(ctx context.Context, kind string, limit, offset int) ([]*
 		var fav int
 		if err := rows.Scan(&m.ID, &m.Kind, &m.SHA256, &m.Size, &m.BlobPath,
 			&m.TitleEnc, &m.NotesEnc, &m.SourceEnc, &m.Rating, &fav,
-			&m.Duration, &m.Width, &m.Height, &m.PageCount, &m.ThumbPath, &m.CreatedAt, &m.UpdatedAt); err != nil {
+			&m.Duration, &m.Width, &m.Height, &m.PageCount, &m.ThumbPath,
+			&m.DownloadEnc, &m.GalleryEnc, &m.CreatedAt, &m.UpdatedAt); err != nil {
 			return nil, err
 		}
 		m.Favorite = fav != 0

@@ -2,6 +2,7 @@ package api
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"mime"
 	"net/http"
@@ -135,6 +136,182 @@ func (s *Server) handleGetMedia(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, m)
 }
 
+// mediaPatchReq is the editable subset of a media item. Pointer fields are
+// "present or not" so a caller can change just the title (or just the kind)
+// without touching the rest. Tags are add/remove lists (manual source).
+type mediaPatchReq struct {
+	Title      *string  `json:"title"`
+	Notes      *string  `json:"notes"`
+	Kind       *string  `json:"kind"`
+	Rating     *int     `json:"rating"`
+	AddTags    []string `json:"addTags"`
+	RemoveTags []string `json:"removeTags"`
+}
+
+// updateMediaByID applies a patch (fields + tag add/remove) to one item. Returns
+// sql.ErrNoRows if the id doesn't exist.
+func (s *Server) updateMediaByID(r *http.Request, id int64, p mediaPatchReq) error {
+	ctx := r.Context()
+	patch := db.MediaPatch{}
+	if p.Title != nil {
+		enc, err := crypto.SealBytes(s.kek, []byte(*p.Title), []byte("title"))
+		if err != nil {
+			return err
+		}
+		patch.SetTitle, patch.TitleEnc = true, enc
+	}
+	if p.Notes != nil {
+		patch.SetNotes = true
+		if *p.Notes != "" {
+			enc, err := crypto.SealBytes(s.kek, []byte(*p.Notes), []byte("notes"))
+			if err != nil {
+				return err
+			}
+			patch.NotesEnc = enc
+		}
+	}
+	if p.Kind != nil {
+		patch.SetKind, patch.Kind = true, *p.Kind
+	}
+	if p.Rating != nil {
+		patch.SetRating, patch.Rating = true, *p.Rating
+	}
+	if err := s.db.UpdateMedia(ctx, id, patch); err != nil {
+		return err
+	}
+	for _, t := range p.AddTags {
+		if t = strings.TrimSpace(t); t != "" {
+			if err := s.db.AddTag(ctx, id, t, "general", "manual", 0); err != nil {
+				s.log.Warn("add tag", "media", id, "tag", t, "err", err)
+			}
+		}
+	}
+	for _, t := range p.RemoveTags {
+		if t = strings.TrimSpace(t); t != "" {
+			if err := s.db.RemoveTag(ctx, id, t); err != nil {
+				s.log.Warn("remove tag", "media", id, "tag", t, "err", err)
+			}
+		}
+	}
+	return nil
+}
+
+// deleteMediaByID removes a row and unlinks its blob (+ thumb, if unreferenced).
+func (s *Server) deleteMediaByID(r *http.Request, id int64) error {
+	blob, thumb, err := s.db.DeleteMedia(r.Context(), id)
+	if err != nil {
+		return err
+	}
+	if blob != "" {
+		if err := s.store.Delete(blob); err != nil {
+			s.log.Warn("delete blob", "media", id, "path", blob, "err", err)
+		}
+	}
+	// Thumbs are content-addressed and may be shared; only unlink when no other
+	// row references this poster.
+	if thumb != "" && thumb != blob {
+		if n, err := s.db.CountByThumbPath(r.Context(), thumb); err == nil && n == 0 {
+			_ = s.store.Delete(thumb)
+		}
+	}
+	return nil
+}
+
+func (s *Server) handleUpdateMedia(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	var p mediaPatchReq
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if err := s.updateMediaByID(r, id, p); errors.Is(err, sql.ErrNoRows) {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	} else if err != nil {
+		s.log.Error("update media", "media", id, "err", err)
+		writeErr(w, http.StatusInternalServerError, "update failed")
+		return
+	}
+	row, err := s.db.GetMedia(r.Context(), id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	m := s.toModel(row)
+	if tags, err := s.db.TagsForMedia(r.Context(), id); err == nil {
+		m.Tags = tags
+	}
+	writeJSON(w, http.StatusOK, m)
+}
+
+func (s *Server) handleDeleteMedia(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	if err := s.deleteMediaByID(r, id); errors.Is(err, sql.ErrNoRows) {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	} else if err != nil {
+		s.log.Error("delete media", "media", id, "err", err)
+		writeErr(w, http.StatusInternalServerError, "delete failed")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+const maxBulkIDs = 500
+
+type bulkMediaReq struct {
+	Action string        `json:"action"` // "delete" | "update"
+	IDs    []int64       `json:"ids"`
+	Patch  mediaPatchReq `json:"patch"`
+}
+
+// handleBulkMedia applies one action across many ids. A failure on one id doesn't
+// sink the rest; the response lists which ids succeeded and which failed.
+func (s *Server) handleBulkMedia(w http.ResponseWriter, r *http.Request) {
+	var req bulkMediaReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if len(req.IDs) == 0 {
+		writeErr(w, http.StatusBadRequest, "no ids")
+		return
+	}
+	if len(req.IDs) > maxBulkIDs {
+		writeErr(w, http.StatusBadRequest, "too many ids")
+		return
+	}
+	if req.Action != "delete" && req.Action != "update" {
+		writeErr(w, http.StatusBadRequest, "unknown action")
+		return
+	}
+	ok := make([]int64, 0, len(req.IDs))
+	failed := make([]int64, 0)
+	for _, id := range req.IDs {
+		var err error
+		if req.Action == "delete" {
+			err = s.deleteMediaByID(r, id)
+		} else {
+			err = s.updateMediaByID(r, id, req.Patch)
+		}
+		if err != nil {
+			s.log.Warn("bulk media item failed", "action", req.Action, "media", id, "err", err)
+			failed = append(failed, id)
+			continue
+		}
+		ok = append(ok, id)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": ok, "failed": failed})
+}
+
 func (s *Server) handleStreamMedia(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -188,7 +365,7 @@ func contentTypeForKind(kind string) string {
 
 // toModel decrypts sensitive columns and builds the API view.
 func (s *Server) toModel(row *db.MediaRow) models.Media {
-	return models.Media{
+	m := models.Media{
 		ID:        row.ID,
 		Kind:      models.MediaKind(row.Kind),
 		SHA256:    row.SHA256,
@@ -203,9 +380,14 @@ func (s *Server) toModel(row *db.MediaRow) models.Media {
 		Height:    int(row.Height.Int64),
 		PageCount: int(row.PageCount.Int64),
 		HasThumb:  row.ThumbPath.Valid && row.ThumbPath.String != "",
+		Download:  s.decrypt(row.DownloadEnc, "download"),
 		CreatedAt: row.CreatedAt,
 		UpdatedAt: row.UpdatedAt,
 	}
+	if gj := s.decrypt(row.GalleryEnc, "gallery"); gj != "" {
+		_ = json.Unmarshal([]byte(gj), &m.Gallery)
+	}
+	return m
 }
 
 func (s *Server) decrypt(blob []byte, aad string) string {

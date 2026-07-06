@@ -76,7 +76,10 @@ func (s *Server) Handler() http.Handler {
 	// Media (protected).
 	mux.HandleFunc("GET /api/media", s.requireAuth(s.handleListMedia))
 	mux.HandleFunc("POST /api/media", s.requireAuth(s.handleUploadMedia))
+	mux.HandleFunc("POST /api/media/bulk", s.requireAuth(s.handleBulkMedia))
 	mux.HandleFunc("GET /api/media/{id}", s.requireAuth(s.handleGetMedia))
+	mux.HandleFunc("PATCH /api/media/{id}", s.requireAuth(s.handleUpdateMedia))
+	mux.HandleFunc("DELETE /api/media/{id}", s.requireAuth(s.handleDeleteMedia))
 	mux.HandleFunc("GET /api/media/{id}/stream", s.requireAuth(s.handleStreamMedia))
 	mux.HandleFunc("GET /api/media/{id}/thumb", s.requireAuth(s.handleThumb))
 	mux.HandleFunc("POST /api/media/{id}/autotag", s.requireAuth(s.handleAutotag))

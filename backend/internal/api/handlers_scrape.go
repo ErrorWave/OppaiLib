@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -148,10 +149,11 @@ func dedupeNonEmpty(in []string) []string {
 }
 
 type scrapeImportReq struct {
-	URL        string   `json:"url"`
-	MediaURLs  []string `json:"mediaUrls"`  // optional subset chosen by the user
-	Title      string   `json:"title"`
-	Tags       []string `json:"tags"`
+	URL       string   `json:"url"`
+	MediaURLs []string `json:"mediaUrls"` // optional subset chosen by the user
+	Title     string   `json:"title"`
+	Tags      []string `json:"tags"`
+	Kind      string   `json:"kind"` // "game" imports one enriched game entry
 }
 
 // handleScrapeImport scrapes (or takes provided media URLs), downloads each
@@ -160,6 +162,33 @@ func (s *Server) handleScrapeImport(w http.ResponseWriter, r *http.Request) {
 	var req scrapeImportReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+
+	// Game import is a distinct flow: one enriched entry (cover art as thumbnail,
+	// description, screenshots, download link) rather than one item per media URL.
+	// It always (re)scrapes the source so it has the full game metadata.
+	if req.Kind == string(models.KindGame) {
+		if req.URL == "" {
+			writeErr(w, http.StatusBadRequest, "game import needs a url")
+			return
+		}
+		scraped, err := s.scraper.Scrape(r.Context(), req.URL)
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		if req.Title != "" {
+			scraped.Title = req.Title
+		}
+		scraped.Tags = append(scraped.Tags, req.Tags...)
+		id, err := s.importGame(r, scraped)
+		if err != nil {
+			s.log.Warn("import game failed", "url", req.URL, "err", err)
+			writeErr(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"imported": []int64{id}, "count": 1})
 		return
 	}
 
@@ -233,6 +262,90 @@ func (s *Server) importOne(r *http.Request, mediaURL string, result *models.Scra
 		}
 	}
 	return id, nil
+}
+
+// importGame creates a single game entry from a scraped page: the cover image is
+// downloaded and stored as the blob (and set as the thumbnail so tiles show cover
+// art), with the description, source, download link and screenshot gallery saved
+// as encrypted metadata. itch (and other) game pages gate the actual binary, so
+// the download link points the user at where to get it rather than fetching it.
+func (s *Server) importGame(r *http.Request, result *models.ScrapeResult) (int64, error) {
+	cover := firstNonEmptyStr(result.Cover, firstOf(result.MediaURLs), firstOf(result.Screenshots))
+	if cover == "" {
+		return 0, fmt.Errorf("no cover image found on that page")
+	}
+
+	dl, err := s.scraper.Download(r.Context(), cover)
+	if err != nil {
+		return 0, fmt.Errorf("fetch cover: %w", err)
+	}
+	defer dl.Body.Close()
+	put, err := s.store.Put(dl.Body)
+	if err != nil {
+		return 0, err
+	}
+
+	title := result.Title
+	if title == "" {
+		title = dl.Filename
+	}
+	titleEnc, _ := crypto.SealBytes(s.kek, []byte(title), []byte("title"))
+
+	row := &db.MediaRow{
+		Kind:     string(models.KindGame),
+		SHA256:   put.SHA256,
+		Size:     put.Size,
+		BlobPath: put.RelPath,
+		TitleEnc: titleEnc,
+	}
+	if result.Description != "" {
+		row.NotesEnc, _ = crypto.SealBytes(s.kek, []byte(result.Description), []byte("notes"))
+	}
+	if result.SourceURL != "" {
+		row.SourceEnc, _ = crypto.SealBytes(s.kek, []byte(result.SourceURL), []byte("source"))
+	}
+	downloadURL := firstNonEmptyStr(result.DownloadURL, result.SourceURL)
+	if downloadURL != "" {
+		row.DownloadEnc, _ = crypto.SealBytes(s.kek, []byte(downloadURL), []byte("download"))
+	}
+	if len(result.Screenshots) > 0 {
+		if b, err := json.Marshal(result.Screenshots); err == nil {
+			row.GalleryEnc, _ = crypto.SealBytes(s.kek, b, []byte("gallery"))
+		}
+	}
+
+	id, existed, err := s.db.InsertMedia(r.Context(), row)
+	if err != nil {
+		return 0, err
+	}
+	if !existed {
+		// The cover doubles as the game's thumbnail.
+		if err := s.db.SetThumbPath(r.Context(), id, put.RelPath); err != nil {
+			s.log.Warn("game cover thumb", "media", id, "err", err)
+		}
+	}
+	for _, t := range result.Tags {
+		if err := s.db.AddTag(r.Context(), id, t, "general", "scrape", 0); err != nil {
+			s.log.Warn("add game tag", "tag", t, "err", err)
+		}
+	}
+	return id, nil
+}
+
+func firstNonEmptyStr(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func firstOf(s []string) string {
+	if len(s) > 0 {
+		return s[0]
+	}
+	return ""
 }
 
 func kindOrDefault(kind string, def models.MediaKind) string {

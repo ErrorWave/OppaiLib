@@ -71,6 +71,10 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	if err != nil {
 		log.Warn("loading site parsers", "err", err)
 	}
+	// Built-in parsers that need real code (not just CSS selectors): the X/Twitter
+	// API bypass and the itch.io game extractor. User YAML parsers still take
+	// priority for any host they match (they're earlier in the slice).
+	parsers = append(parsers, &scraper.TwitterParser{}, &scraper.ItchParser{})
 	log.Info("scraper ready", "site_parsers", len(parsers))
 	sc := scraper.New(scraper.Options{
 		UserAgent:     cfg.ScrapeUserAgent,

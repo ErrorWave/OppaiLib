@@ -48,6 +48,9 @@ export class OppaiLibrary extends LitElement {
   @state() private uploadOpen = false;
   @state() private dragActive = false;
   @state() private theme: "dark" | "light" = "dark";
+  @state() private selectMode = false;
+  @state() private selected = new Set<number>();
+  @state() private busy = false;
 
   static styles = [
     iconStyles,
@@ -496,6 +499,88 @@ export class OppaiLibrary extends LitElement {
       input[type="file"] {
         display: none;
       }
+
+      /* Selection mode */
+      .tile.selecting .tile-media {
+        transform: none;
+      }
+      .tile.selected .tile-media {
+        outline: 3px solid var(--oppai-primary);
+        outline-offset: 2px;
+      }
+      .select-check {
+        position: absolute;
+        top: 8px;
+        left: 8px;
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        background: rgba(0, 0, 0, 0.5);
+        border: 2px solid #fff;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 2;
+        backdrop-filter: blur(2px);
+      }
+      .select-check.on {
+        background: var(--oppai-primary);
+        border-color: var(--oppai-primary);
+      }
+      .select-check .material-symbols-rounded {
+        font-size: 18px;
+        color: #fff;
+      }
+      .bulk-bar {
+        position: absolute;
+        left: 50%;
+        bottom: 24px;
+        transform: translateX(-50%);
+        z-index: 25;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 12px 10px 18px;
+        border-radius: 28px;
+        background: var(--oppai-surface-2);
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+        animation: oppai-scale-in 0.28s var(--oppai-ease-spring) both;
+      }
+      .bulk-count {
+        font-size: 14px;
+        font-weight: 600;
+        margin-right: 6px;
+        white-space: nowrap;
+      }
+      .bulk-btn {
+        height: 40px;
+        padding: 0 14px;
+        border-radius: 20px;
+        background: none;
+        border: none;
+        color: var(--oppai-text);
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .bulk-btn:hover {
+        background: var(--oppai-surface);
+      }
+      .bulk-btn.danger {
+        color: var(--oppai-error, #f2b8b5);
+      }
+      .bulk-btn[disabled] {
+        opacity: 0.5;
+        cursor: default;
+      }
+      .header-toggle.on {
+        background: var(--oppai-primary-container);
+        color: var(--oppai-primary-bright);
+        border-color: var(--oppai-primary);
+      }
     `,
   ];
 
@@ -589,6 +674,94 @@ export class OppaiLibrary extends LitElement {
     this.theme = this.theme === "dark" ? "light" : "dark";
     document.documentElement.dataset.theme = this.theme === "light" ? "light" : "";
   }
+
+  // --- Bulk selection -----------------------------------------------------
+  private toggleSelectMode = () => {
+    this.selectMode = !this.selectMode;
+    if (!this.selectMode) this.selected = new Set();
+  };
+  private exitSelect() {
+    this.selectMode = false;
+    this.selected = new Set();
+  }
+  private toggleSelected(id: number, e?: Event) {
+    e?.stopPropagation();
+    const next = new Set(this.selected);
+    next.has(id) ? next.delete(id) : next.add(id);
+    this.selected = next;
+  }
+  private async bulkDelete() {
+    const ids = [...this.selected];
+    if (!ids.length) return;
+    if (!confirm(`Delete ${ids.length} item${ids.length === 1 ? "" : "s"}? This cannot be undone.`))
+      return;
+    this.busy = true;
+    try {
+      await api.bulkMedia("delete", ids);
+      // Drop any client-side favorites for the deleted items.
+      const favs = new Set(this.favorites);
+      ids.forEach((id) => favs.delete(id));
+      this.favorites = favs;
+      saveFavorites(favs);
+      this.exitSelect();
+      await this.refresh();
+    } catch (err) {
+      console.error("bulk delete", err);
+    } finally {
+      this.busy = false;
+    }
+  }
+  private async bulkTags(mode: "add" | "remove") {
+    const ids = [...this.selected];
+    if (!ids.length) return;
+    const raw = prompt(
+      mode === "add" ? "Add tags (comma-separated):" : "Remove tags (comma-separated):",
+    );
+    if (raw == null) return;
+    const tags = raw
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
+    if (!tags.length) return;
+    this.busy = true;
+    try {
+      await api.bulkMedia("update", ids, mode === "add" ? { addTags: tags } : { removeTags: tags });
+      await this.refresh();
+    } catch (err) {
+      console.error("bulk tags", err);
+    } finally {
+      this.busy = false;
+    }
+  }
+  private async bulkChangeKind() {
+    const ids = [...this.selected];
+    if (!ids.length) return;
+    const kind = prompt("Change type to (video, gif, image, comic, game):");
+    if (kind == null) return;
+    const k = kind.trim().toLowerCase();
+    if (!KIND_ORDER.includes(k as Kind)) {
+      alert(`Unknown type "${k}".`);
+      return;
+    }
+    this.busy = true;
+    try {
+      await api.bulkMedia("update", ids, { kind: k as Media["kind"] });
+      this.exitSelect();
+      await this.refresh();
+    } catch (err) {
+      console.error("bulk kind", err);
+    } finally {
+      this.busy = false;
+    }
+  }
+  private bulkFavorite() {
+    // Favorites live client-side (localStorage); add the whole selection.
+    const next = new Set(this.favorites);
+    this.selected.forEach((id) => next.add(id));
+    this.favorites = next;
+    saveFavorites(next);
+    this.exitSelect();
+  }
   private logout() {
     this.dispatchEvent(new CustomEvent("logout", { bubbles: true, composed: true }));
   }
@@ -667,6 +840,10 @@ export class OppaiLibrary extends LitElement {
                 @toggle-favorite=${() => this.toggleFavorite(activeItem.id)}
                 @navigate=${(e: CustomEvent<{ dir: number }>) => this.stepItem(e.detail.dir)}
                 @changed=${() => this.refresh()}
+                @deleted=${() => {
+                  this.closeItem();
+                  this.refresh();
+                }}
               ></oppai-viewer>`
             : nothing}
           ${isViewer && !activeItem
@@ -675,8 +852,37 @@ export class OppaiLibrary extends LitElement {
         </main>
       </div>
       ${this.renderUpload()}
+      ${this.renderBulkBar()}
       <oppai-scrape-dialog @imported=${() => this.refresh()}></oppai-scrape-dialog>
       <input id="file" type="file" multiple @change=${this.onFileInput} />
+    `;
+  }
+
+  private renderBulkBar() {
+    if (!this.selectMode || this.selected.size === 0) return nothing;
+    const n = this.selected.size;
+    return html`
+      <div class="bulk-bar">
+        <span class="bulk-count">${n} selected</span>
+        <button class="bulk-btn" ?disabled=${this.busy} @click=${() => this.bulkTags("add")}>
+          <span class="material-symbols-rounded" style="font-size:18px;">sell</span>Add tags
+        </button>
+        <button class="bulk-btn" ?disabled=${this.busy} @click=${() => this.bulkTags("remove")}>
+          <span class="material-symbols-rounded" style="font-size:18px;">label_off</span>Remove tags
+        </button>
+        <button class="bulk-btn" ?disabled=${this.busy} @click=${this.bulkChangeKind}>
+          <span class="material-symbols-rounded" style="font-size:18px;">category</span>Type
+        </button>
+        <button class="bulk-btn" ?disabled=${this.busy} @click=${this.bulkFavorite}>
+          <span class="material-symbols-rounded" style="font-size:18px;">favorite</span>Favorite
+        </button>
+        <button class="bulk-btn danger" ?disabled=${this.busy} @click=${this.bulkDelete}>
+          <span class="material-symbols-rounded" style="font-size:18px;">delete</span>Delete
+        </button>
+        <button class="bulk-btn" @click=${() => this.exitSelect()}>
+          <span class="material-symbols-rounded" style="font-size:18px;">close</span>
+        </button>
+      </div>
     `;
   }
 
@@ -768,6 +974,19 @@ export class OppaiLibrary extends LitElement {
         </div>
 
         <div style="flex:1;"></div>
+
+        ${!isViewer
+          ? html`<button
+              class="filters-btn header-toggle ${this.selectMode ? "on" : ""}"
+              title="Select multiple"
+              @click=${this.toggleSelectMode}
+            >
+              <span class="material-symbols-rounded" style="font-size:18px;"
+                >${this.selectMode ? "check_circle" : "check_box_outline_blank"}</span
+              >
+              <span style="font-size:13px; font-weight:500;">Select</span>
+            </button>`
+          : nothing}
 
         <button class="filters-btn">
           <span class="material-symbols-rounded" style="font-size:18px;">tune</span>
@@ -913,10 +1132,12 @@ export class OppaiLibrary extends LitElement {
     // tiles inherit their section's entrance instead.
     const anim = index != null ? "anim-rise" : "";
     const delay = index != null ? `animation-delay:${Math.min(index, 12) * 45}ms;` : "";
+    const isSel = this.selected.has(m.id);
+    const cls = `tile ${anim} ${this.selectMode ? "selecting" : ""} ${isSel ? "selected" : ""}`;
     return html`
       <div
-        class="tile ${anim}"
-        @click=${() => this.openItem(m.id, list)}
+        class=${cls}
+        @click=${() => (this.selectMode ? this.toggleSelected(m.id) : this.openItem(m.id, list))}
         style="flex-shrink:0; width:${width}; ${delay}"
       >
         <div
@@ -931,16 +1152,22 @@ export class OppaiLibrary extends LitElement {
                 >
                 <span class="type-label">${meta.typeLabel}</span>
               </div>`}
-          <button
-            class="fav-btn ${fav ? "is-fav" : ""}"
-            @click=${(e: Event) => this.toggleFavorite(m.id, e)}
-          >
-            <span
-              class="material-symbols-rounded fill-icon"
-              style="font-size:18px; color:${fav ? "var(--oppai-fav)" : "rgba(255,255,255,0.9)"};"
-              >${fav ? "favorite" : "favorite_border"}</span
-            >
-          </button>
+          ${this.selectMode
+            ? html`<div class="select-check ${isSel ? "on" : ""}">
+                ${isSel
+                  ? html`<span class="material-symbols-rounded">check</span>`
+                  : nothing}
+              </div>`
+            : html`<button
+                class="fav-btn ${fav ? "is-fav" : ""}"
+                @click=${(e: Event) => this.toggleFavorite(m.id, e)}
+              >
+                <span
+                  class="material-symbols-rounded fill-icon"
+                  style="font-size:18px; color:${fav ? "var(--oppai-fav)" : "rgba(255,255,255,0.9)"};"
+                  >${fav ? "favorite" : "favorite_border"}</span
+                >
+              </button>`}
           ${stat ? html`<span class="tile-stat">${stat}</span>` : nothing}
         </div>
         <div class="tile-meta">

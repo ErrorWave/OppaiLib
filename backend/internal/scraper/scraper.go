@@ -32,6 +32,15 @@ type Parser interface {
 	Parse(doc *goquery.Document, u *url.URL) (*models.ScrapeResult, error)
 }
 
+// DirectParser is an optional interface a Parser may also implement when it needs
+// to bypass the engine's HTML fetch entirely — e.g. to call a site's JSON API
+// instead of parsing a page (the X/Twitter parser does this, since x.com serves a
+// login wall / default image to scrapers). When the picked parser implements it,
+// Scrape calls ScrapeDirect and skips the goquery path.
+type DirectParser interface {
+	ScrapeDirect(ctx context.Context, client *http.Client, userAgent string, u *url.URL) (*models.ScrapeResult, error)
+}
+
 // Engine orchestrates fetch → parse. It holds registered parsers (site-specific
 // first, generic last), a polite rate limiter, and an optional robots checker.
 type Engine struct {
@@ -119,6 +128,23 @@ func (e *Engine) Scrape(ctx context.Context, rawURL string) (*models.ScrapeResul
 			SourceURL: u.String(),
 		}, nil
 	}
+	// A parser may opt out of the HTML fetch to call a site API directly (e.g. the
+	// X/Twitter parser). This runs before the robots check because we never fetch
+	// the page itself — the request goes to the parser's own API endpoint, not to
+	// the disallowed page path.
+	if dp, ok := e.pick(u).(DirectParser); ok {
+		if err := e.throttle(ctx, u.Host); err != nil {
+			return nil, err
+		}
+		res, err := dp.ScrapeDirect(ctx, e.client, e.userAgent, u)
+		if err != nil {
+			return nil, err
+		}
+		res.SourceURL = u.String()
+		res.MediaURLs = resolveAll(u, res.MediaURLs)
+		return res, nil
+	}
+
 	if e.robots != nil {
 		allowed, err := e.robots.allowed(ctx, u)
 		if err == nil && !allowed {
@@ -160,6 +186,12 @@ func (e *Engine) Scrape(ctx context.Context, rawURL string) (*models.ScrapeResul
 	}
 	res.SourceURL = u.String()
 	res.MediaURLs = resolveAll(final, res.MediaURLs)
+	res.Screenshots = resolveAll(final, res.Screenshots)
+	if res.Cover != "" {
+		if abs := resolveAll(final, []string{res.Cover}); len(abs) > 0 {
+			res.Cover = abs[0]
+		}
+	}
 	return res, nil
 }
 

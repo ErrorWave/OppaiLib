@@ -32,6 +32,16 @@ func (d *DB) AddTag(ctx context.Context, mediaID int64, name, category, source s
 	return err
 }
 
+// RemoveTag unlinks a tag (by name, any category) from a media row. The tags
+// row itself is left in place — it may still be referenced by other media.
+func (d *DB) RemoveTag(ctx context.Context, mediaID int64, name string) error {
+	_, err := d.sql.ExecContext(ctx, `
+		DELETE FROM media_tags
+		WHERE media_id = ? AND tag_id IN (SELECT id FROM tags WHERE name = ?)`,
+		mediaID, name)
+	return err
+}
+
 // TagsForMedia returns all tags attached to a media row.
 func (d *DB) TagsForMedia(ctx context.Context, mediaID int64) ([]models.Tag, error) {
 	rows, err := d.sql.QueryContext(ctx, `

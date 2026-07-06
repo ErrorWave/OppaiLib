@@ -28,6 +28,8 @@ type Media struct {
 	Height    int       `json:"height,omitempty"`
 	PageCount int       `json:"pageCount,omitempty"`
 	HasThumb  bool      `json:"hasThumb,omitempty"`
+	Download  string    `json:"download,omitempty"` // external download URL (games)
+	Gallery   []string  `json:"gallery,omitempty"`  // screenshot URLs (games)
 	Tags      []Tag     `json:"tags,omitempty"`
 	CreatedAt int64     `json:"createdAt"`
 	UpdatedAt int64     `json:"updatedAt"`
@@ -62,6 +64,12 @@ type ScrapeResult struct {
 	MediaURLs   []string `json:"mediaUrls"`
 	SourceURL   string   `json:"sourceUrl"`
 	Kind        string   `json:"kind"`
+	// Game-oriented fields (populated by the itch.io / generic parsers). Cover is
+	// the preferred single image for a game entry; Screenshots is a gallery;
+	// DownloadURL is where to actually get the game.
+	Cover       string   `json:"cover,omitempty"`
+	Screenshots []string `json:"screenshots"`
+	DownloadURL string   `json:"downloadUrl,omitempty"`
 }
 
 // EnsureSlices replaces nil slices with empty ones so JSON encodes [] rather
@@ -76,5 +84,8 @@ func (r *ScrapeResult) EnsureSlices() {
 	}
 	if r.MediaURLs == nil {
 		r.MediaURLs = []string{}
+	}
+	if r.Screenshots == nil {
+		r.Screenshots = []string{}
 	}
 }

@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS media (
     height        INTEGER,
     page_count    INTEGER,                   -- comics
     thumb_path    TEXT,                      -- encrypted thumbnail blob
+    download_enc  BLOB,                      -- encrypted external download URL (games)
+    gallery_enc   BLOB,                      -- encrypted JSON array of screenshot URLs (games)
     created_at    INTEGER NOT NULL,
     updated_at    INTEGER NOT NULL
 );
