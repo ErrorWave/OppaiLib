@@ -20,6 +20,9 @@ type Config struct {
 	AIEnabled  bool
 	AIModelDir string
 	AIDevice   string // cpu|cuda
+	// AIVideoFrames is how many frames to sample per video. 0 means "let the ai
+	// package pick" (ai.DefaultVideoFrames) — config stays free of an ai import.
+	AIVideoFrames int
 
 	ScrapeDelay         time.Duration
 	ScrapeUserAgent     string
@@ -41,6 +44,7 @@ func Load() *Config {
 		AIEnabled:       envBool("OPPAI_AI_ENABLED", true),
 		AIModelDir:      env("OPPAI_AI_MODEL_DIR", "/config/models"),
 		AIDevice:        env("OPPAI_AI_DEVICE", "cpu"),
+		AIVideoFrames:   envInt("OPPAI_AI_VIDEO_FRAMES", 0),
 		ScrapeDelay:         time.Duration(envInt("OPPAI_SCRAPE_DELAY_MS", 1500)) * time.Millisecond,
 		// A browser-like UA by default: many sites only emit OpenGraph/Twitter
 		// card metadata (or serve any HTML at all) to recognized agents.

@@ -16,7 +16,9 @@ services:
       OPPAI_SCRAPE_DELAY_MS: "${OPPAI_SCRAPE_DELAY_MS:-1500}"
     volumes:
       - ./data/media:/media       # encrypted blob store
-      - ./data/config:/config     # keystore, models, parsers
+      # keystore + site parsers. The AI model is baked into the image at
+      # /opt/oppailib/models, deliberately outside this mount.
+      - ./data/config:/config
       - ./data/db:/db             # sqlite metadata
     # For GPU acceleration (Unraid + Nvidia), uncomment:
     # deploy:

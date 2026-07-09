@@ -27,7 +27,8 @@ container on Unraid, with a companion Android app.
 - **URL scraping:** paste a URL → extract media + metadata. Pluggable, YAML-defined
   site parsers; ships a generic OpenGraph parser. Rate-limited, honors robots.txt.
 - **Local AI auto-tagging:** heuristic tagger out of the box (CPU, zero setup);
-  opt-in ONNX classifier for real content tags. No external calls. See
+  opt-in ONNX classifier for real content tags. Images, GIFs, and videos are all
+  tagged — clips are sampled across several frames. No external calls. See
   [docs/AI.md](docs/AI.md).
 - **Material 3 everywhere:** responsive web UI (dark by default) + native Android app.
 
@@ -108,8 +109,9 @@ ghcr.io/errorwave/oppailib:latest
 
 ### GPU (optional)
 For accelerated AI, pass through an Nvidia GPU (uncomment the `deploy` block in
-[docker-compose.yml](docker-compose.yml) or add `--gpus all`) and set
-`OPPAI_AI_DEVICE=cuda`. CPU is always the fallback.
+[docker-compose.yml](docker-compose.yml) or add `--gpus all`), mount a CUDA build
+of `libonnxruntime.so`, and set `OPPAI_AI_DEVICE=cuda`. If CUDA cannot be
+enabled, the tagger logs a warning and runs on CPU rather than failing.
 
 ---
 
@@ -157,12 +159,18 @@ permitted to scrape.
 
 ---
 
-## Updating the AI model
+## AI tagging
 
-See [docs/AI.md](docs/AI.md). Short version: the default heuristic tagger needs
-nothing. For real classification, build the `-tags onnx` variant, mount the ONNX
-Runtime library, and drop `model.onnx` + `labels.txt` + `model.json` into
-`/config/models/`.
+The default image ships a [wd14](https://huggingface.co/SmilingWolf/wd-vit-tagger-v3)
+tagger baked in, so images, GIFs and videos are content-tagged out of the box —
+a `rating` tag (`general`/`sensitive`/`questionable`/`explicit`) plus hundreds of
+possible `general` and `character` tags. Everything runs locally; nothing is sent
+anywhere.
+
+This makes the image ~540MB. If you would rather not carry the model, pull
+`ghcr.io/errorwave/oppailib:lean` (or build `--target runtime`) for a lean,
+cgo-free image that falls back to structural `meta` tags only. See
+[docs/AI.md](docs/AI.md) to swap the model or tune thresholds.
 
 ---
 

@@ -27,7 +27,7 @@ token (also accepted as the `oppai_session` cookie for the browser SPA).
 | POST | `/api/media` | multipart: `file` (required), `title`, `source`, `kind`. → `{id, sha256, deduped}` |
 | GET | `/api/media/{id}` | full media incl. `tags` |
 | GET | `/api/media/{id}/stream` | decrypts + streams the blob (browser uses cookie auth) |
-| POST | `/api/media/{id}/autotag` | runs the AI tagger synchronously → `{tags}` |
+| POST | `/api/media/{id}/autotag` | runs the AI tagger synchronously → `{tags}`. Videos and GIFs are sampled across several frames, so this can take a while. |
 
 ### Media object
 ```jsonc

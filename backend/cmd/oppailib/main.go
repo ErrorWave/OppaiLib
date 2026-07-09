@@ -85,9 +85,10 @@ func run(cfg *config.Config, log *slog.Logger) error {
 
 	// 6. AI auto-tagging manager (heuristic fallback, or ONNX if built + model).
 	aiMgr := ai.NewManager(ai.Config{
-		Enabled:  cfg.AIEnabled,
-		ModelDir: cfg.AIModelDir,
-		Device:   cfg.AIDevice,
+		Enabled:     cfg.AIEnabled,
+		ModelDir:    cfg.AIModelDir,
+		Device:      cfg.AIDevice,
+		VideoFrames: cfg.AIVideoFrames,
 	}, store, database, log)
 
 	// 7. HTTP server.

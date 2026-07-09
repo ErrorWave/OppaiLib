@@ -6,6 +6,11 @@ name: Build and publish image
 #
 #   ghcr.io/<owner>/<repo>
 #
+# Two variants are published from the same Dockerfile:
+#   :latest / :sha-<short> / :vX.Y.Z   the default image — ONNX Runtime + the
+#                                      wd14 tagger baked in (~500MB)
+#   :lean  / :lean-sha-<short>         cgo-free, no model, heuristic tags only
+#
 # Tagging:
 #   - push to default branch -> :latest and :sha-<short>
 #   - git tag vX.Y.Z          -> :vX.Y.Z (and :latest)
@@ -26,11 +31,50 @@ permissions:
   packages: write
 
 jobs:
-  docker:
+  # Gate the push on the tests. A broken tagger that only fails at first
+  # inference is exactly the kind of thing that is miserable to debug on Unraid.
+  test:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: backend/go.sum
+
+      # The thumbnail and video-frame tests skip themselves without ffmpeg, and a
+      # skipped test gates nothing.
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
+      # Both build tags: the lean path and the onnx path compile different files.
+      # The onnx unit tests do not need the shared library — it is dlopen'd only
+      # when a session is created, and TestRealModel skips without a model dir.
+      - name: Test (lean)
+        working-directory: backend
+        run: CGO_ENABLED=1 go test -race ./...
+
+      - name: Test (onnx)
+        working-directory: backend
+        run: CGO_ENABLED=1 go test -race -tags onnx ./...
+
+  docker:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The onnx image bakes in a 378MB model on top of the ONNX Runtime and the
+      # build cache. Hosted runners start with ~14GB free, which is enough only
+      # after the preinstalled toolchain images are dropped.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h /
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
@@ -42,7 +86,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Docker metadata
+      - name: Docker metadata (onnx)
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -53,20 +97,89 @@ jobs:
             type=sha,format=short
             type=ref,event=tag
 
+      - name: Docker metadata (lean)
+        id: meta-lean
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=lean,enable={{is_default_branch}}
+            type=sha,format=short,prefix=lean-
+            type=ref,event=tag,prefix=lean-
+
       # Build identity stamped into the binary so a running container can be
       # matched to source (surfaced at GET /api/health as "version").
       - name: Version stamp
         id: vars
         run: echo "version=${{ github.ref_name }}-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push
+      # linux/amd64 only, deliberately: Microsoft ships the ONNX Runtime release
+      # tarball as onnxruntime-linux-x64, so an arm64 build has no library to
+      # bundle. Unraid is x86_64.
+      - name: Build and push (onnx)
+        id: build_onnx
         uses: docker/build-push-action@v6
         with:
           context: .
+          target: runtime-onnx
+          platforms: linux/amd64
           push: true
           build-args: |
             OPPAI_VERSION=${{ steps.vars.outputs.version }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=onnx
+          cache-to: type=gha,scope=onnx,mode=max
+
+      - name: Build and push (lean)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            OPPAI_VERSION=${{ steps.vars.outputs.version }}
+          tags: ${{ steps.meta-lean.outputs.tags }}
+          labels: ${{ steps.meta-lean.outputs.labels }}
+          cache-from: type=gha,scope=lean
+          cache-to: type=gha,scope=lean,mode=max
+
+      # Fail loudly here rather than on the Unraid box. If the model or the ONNX
+      # Runtime library were missing, NewManager quietly falls back to the
+      # heuristic tagger — tagging would look "fine" while doing nothing. The
+      # image reports the tagger it actually loaded at GET /api/health.
+      - name: Smoke test the onnx image
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          DIGEST: ${{ steps.build_onnx.outputs.digest }}
+        run: |
+          set -euo pipefail
+          REF="$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')@${DIGEST}"
+          echo "smoke-testing $REF"
+
+          docker run -d --name oppai-smoke \
+            -e OPPAI_PASSPHRASE=smoke-test-passphrase \
+            -e OPPAI_ADMIN_USER=admin -e OPPAI_ADMIN_PASSWORD=smoke-test-pw \
+            -p 8080:8080 "$REF"
+
+          ok=""
+          for _ in $(seq 1 45); do
+            if curl -fsS http://localhost:8080/api/health -o health.json 2>/dev/null; then ok=1; break; fi
+            sleep 2
+          done
+          echo "--- container log ---"; docker logs oppai-smoke || true
+          [ -n "$ok" ] || { echo "FAIL: /api/health never responded" >&2; exit 1; }
+          echo "--- /api/health ---"; cat health.json; echo
+
+          # e.g. {"aiEnabled":true,"aiTagger":"onnx:model.onnx:cpu",...}
+          tagger=$(jq -r '.aiTagger' health.json)
+          echo "aiTagger = $tagger"
+          case "$tagger" in
+            onnx:*) ;;
+            *) echo "FAIL: expected an onnx tagger, got '$tagger'" >&2; exit 1 ;;
+          esac
+          [ "$(jq -r '.aiEnabled' health.json)" = "true" ] || {
+            echo "FAIL: aiEnabled is false" >&2; exit 1; }
+
+          docker rm -f oppai-smoke

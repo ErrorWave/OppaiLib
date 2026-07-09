@@ -101,21 +101,31 @@ func Frame(ctx context.Context, path string, dur float64, maxWidth int) ([]byte,
 	if seek < 0 {
 		seek = 0
 	}
+	return FrameAt(ctx, path, seek, maxWidth)
+}
 
+// FrameAt renders the single JPEG frame found at offset `at` seconds. A
+// maxWidth <= 0 means "no scaling": emit the frame at the video's native
+// resolution. The AI tagger relies on that, because a downscaled frame would
+// misreport the source's true dimensions to resolution-sensitive taggers.
+func FrameAt(ctx context.Context, path string, at float64, maxWidth int) ([]byte, error) {
+	if at < 0 {
+		at = 0
+	}
 	// -ss before -i is input seeking (fast, keyframe-accurate enough for a poster).
-	// scale=min(iw,MAX):-2 caps width without upscaling; -2 keeps height even.
-	vf := fmt.Sprintf("scale='min(%d,iw)':-2", maxWidth)
-	cmd := exec.CommandContext(ctx, "ffmpeg",
+	args := []string{
 		"-nostdin",
-		"-ss", strconv.FormatFloat(seek, 'f', 3, 64),
+		"-ss", strconv.FormatFloat(at, 'f', 3, 64),
 		"-i", path,
 		"-frames:v", "1",
-		"-vf", vf,
-		"-q:v", "3",
-		"-f", "image2",
-		"-c:v", "mjpeg",
-		"pipe:1",
-	)
+	}
+	if maxWidth > 0 {
+		// scale=min(iw,MAX):-2 caps width without upscaling; -2 keeps height even.
+		args = append(args, "-vf", fmt.Sprintf("scale='min(%d,iw)':-2", maxWidth))
+	}
+	args = append(args, "-q:v", "3", "-f", "image2", "-c:v", "mjpeg", "pipe:1")
+
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	var out, stderr bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &stderr
