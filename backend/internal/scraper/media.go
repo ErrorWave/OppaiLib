@@ -26,6 +26,13 @@ var mediaExt = map[string]models.MediaKind{
 	".webm": models.KindVideo,
 	".mov":  models.KindVideo,
 	".mkv":  models.KindVideo,
+	// Already-bundled comics. A link straight at one needs no page assembly —
+	// the file is the comic.
+	".cbz": models.KindComic,
+	".cbr": models.KindComic,
+	".cb7": models.KindComic,
+	".cbt": models.KindComic,
+	".pdf": models.KindComic,
 }
 
 // mediaKindFromPath returns the media kind implied by a URL path's extension,
@@ -44,12 +51,25 @@ func mediaKindFromContentType(ct string) models.MediaKind {
 	switch {
 	case ct == "image/gif":
 		return models.KindGIF
+	case comicContentType[ct]:
+		return models.KindComic
 	case strings.HasPrefix(ct, "image/"):
 		return models.KindImage
 	case strings.HasPrefix(ct, "video/"):
 		return models.KindVideo
 	}
 	return ""
+}
+
+// comicContentType maps the MIME types a bundled comic is served as. Checked
+// before the image/video prefixes so an extensionless CDN link to a .cbz is
+// recognised for what it is.
+var comicContentType = map[string]bool{
+	"application/pdf":                true,
+	"application/vnd.comicbook+zip":  true,
+	"application/vnd.comicbook-rar":  true,
+	"application/x-cbz":              true,
+	"application/x-cbr":              true,
 }
 
 // titleFromURL derives a human-ish title from a direct media URL (the file name

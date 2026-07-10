@@ -6,7 +6,58 @@ import (
 	"image/draw"
 	"image/gif"
 	"io"
+
+	"github.com/youruser/oppailib/internal/db"
 )
+
+// tagKey identifies a tag across frames. Category is normalised, so a tagger
+// that leaves it blank still collides with the "general" it will be stored as.
+type tagKey struct{ name, category string }
+
+func keyFor(s Suggestion) tagKey { return tagKey{s.Name, catOrGeneral(s.Category)} }
+
+func catOrGeneral(c string) string {
+	if c == "" {
+		return catGeneral
+	}
+	return c
+}
+
+// framed pairs the timestamp a frame was taken at with what the tagger saw in it.
+type framed struct {
+	at  float64 // seconds from the start of the clip
+	sug []Suggestion
+}
+
+// suggestions flattens frames into the per-frame slices aggregate consumes.
+func suggestions(frames []framed) [][]Suggestion {
+	out := make([][]Suggestion, len(frames))
+	for i, f := range frames {
+		out[i] = f.sug
+	}
+	return out
+}
+
+// momentsByTag inverts per-frame suggestions into, for each tag, the timestamps
+// where it was seen — the data the viewer draws on a video's timeline. Frames
+// arrive in ascending time order, so each list is already sorted.
+//
+// Ratings are excluded. aggregate reduces them to a single verdict about the
+// whole clip (see ratingSeverity), so pinning "explicit" to the four offsets
+// that happened to be sampled would imply a precision the model never claimed.
+func momentsByTag(frames []framed) map[tagKey][]db.Moment {
+	out := make(map[tagKey][]db.Moment)
+	for _, f := range frames {
+		for _, s := range f.sug {
+			if s.Category == catRating {
+				continue
+			}
+			k := keyFor(s)
+			out[k] = append(out[k], db.Moment{At: f.at, Score: s.Score})
+		}
+	}
+	return out
+}
 
 // sampleOffsets returns n evenly spaced timestamps (seconds) across a clip of
 // the given duration, kept inside the middle 90% so we never sample the black

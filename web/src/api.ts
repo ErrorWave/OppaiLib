@@ -7,6 +7,11 @@ export interface MediaTag {
   category: string;
   source?: string;
   score?: number;
+  /**
+   * Timestamps (seconds, ascending) where the AI saw this tag in a video.
+   * Only present on single-item fetches; list responses omit them.
+   */
+  moments?: number[];
 }
 
 export interface Media {

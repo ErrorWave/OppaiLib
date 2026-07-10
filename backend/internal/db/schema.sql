@@ -65,6 +65,18 @@ CREATE TABLE IF NOT EXISTS media_tags (
 );
 CREATE INDEX IF NOT EXISTS idx_media_tags_tag ON media_tags(tag_id);
 
+-- Where on a clip's timeline the AI saw each tag. One row per (tag, sampled
+-- frame); media_tags still holds the item-level summary. Rebuilt from scratch on
+-- every re-tag, so it always describes the run that produced the current tags.
+CREATE TABLE IF NOT EXISTS media_tag_frames (
+    media_id INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+    tag_id   INTEGER NOT NULL REFERENCES tags(id)  ON DELETE CASCADE,
+    t        REAL NOT NULL,                        -- seconds from start
+    score    REAL,                                 -- ai confidence at that frame
+    PRIMARY KEY (media_id, tag_id, t)
+);
+CREATE INDEX IF NOT EXISTS idx_tag_frames_media ON media_tag_frames(media_id);
+
 CREATE TABLE IF NOT EXISTS collections (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     name       TEXT NOT NULL UNIQUE,

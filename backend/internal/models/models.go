@@ -41,6 +41,10 @@ type Tag struct {
 	Category string  `json:"category"`
 	Source   string  `json:"source,omitempty"`
 	Score    float64 `json:"score,omitempty"`
+	// Moments are the timestamps (seconds) at which the AI saw this tag in a
+	// time-based item, ascending. Only populated for single-item fetches of
+	// videos; list responses omit them.
+	Moments []float64 `json:"moments,omitempty"`
 }
 
 type User struct {

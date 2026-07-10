@@ -109,8 +109,19 @@ func (s *Server) handleListMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := make([]models.Media, 0, len(rows))
+	ids := make([]int64, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, s.toModel(row))
+		ids = append(ids, row.ID)
+	}
+	// Tags ride along with the list: the client searches and filters over them
+	// without a round trip per item. One batched query, not one per row.
+	if tags, err := s.db.TagsForMediaBatch(r.Context(), ids); err == nil {
+		for i := range out {
+			out[i].Tags = tags[out[i].ID]
+		}
+	} else {
+		s.log.Warn("list tags", "err", err)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": out})
 }

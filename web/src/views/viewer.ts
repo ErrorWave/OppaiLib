@@ -1,8 +1,15 @@
 import { LitElement, html, css, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import { api, type Media } from "../api.js";
+import { api, type Media, type MediaTag } from "../api.js";
 import { iconStyles, motionStyles } from "../theme.js";
-import { KIND_META, KIND_ORDER, swatchFor, statFor, isTypingTarget } from "../media-meta.js";
+import {
+  KIND_META,
+  KIND_ORDER,
+  swatchFor,
+  statFor,
+  isTypingTarget,
+  formatTimecode,
+} from "../media-meta.js";
 
 // Inline single-item viewer, rendered inside the library content column (the
 // app bar's back button closes it). Renders a kind-specific stage — video/GIF
@@ -14,6 +21,8 @@ export class OppaiViewer extends LitElement {
   @property({ type: Boolean }) favorite = false;
 
   @state() private full: Media | null = null;
+  // Id of the tag whose detections are drawn on the video timeline, if any.
+  @state() private activeTag: number | null = null;
   @state() private tagging = false;
   @state() private editing = false;
   @state() private saving = false;
@@ -225,6 +234,65 @@ export class OppaiViewer extends LitElement {
         background: var(--oppai-surface-2);
         color: var(--oppai-text-dim);
       }
+      /* A tag whose detections can be shown on the timeline. */
+      button.chip {
+        border: none;
+        font: inherit;
+        font-size: 12px;
+        font-weight: 500;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        transition: background 0.18s ease, color 0.18s ease, transform 0.18s var(--oppai-ease-spring);
+      }
+      button.chip:hover {
+        transform: translateY(-1px);
+      }
+      button.chip.on {
+        background: var(--oppai-accent);
+        color: var(--oppai-on-accent);
+      }
+
+      /* Timeline of AI detections for the selected tag. */
+      .timeline {
+        margin-top: 12px;
+        animation: oppai-fade-in 0.3s var(--oppai-ease-standard) both;
+      }
+      .rail {
+        position: relative;
+        height: 22px;
+        border-radius: 11px;
+        background: var(--oppai-surface-2);
+        overflow: hidden;
+      }
+      .marker {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        width: 8px;
+        margin-left: -4px; /* centre the marker on its timestamp */
+        padding: 0;
+        border: none;
+        border-radius: 4px;
+        background: var(--oppai-accent);
+        cursor: pointer;
+        transition: transform 0.15s var(--oppai-ease-spring), filter 0.15s ease;
+      }
+      .marker:hover,
+      .marker:focus-visible {
+        transform: scaleX(1.6);
+        filter: brightness(1.2);
+        outline: none;
+      }
+      .rail-legend {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        color: var(--oppai-text-muted);
+        margin-top: 8px;
+      }
       .meta-note {
         font-size: 12px;
         color: var(--oppai-text-muted);
@@ -343,6 +411,7 @@ export class OppaiViewer extends LitElement {
       const prev = changed.get("media") as Media | undefined;
       if (prev && prev.id !== this.media.id) {
         this.editing = false;
+        this.activeTag = null;
         this.full = this.media;
         api
           .getMedia(this.media.id)
@@ -463,12 +532,66 @@ export class OppaiViewer extends LitElement {
     try {
       const res = await api.autotag(this.media.id);
       if (this.full) this.full = { ...this.full, tags: res.tags };
+      // The previous run's moments are gone; a stale selection would point at a
+      // tag id that no longer carries a timeline.
+      this.activeTag = null;
       this.dispatchEvent(new CustomEvent("changed", { bubbles: true, composed: true }));
     } catch (e) {
       console.error("autotag", e);
     } finally {
       this.tagging = false;
     }
+  }
+
+  // --- Tag timeline -------------------------------------------------------
+  // The AI records which sampled frames each tag appeared in. For a video whose
+  // duration we know, those offsets can be drawn on a rail beneath the player,
+  // so clicking a tag answers "where does this actually happen?" and clicking a
+  // marker jumps there.
+  private hasTimeline(t: MediaTag): boolean {
+    const m = this.full ?? this.media;
+    return m.kind === "video" && !!m.duration && !!t.moments?.length;
+  }
+
+  private toggleTagTimeline(t: MediaTag) {
+    if (!this.hasTimeline(t)) return;
+    this.activeTag = this.activeTag === t.id ? null : t.id;
+  }
+
+  private seekTo(seconds: number) {
+    const v = this.videoEl();
+    if (!v) return;
+    v.currentTime = seconds;
+    void v.play();
+  }
+
+  private renderTimeline(m: Media) {
+    if (m.kind !== "video" || !m.duration) return nothing;
+    const tag = (m.tags ?? []).find((t) => t.id === this.activeTag);
+    if (!tag?.moments?.length) return nothing;
+    const duration = m.duration;
+    return html`
+      <div class="timeline">
+        <div class="rail">
+          ${tag.moments.map(
+            (t) => html`<button
+              class="marker"
+              style="left:${Math.min(100, (t / duration) * 100)}%"
+              title="Jump to ${formatTimecode(t)}"
+              aria-label="Jump to ${formatTimecode(t)}"
+              @click=${() => this.seekTo(t)}
+            ></button>`,
+          )}
+        </div>
+        <div class="rail-legend">
+          <span class="material-symbols-rounded" style="font-size:16px;">auto_awesome</span>
+          <span
+            >“${tag.name}” detected at ${tag.moments.map((t) => formatTimecode(t)).join(", ")} — click a
+            marker to jump.</span
+          >
+        </div>
+      </div>
+    `;
   }
 
   // --- Edit / delete ------------------------------------------------------
@@ -607,6 +730,7 @@ export class OppaiViewer extends LitElement {
     return html`
       <div class="wrap">
         ${this.renderStage(m, url)}
+        ${this.renderTimeline(m)}
         ${m.kind === "game" ? nothing : this.renderMeta(m)}
       </div>
     `;
@@ -663,7 +787,6 @@ export class OppaiViewer extends LitElement {
           <span class="material-symbols-rounded" style="font-size:22px;">chevron_right</span>
         </button>
       </div>
-      ${this.renderMeta(m)}
     `;
   }
 
@@ -795,15 +918,35 @@ export class OppaiViewer extends LitElement {
         No tags yet — use the ✨ auto-tag button.
       </div>`;
     }
-    return html`<div class="chips">
-      ${tags.map(
-        (t) => html`<span
-          class="chip chip-muted"
-          title="${t.category}${t.source ? " · " + t.source : ""}"
-          >${t.name}</span
-        >`,
-      )}
-    </div>`;
+    const anyTimeline = tags.some((t) => this.hasTimeline(t));
+    return html`
+      <div class="chips">
+        ${tags.map((t) => this.renderTagChip(t))}
+      </div>
+      ${anyTimeline && this.activeTag == null
+        ? html`<div class="meta-note" style="margin-top:10px;">
+            Tap a ✨ tag to see where it appears in this video.
+          </div>`
+        : nothing}
+    `;
+  }
+
+  private renderTagChip(t: MediaTag) {
+    const detail = `${t.category}${t.source ? " · " + t.source : ""}`;
+    if (!this.hasTimeline(t)) {
+      return html`<span class="chip chip-muted" title=${detail}>${t.name}</span>`;
+    }
+    const on = this.activeTag === t.id;
+    const n = t.moments!.length;
+    return html`<button
+      class="chip ${on ? "on" : "chip-muted"}"
+      title="${detail} · seen at ${n} point${n === 1 ? "" : "s"}"
+      aria-pressed=${on}
+      @click=${() => this.toggleTagTimeline(t)}
+    >
+      <span class="material-symbols-rounded" style="font-size:14px;">auto_awesome</span>
+      ${t.name}
+    </button>`;
   }
 }
 

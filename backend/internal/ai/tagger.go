@@ -187,30 +187,36 @@ func (m *Manager) TagMediaAsync(id int64, blobPath, kind string) {
 // TagMedia decrypts the blob, extracts one or more representative frames from
 // it, runs the tagger over each, and persists the union of their suggestions as
 // tags with source="ai". Comics and games are still skipped — see docs/AI.md.
+//
+// Videos additionally record *where* each tag was seen, so the viewer can mark
+// those offsets on the timeline. Stills have no timeline, and a GIF's frame
+// delays are unreliable enough that offsets derived from them would point at the
+// wrong picture — both persist tags only.
 func (m *Manager) TagMedia(ctx context.Context, id int64, blobPath, kind string) error {
 	var (
-		frames []Suggestion
-		err    error
+		tags    []Suggestion
+		moments map[tagKey][]db.Moment
+		err     error
 	)
 	switch models.MediaKind(kind) {
 	case models.KindImage:
-		frames, err = m.tagImage(ctx, id, blobPath)
+		tags, err = m.tagImage(ctx, id, blobPath)
 	case models.KindGIF:
-		frames, err = m.tagGIF(ctx, id, blobPath)
+		tags, err = m.tagGIF(ctx, id, blobPath)
 	case models.KindVideo:
-		frames, err = m.tagVideo(ctx, id, blobPath)
+		tags, moments, err = m.tagVideo(ctx, id, blobPath)
 	default:
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	if len(frames) == 0 {
+	if len(tags) == 0 {
 		// Nothing to say: either the tagger found nothing above threshold, or the
 		// kind was skipped for a missing dependency (which already logged why).
 		return nil
 	}
-	m.persist(ctx, id, frames)
+	m.persist(ctx, id, tags, moments)
 	return nil
 }
 
@@ -277,17 +283,17 @@ func (m *Manager) tagGIF(ctx context.Context, id int64, blobPath string) ([]Sugg
 //
 // Without ffmpeg this is a no-op rather than an error, matching how video poster
 // generation degrades on a lean image.
-func (m *Manager) tagVideo(ctx context.Context, id int64, blobPath string) ([]Suggestion, error) {
+func (m *Manager) tagVideo(ctx context.Context, id int64, blobPath string) ([]Suggestion, map[tagKey][]db.Moment, error) {
 	if !thumbnail.Available() {
 		m.ffmpegWarn.Do(func() {
 			m.log.Warn("ai: ffmpeg/ffprobe not found on PATH — video auto-tagging disabled")
 		})
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	tmpPath, err := m.decryptToTemp(blobPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer os.Remove(tmpPath)
 
@@ -304,10 +310,10 @@ func (m *Manager) tagVideo(ctx context.Context, id int64, blobPath string) ([]Su
 	}
 
 	offsets := sampleOffsets(dur, m.frames)
-	perFrame := make([][]Suggestion, 0, len(offsets))
+	frames := make([]framed, 0, len(offsets))
 	for _, at := range offsets {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		jpg, err := thumbnail.FrameAt(ctx, tmpPath, at, 0)
 		if err != nil {
@@ -323,14 +329,19 @@ func (m *Manager) tagVideo(ctx context.Context, id int64, blobPath string) ([]Su
 		}
 		s, err := m.tagger.Tag(ctx, img)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		perFrame = append(perFrame, s)
+		frames = append(frames, framed{at: at, sug: s})
 	}
-	if len(perFrame) == 0 {
-		return nil, errors.New("ai: no frame could be extracted")
+	if len(frames) == 0 {
+		return nil, nil, errors.New("ai: no frame could be extracted")
 	}
-	return aggregate(perFrame), nil
+	// A probe-less clip is sampled at offset 0 only (see sampleOffsets); one
+	// marker pinned to the start says nothing useful, so skip the timeline.
+	if dur <= 0 {
+		return aggregate(suggestions(frames)), nil, nil
+	}
+	return aggregate(suggestions(frames)), momentsByTag(frames), nil
 }
 
 // decryptToTemp streams a blob out of the encrypted store into a plaintext temp
@@ -360,16 +371,27 @@ func (m *Manager) decryptToTemp(blobPath string) (string, error) {
 	return tmpPath, nil
 }
 
-// persist writes the aggregated suggestions as source="ai" tags.
-func (m *Manager) persist(ctx context.Context, id int64, suggestions []Suggestion) {
-	for _, s := range suggestions {
-		cat := s.Category
-		if cat == "" {
-			cat = "general"
-		}
-		if err := m.db.AddTag(ctx, id, s.Name, cat, "ai", s.Score); err != nil {
-			m.log.Warn("ai: persist tag", "tag", s.Name, "err", err)
+// persist writes the aggregated suggestions as source="ai" tags, along with the
+// per-frame moments backing each one. Moments are cleared first: this run's
+// frames are the whole truth about where its tags live, and a re-tag at a
+// different frame count would otherwise leave orphaned offsets behind.
+func (m *Manager) persist(ctx context.Context, id int64, tags []Suggestion, moments map[tagKey][]db.Moment) {
+	if len(moments) > 0 {
+		if err := m.db.ClearTagMoments(ctx, id); err != nil {
+			m.log.Warn("ai: clear tag moments", "media", id, "err", err)
 		}
 	}
-	m.log.Info("ai: tagged media", "media", id, "tags", len(suggestions), "tagger", m.tagger.Name())
+	for _, s := range tags {
+		cat := catOrGeneral(s.Category)
+		if err := m.db.AddTag(ctx, id, s.Name, cat, "ai", s.Score); err != nil {
+			m.log.Warn("ai: persist tag", "tag", s.Name, "err", err)
+			continue
+		}
+		if ms := moments[keyFor(s)]; len(ms) > 0 {
+			if err := m.db.SetTagMoments(ctx, id, s.Name, cat, ms); err != nil {
+				m.log.Warn("ai: persist tag moments", "tag", s.Name, "err", err)
+			}
+		}
+	}
+	m.log.Info("ai: tagged media", "media", id, "tags", len(tags), "tagger", m.tagger.Name())
 }

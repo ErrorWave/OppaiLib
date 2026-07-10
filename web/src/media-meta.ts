@@ -63,7 +63,8 @@ export function hasThumbnail(m: Media): boolean {
   return m.kind === "image" || m.kind === "gif" || !!m.hasThumb;
 }
 
-function formatDuration(seconds: number): string {
+/** m:ss timecode — a clip's length, or a position within it. */
+export function formatTimecode(seconds: number): string {
   const s = Math.max(0, Math.round(seconds));
   const m = Math.floor(s / 60);
   const r = s % 60;
@@ -87,7 +88,7 @@ export function statFor(m: Media): string {
   switch (m.kind) {
     case "video":
     case "gif":
-      return m.duration ? formatDuration(m.duration) : formatBytes(m.size);
+      return m.duration ? formatTimecode(m.duration) : formatBytes(m.size);
     case "image":
       return m.width && m.height ? `${m.width}×${m.height}` : formatBytes(m.size);
     case "game":

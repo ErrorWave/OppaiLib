@@ -1,12 +1,17 @@
 package api
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -205,6 +210,23 @@ func (s *Server) handleScrapeImport(w http.ResponseWriter, r *http.Request) {
 		}
 		result.Tags = append(result.Tags, req.Tags...)
 	}
+	// The dialog's type chip is the user's final word — it starts at whatever the
+	// scraper detected, and overriding it there must reach the import.
+	if req.Kind != "" {
+		result.Kind = req.Kind
+	}
+
+	// A comic is one entry whose pages are bundled, not one entry per page.
+	if result.Kind == string(models.KindComic) {
+		id, err := s.importComic(r, result)
+		if err != nil {
+			s.log.Warn("import comic failed", "url", req.URL, "err", err)
+			writeErr(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"imported": []int64{id}, "count": 1})
+		return
+	}
 
 	imported := make([]int64, 0, len(result.MediaURLs))
 	for _, mu := range result.MediaURLs {
@@ -262,6 +284,170 @@ func (s *Server) importOne(r *http.Request, mediaURL string, result *models.Scra
 		}
 	}
 	return id, nil
+}
+
+const (
+	// maxComicPages caps a single comic import. Deep enough for a long chapter,
+	// shallow enough that a misdetected image-heavy page can't fetch forever.
+	maxComicPages = 500
+	// maxComicPageBytes bounds one page image inside the archive.
+	maxComicPageBytes = 32 << 20
+	// maxCoverBytes bounds the first page held in memory to serve as the cover.
+	maxCoverBytes = 16 << 20
+)
+
+// importComic creates a single comic entry from an ordered run of page images by
+// downloading them in order and bundling them into a CBZ (a zip of images, named
+// so any reader sorts them correctly) stored as one encrypted blob. The first
+// page is kept as the thumbnail, mirroring how importGame uses its cover art.
+//
+// A single asset needs no assembly: it is either an already-bundled comic (.cbz,
+// .pdf — the direct-media fast path in the scraper produces these) or one stray
+// image. Both store as themselves.
+//
+// Unlike a gallery import, a failed page is fatal. A comic missing page 7 reads
+// as corrupt, and silently importing it would hide that from the user.
+func (s *Server) importComic(r *http.Request, result *models.ScrapeResult) (int64, error) {
+	pages := result.MediaURLs
+	if len(pages) == 0 {
+		return 0, fmt.Errorf("no pages found on that page")
+	}
+	if len(pages) == 1 {
+		return s.importOne(r, pages[0], result)
+	}
+	if len(pages) > maxComicPages {
+		return 0, fmt.Errorf("too many pages (%d, max %d)", len(pages), maxComicPages)
+	}
+
+	tmp, err := os.CreateTemp("", "oppai-cbz-*.zip")
+	if err != nil {
+		return 0, err
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		tmp.Close()
+		os.Remove(tmpPath)
+	}()
+
+	cover, err := s.writeCBZ(r, tmp, pages)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+		return 0, err
+	}
+
+	put, err := s.store.Put(tmp)
+	if err != nil {
+		return 0, err
+	}
+
+	title := result.Title
+	if title == "" {
+		title = "Comic"
+	}
+	titleEnc, _ := crypto.SealBytes(s.kek, []byte(title), []byte("title"))
+
+	row := &db.MediaRow{
+		Kind:      string(models.KindComic),
+		SHA256:    put.SHA256,
+		Size:      put.Size,
+		BlobPath:  put.RelPath,
+		TitleEnc:  titleEnc,
+		PageCount: sql.NullInt64{Int64: int64(len(pages)), Valid: true},
+	}
+	if result.Description != "" {
+		row.NotesEnc, _ = crypto.SealBytes(s.kek, []byte(result.Description), []byte("notes"))
+	}
+	if result.SourceURL != "" {
+		row.SourceEnc, _ = crypto.SealBytes(s.kek, []byte(result.SourceURL), []byte("source"))
+	}
+
+	id, existed, err := s.db.InsertMedia(r.Context(), row)
+	if err != nil {
+		return 0, err
+	}
+	if !existed && len(cover) > 0 {
+		if coverPut, err := s.store.Put(bytes.NewReader(cover)); err != nil {
+			s.log.Warn("comic cover store", "media", id, "err", err)
+		} else if err := s.db.SetThumbPath(r.Context(), id, coverPut.RelPath); err != nil {
+			s.log.Warn("comic cover thumb", "media", id, "err", err)
+		}
+	}
+	for _, t := range result.Tags {
+		if err := s.db.AddTag(r.Context(), id, t, "general", "scrape", 0); err != nil {
+			s.log.Warn("add comic tag", "tag", t, "err", err)
+		}
+	}
+	return id, nil
+}
+
+// writeCBZ downloads each page in order into a zip written to w, returning the
+// first page's bytes for use as the cover. Entries are numbered so a reader's
+// filename sort reproduces reading order, and stored uncompressed — JPEG and PNG
+// pages are already compressed, so deflating them only burns CPU.
+func (s *Server) writeCBZ(r *http.Request, w io.Writer, pages []string) (cover []byte, err error) {
+	zw := zip.NewWriter(w)
+	for i, pageURL := range pages {
+		dl, err := s.scraper.Download(r.Context(), pageURL)
+		if err != nil {
+			return nil, fmt.Errorf("page %d of %d: %w", i+1, len(pages), err)
+		}
+		ext := strings.ToLower(filepath.Ext(dl.Filename))
+		if ext == "" {
+			ext = ".jpg"
+		}
+		entry, err := zw.CreateHeader(&zip.FileHeader{
+			Name:   fmt.Sprintf("%04d%s", i+1, ext),
+			Method: zip.Store,
+		})
+		if err != nil {
+			dl.Body.Close()
+			return nil, err
+		}
+
+		var src io.Reader = io.LimitReader(dl.Body, maxComicPageBytes)
+		var coverBuf bytes.Buffer
+		if i == 0 {
+			src = io.TeeReader(src, &capWriter{w: &coverBuf, remaining: maxCoverBytes})
+		}
+		_, copyErr := io.Copy(entry, src)
+		dl.Body.Close()
+		if copyErr != nil {
+			return nil, fmt.Errorf("page %d of %d: %w", i+1, len(pages), copyErr)
+		}
+		if i == 0 && coverBuf.Len() < maxCoverBytes {
+			// A buffer that reached the cap was cut mid-image; half a JPEG is a worse
+			// thumbnail than none, so leave the comic to its gradient swatch instead.
+			cover = coverBuf.Bytes()
+		}
+	}
+	return cover, zw.Close()
+}
+
+// capWriter keeps the first n bytes and silently drops the rest, reporting every
+// write as fully consumed. io.TeeReader treats a short write as ErrShortWrite and
+// would abort the copy, so an oversized first page must cost us the cover — not
+// the whole import.
+type capWriter struct {
+	w         io.Writer
+	remaining int
+}
+
+func (c *capWriter) Write(p []byte) (int, error) {
+	if c.remaining <= 0 {
+		return len(p), nil
+	}
+	chunk := p
+	if len(chunk) > c.remaining {
+		chunk = chunk[:c.remaining]
+	}
+	n, err := c.w.Write(chunk)
+	c.remaining -= n
+	if err != nil {
+		return n, err
+	}
+	return len(p), nil
 }
 
 // importGame creates a single game entry from a scraped page: the cover image is

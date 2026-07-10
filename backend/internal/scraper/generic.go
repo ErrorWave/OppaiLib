@@ -29,6 +29,17 @@ func (GenericParser) Parse(doc *goquery.Document, u *url.URL) (*models.ScrapeRes
 		metaName(doc, "description"),
 	)
 
+	// Comics are decided before any other media extraction. A comic page almost
+	// always carries an og:image cover, which would satisfy the scan below and
+	// leave every actual page unread — so ask first, and take the whole ordered
+	// run of pages when the answer is yes.
+	if pages, ok := detectComic(doc, u); ok {
+		res.Kind = string(models.KindComic)
+		res.MediaURLs = pages
+		res.Tags = metaTags(doc)
+		return res, nil
+	}
+
 	// Media: prefer video (og / twitter player), then images, then a raw scan
 	// of the page's own <img>/<video> tags for sites that ship no card metadata.
 	seen := map[string]bool{}
@@ -90,21 +101,27 @@ func (GenericParser) Parse(doc *goquery.Document, u *url.URL) (*models.ScrapeRes
 		})
 	}
 
-	// Tags from meta keywords / article:tag.
+	res.Tags = metaTags(doc)
+
+	return res, nil
+}
+
+// metaTags pulls tags from meta keywords / article:tag.
+func metaTags(doc *goquery.Document) []string {
+	var tags []string
 	if kw := metaName(doc, "keywords"); kw != "" {
 		for _, t := range strings.Split(kw, ",") {
 			if t = strings.TrimSpace(t); t != "" {
-				res.Tags = append(res.Tags, t)
+				tags = append(tags, t)
 			}
 		}
 	}
 	doc.Find(`meta[property="article:tag"]`).Each(func(_ int, s *goquery.Selection) {
 		if c, ok := s.Attr("content"); ok && c != "" {
-			res.Tags = append(res.Tags, strings.TrimSpace(c))
+			tags = append(tags, strings.TrimSpace(c))
 		}
 	})
-
-	return res, nil
+	return tags
 }
 
 func metaProp(doc *goquery.Document, prop string) string {

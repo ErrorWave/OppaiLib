@@ -18,6 +18,10 @@ export class OppaiScrapeDialog extends LitElement {
   @state() private fetchCount = 0;
   @state() private error = "";
   @state() private kind = "image";
+  // Whether the user picked the type themselves. Until they do, each result
+  // imports as whatever the scraper detected *it* to be — one chip can't speak
+  // for a mixed bulk paste, but an explicit choice overrides every result.
+  @state() private kindTouched = false;
 
   static styles = [
     motionStyles,
@@ -99,11 +103,16 @@ export class OppaiScrapeDialog extends LitElement {
     this.phase = "";
     this.fetchCount = 0;
     this.kind = "image";
+    this.kindTouched = false;
     this.dialog.show();
   }
 
   private get isGame(): boolean {
     return this.kind === "game";
+  }
+
+  private get isComic(): boolean {
+    return this.kind === "comic";
   }
 
   private get urlList(): string[] {
@@ -158,9 +167,10 @@ export class OppaiScrapeDialog extends LitElement {
       }
       this.chosen = chosen;
       // Default the import type to what the scraper detected (itch.io pages come
-      // back as "game"), letting the user override.
+      // back as "game", comic readers as "comic"), letting the user override.
       const detected = this.results.find((r) => r.kind)?.kind;
       if (detected) this.kind = detected;
+      this.kindTouched = false;
       if (this.results.length === 0 && this.failures.length > 0) {
         this.error = "Nothing could be fetched from those links.";
       }
@@ -172,10 +182,21 @@ export class OppaiScrapeDialog extends LitElement {
     }
   }
 
+  private pickKind(k: string) {
+    this.kind = k;
+    this.kindTouched = true;
+  }
+
   private toggle(u: string) {
     const next = new Set(this.chosen);
     next.has(u) ? next.delete(u) : next.add(u);
     this.chosen = next;
+  }
+
+  // The type a given result imports as: the user's explicit pick if they made
+  // one, else whatever the scraper detected for that result on its own.
+  private kindFor(r: ScrapeResult): string {
+    return this.kindTouched ? this.kind : r.kind || this.kind;
   }
 
   private async import() {
@@ -188,7 +209,8 @@ export class OppaiScrapeDialog extends LitElement {
     let imported = 0;
     try {
       for (const r of this.results) {
-        if (this.isGame) {
+        const kind = this.kindFor(r);
+        if (kind === "game") {
           // One enriched game entry per page (cover, description, screenshots,
           // download link) — the server re-scrapes and builds the row.
           const res = await api.scrapeImport({
@@ -202,12 +224,14 @@ export class OppaiScrapeDialog extends LitElement {
         }
         const picked = r.mediaUrls.filter((u) => this.chosen.has(u));
         if (picked.length === 0) continue;
+        // A comic's pages are bundled server-side into one CBZ entry; every other
+        // kind imports one row per selected asset.
         const res = await api.scrapeImport({
           url: r.sourceUrl,
           mediaUrls: picked,
           title: r.title,
           tags: r.tags,
-          kind: this.kind,
+          kind,
         });
         imported += res.count;
       }
@@ -234,8 +258,23 @@ export class OppaiScrapeDialog extends LitElement {
             </div>`
           : ""}
         ${this.isGame ? this.renderGameGroup(r) : this.renderMediaGroup(r)}
+        ${this.isComic ? this.renderComicHint(r) : ""}
       </div>
     `;
+  }
+
+  private renderComicHint(r: ScrapeResult) {
+    const pages = r.mediaUrls.filter((u) => this.chosen.has(u)).length;
+    if (pages === 0) return html`<div class="game-hint">Select the pages to include.</div>`;
+    if (pages === 1) {
+      return html`<div class="game-hint">
+        A single page imports as one file. Select more pages to bundle them into a comic.
+      </div>`;
+    }
+    return html`<div class="game-hint">
+      Imports as one <strong>comic</strong> entry — ${pages} pages bundled into a CBZ, in the order
+      shown. Deselect any covers or banners that aren't pages.
+    </div>`;
   }
 
   private renderMediaGroup(r: ScrapeResult) {
@@ -280,7 +319,7 @@ export class OppaiScrapeDialog extends LitElement {
           (k) => html`<md-filter-chip
             label=${KIND_META[k].label}
             ?selected=${this.kind === k}
-            @click=${() => (this.kind = k)}
+            @click=${() => this.pickKind(k)}
           ></md-filter-chip>`,
         )}
       </div>
@@ -331,7 +370,9 @@ export class OppaiScrapeDialog extends LitElement {
               ? "Importing…"
               : this.isGame
                 ? html`Import ${this.results.length === 1 ? "game" : `${this.results.length} games`}`
-                : html`Import ${this.chosen.size || ""}${this.totalMedia ? ` / ${this.totalMedia}` : ""}`}
+                : this.isComic
+                  ? html`Import ${this.results.length === 1 ? "comic" : `${this.results.length} comics`}`
+                  : html`Import ${this.chosen.size || ""}${this.totalMedia ? ` / ${this.totalMedia}` : ""}`}
           </md-filled-button>
         </div>
       </md-dialog>

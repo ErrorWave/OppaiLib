@@ -31,6 +31,22 @@ const NAV_SECTIONS: NavSection[] = [
   { id: "favorites", label: "Favorites", icon: "favorite" },
 ];
 
+// Everything about an item a search query can match: its title, its notes, and
+// its tags — both the tag name and its category, so "character" or "rating"
+// surfaces everything the AI classified that way.
+function searchHaystack(m: Media): string {
+  const tags = (m.tags ?? []).flatMap((t) => [t.name, t.category]);
+  return [m.title, m.notes ?? "", ...tags].join("\n").toLowerCase();
+}
+
+// Terms are ANDed, so "blue hair explicit" narrows across fields — a tag from
+// one, a rating from another — rather than requiring one field to hold them all.
+function matchesSearch(m: Media, terms: string[]): boolean {
+  if (terms.length === 0) return true;
+  const hay = searchHaystack(m);
+  return terms.every((t) => hay.includes(t));
+}
+
 // Main application shell for the OppaiLib Media Server UI: a nav rail, top app
 // bar with search, and a content area that routes between the home dashboard,
 // category/favorites/search grids, and the single-item viewer.
@@ -631,7 +647,8 @@ export class OppaiLibrary extends LitElement {
     this.loading = true;
     try {
       // No search/favorite endpoints server-side; fetch the library once and
-      // filter client-side, matching the design's model.
+      // filter client-side, matching the design's model. The list carries each
+      // item's tags, which is what makes tag search and the filter chips work.
       const res = await api.listMedia("", 500, 0);
       this.items = res.items ?? [];
     } finally {
@@ -960,7 +977,7 @@ export class OppaiLibrary extends LitElement {
           <input
             .value=${this.search}
             @input=${this.onSearchInput}
-            placeholder="Search photos, videos, games, comics..."
+            placeholder="Search titles, tags, notes..."
           />
           ${hasSearch
             ? html`<button
@@ -1061,12 +1078,8 @@ export class OppaiLibrary extends LitElement {
       gridItems = this.items.filter((m) => this.favorites.has(m.id));
     } else if (isSearch) {
       title = "Search results";
-      const q = this.search.trim().toLowerCase();
-      gridItems = this.items.filter(
-        (m) =>
-          m.title.toLowerCase().includes(q) ||
-          (m.tags ?? []).some((t) => t.name.toLowerCase().includes(q)),
-      );
+      const terms = this.search.trim().toLowerCase().split(/\s+/).filter(Boolean);
+      gridItems = this.items.filter((m) => matchesSearch(m, terms));
     } else {
       const kind = this.section as Kind;
       title = KIND_META[kind]?.label ?? "";
