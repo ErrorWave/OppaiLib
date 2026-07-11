@@ -72,6 +72,57 @@ export interface BulkScrapeItem {
   error?: string;
 }
 
+// Server-side settings, editable from the Settings screen (admins only).
+export interface Settings {
+  aiEnabled: boolean;
+  aiAutoTag: boolean;
+  aiMinScore: number;
+  aiMaxTags: number;
+  scrapeDelayMs: number;
+  scrapeUserAgent: string;
+  scrapeRespectRobots: boolean;
+}
+
+// Environment/build facts the Settings screen shows but can't change — these come
+// from env vars and only take effect at startup.
+export interface ReadOnlyInfo {
+  version: string;
+  aiTagger: string;
+  aiModelDir: string;
+  aiDevice: string;
+  mediaDir: string;
+  dbPath: string;
+  ffmpeg: boolean;
+  sessionHours: number;
+}
+
+export interface SettingsResponse {
+  settings: Settings;
+  readOnly: ReadOnlyInfo;
+}
+
+export interface KindStat {
+  kind: string;
+  count: number;
+  bytes: number;
+}
+
+export interface Stats {
+  kinds: KindStat[];
+  items: number;
+  bytes: number;
+  tags: number;
+}
+
+// Whether a comic can be paged through in-app, and how many pages it has.
+// readable=false means the archive isn't a zip container (.cbr/.pdf) — the
+// viewer then offers the file as a download rather than a broken reader.
+export interface ComicInfo {
+  readable: boolean;
+  pages: number;
+  reason?: string;
+}
+
 const TOKEN_KEY = "oppai_token";
 
 export function getToken(): string | null {
@@ -162,6 +213,21 @@ export const api = {
   },
   autotag: (id: number) =>
     request<{ tags: MediaTag[] }>(`/api/media/${id}/autotag`, { method: "POST" }),
+
+  // Comics are read page-by-page from the server-side archive; the client never
+  // downloads the whole file.
+  comicInfo: (id: number) => request<ComicInfo>(`/api/media/${id}/comic`),
+  pageURL: (id: number, page: number) => `/api/media/${id}/page/${page}`,
+
+  getSettings: () => request<SettingsResponse>("/api/settings"),
+  saveSettings: (patch: Partial<Settings>) =>
+    request<SettingsResponse>("/api/settings", { method: "PUT", body: JSON.stringify(patch) }),
+  stats: () => request<Stats>("/api/stats"),
+  changePassword: (current: string, next: string) =>
+    request<{ status: string }>("/api/auth/password", {
+      method: "POST",
+      body: JSON.stringify({ current, new: next }),
+    }),
   updateMedia: (id: number, patch: MediaPatch) =>
     request<Media>(`/api/media/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   deleteMedia: (id: number) =>

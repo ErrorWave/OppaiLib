@@ -8,10 +8,12 @@ package storage
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/youruser/oppailib/internal/crypto"
 )
@@ -134,6 +136,51 @@ func (s *Store) OpenSeeker(rel string, size int64) (io.ReadSeekCloser, error) {
 		return nil, err
 	}
 	return seekCloser{br, f}, nil
+}
+
+// ReaderAtCloser is a random-access view of a decrypted blob.
+type ReaderAtCloser interface {
+	io.ReaderAt
+	io.Closer
+}
+
+// blobReaderAt turns the seekable blob reader into an io.ReaderAt. The
+// underlying BlobReader keeps one decrypted chunk cached and is not safe for
+// concurrent use, so reads are serialized; archive/zip issues them one at a
+// time anyway.
+type blobReaderAt struct {
+	mu sync.Mutex
+	rs io.ReadSeekCloser
+}
+
+func (b *blobReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, err := b.rs.Seek(off, io.SeekStart); err != nil {
+		return 0, err
+	}
+	n, err := io.ReadFull(b.rs, p)
+	// io.ReaderAt must report io.EOF (not ErrUnexpectedEOF) on a short read at
+	// the end of the blob — archive/zip probes past the end when hunting for the
+	// central directory and treats anything else as a hard failure.
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		err = io.EOF
+	}
+	return n, err
+}
+
+func (b *blobReaderAt) Close() error { return b.rs.Close() }
+
+// OpenAt returns a random-access, decrypting view of a blob — what archive/zip
+// needs to read a comic's central directory and inflate a single page without
+// touching the rest of the file. size is the plaintext length from the media
+// row. Callers must Close it.
+func (s *Store) OpenAt(rel string, size int64) (ReaderAtCloser, error) {
+	rs, err := s.OpenSeeker(rel, size)
+	if err != nil {
+		return nil, err
+	}
+	return &blobReaderAt{rs: rs}, nil
 }
 
 // Delete removes a blob.

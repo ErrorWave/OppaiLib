@@ -19,7 +19,7 @@ import "@material/web/tabs/tabs.js";
 import "@material/web/tabs/primary-tab.js";
 import { styles as typescaleStyles } from "@material/web/typography/md-typescale-styles.js";
 
-import { globalStyles } from "./theme.js";
+import { globalStyles, applyTheme, loadTheme, watchSystemTheme } from "./theme.js";
 import "./app.js";
 
 // Global M3 tokens + typography.
@@ -27,3 +27,7 @@ const style = document.createElement("style");
 style.textContent = globalStyles;
 document.head.appendChild(style);
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, typescaleStyles.styleSheet!];
+
+// Apply the saved theme before first paint so there's no flash of the wrong one.
+applyTheme(loadTheme());
+watchSystemTheme();

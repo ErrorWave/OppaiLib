@@ -1,14 +1,19 @@
 import { LitElement, html, css, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import { api, type Media, type MediaTag } from "../api.js";
+import { api, type ComicInfo, type Media, type MediaTag } from "../api.js";
 import { iconStyles, motionStyles } from "../theme.js";
 import {
   KIND_META,
   KIND_ORDER,
+  type ComicFit,
   swatchFor,
   statFor,
   isTypingTarget,
   formatTimecode,
+  loadComicFit,
+  saveComicFit,
+  loadComicPage,
+  saveComicPage,
 } from "../media-meta.js";
 
 // Inline single-item viewer, rendered inside the library content column (the
@@ -31,6 +36,12 @@ export class OppaiViewer extends LitElement {
   @state() private editKind: Media["kind"] = "image";
   @state() private editTags: string[] = [];
   @state() private newTag = "";
+
+  // Comic reader: null while the archive is being probed, then either a page
+  // count to read or readable=false (a .cbr/.pdf we can't open in-app).
+  @state() private comic: ComicInfo | null = null;
+  @state() private page = 1;
+  @state() private fit: ComicFit = loadComicFit();
 
   static styles = [
     iconStyles,
@@ -71,13 +82,27 @@ export class OppaiViewer extends LitElement {
         overflow: hidden;
         position: relative;
       }
-      .stage video,
-      .stage img {
+      .stage video {
         display: block;
         width: 100%;
         height: 100%;
         object-fit: contain;
         background: #000;
+      }
+      /* Photos and GIFs are laid out around the image rather than inside a fixed
+         frame: the picture keeps its own aspect ratio and the container shrinks
+         to it, so nothing is letterboxed and no filler bars are drawn. */
+      .stage-fit {
+        display: flex;
+        justify-content: center;
+      }
+      .stage-fit img {
+        display: block;
+        width: auto;
+        height: auto;
+        max-width: 100%;
+        max-height: 76vh;
+        border-radius: 20px;
       }
       .placeholder {
         display: flex;
@@ -89,26 +114,99 @@ export class OppaiViewer extends LitElement {
       }
       .mono {
         font: 600 12px ui-monospace, monospace;
-        color: #fff;
+        color: var(--oppai-text-dim);
         letter-spacing: 1px;
       }
+
+      /* Comic reader */
       .reader {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 14px;
+      }
+      .reader-stage {
+        position: relative;
+        width: 100%;
+        display: flex;
+        justify-content: center;
+        min-height: 240px;
+      }
+      .page-img {
+        display: block;
+        width: auto;
+        height: auto;
+        border-radius: 12px;
+      }
+      .page-img.fit-page {
+        max-width: 100%;
+        max-height: 74vh;
+      }
+      .page-img.fit-width {
+        width: 100%;
+        max-width: 1000px;
+      }
+      /* Click the left/right of the page to turn it, like any reader. The zones
+         sit over the image and only show their chevron on hover. */
+      .turn {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        width: 30%;
+        border: none;
+        background: none;
+        cursor: pointer;
         display: flex;
         align-items: center;
         justify-content: center;
-        gap: 24px;
+        opacity: 0;
+        transition: opacity 0.18s ease;
       }
-      .reader-page {
+      .turn:hover:not([disabled]) {
+        opacity: 1;
+      }
+      .turn[disabled] {
+        cursor: default;
+      }
+      .turn.prev {
+        left: 0;
+        justify-content: flex-start;
+      }
+      .turn.next {
+        right: 0;
+        justify-content: flex-end;
+      }
+      .turn span {
+        background: rgba(0, 0, 0, 0.45);
+        border-radius: 50%;
+        padding: 8px;
+        color: #fff;
+        backdrop-filter: blur(2px);
+      }
+      .reader-bar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        width: 100%;
+        max-width: 640px;
+      }
+      .reader-bar input[type="range"] {
+        flex: 1;
+        accent-color: var(--oppai-primary);
+      }
+      .reader-fallback {
         width: 340px;
         max-width: 60vw;
         aspect-ratio: 2 / 3;
         border-radius: 16px;
-        overflow: hidden;
+        margin: 0 auto;
         display: flex;
         align-items: center;
         justify-content: center;
         flex-direction: column;
         gap: 8px;
+        text-align: center;
+        padding: 0 20px;
       }
       .round-btn {
         width: 44px;
@@ -391,11 +489,7 @@ export class OppaiViewer extends LitElement {
 
   connectedCallback() {
     super.connectedCallback();
-    this.full = this.media;
-    api
-      .getMedia(this.media.id)
-      .then((m) => (this.full = m))
-      .catch(() => (this.full = this.media));
+    this.loadItem();
     window.addEventListener("keydown", this.onKey);
   }
 
@@ -412,29 +506,85 @@ export class OppaiViewer extends LitElement {
       if (prev && prev.id !== this.media.id) {
         this.editing = false;
         this.activeTag = null;
-        this.full = this.media;
-        api
-          .getMedia(this.media.id)
-          .then((m) => (this.full = m))
-          .catch(() => (this.full = this.media));
+        this.loadItem();
       }
     }
     // (Re)bind OS/hardware media controls to whatever video is now on stage.
     this.setupMediaSession();
   }
 
+  // Fetch the full record (tags, notes) and, for a comic, probe its archive.
+  private loadItem() {
+    const m = this.media;
+    this.full = m;
+    api
+      .getMedia(m.id)
+      .then((x) => (this.full = x))
+      .catch(() => (this.full = m));
+    this.comic = null;
+    if (m.kind === "comic") this.loadComic(m.id);
+  }
+
+  // --- Comic reader -------------------------------------------------------
+  private async loadComic(id: number) {
+    try {
+      const info = await api.comicInfo(id);
+      // A slow probe can land after the user has already paged to another item.
+      if (this.media.id !== id) return;
+      this.comic = info;
+      if (info.readable && info.pages > 0) {
+        this.page = Math.min(Math.max(loadComicPage(id), 1), info.pages);
+        this.preloadPage(id, this.page + 1);
+      }
+    } catch (e) {
+      if (this.media.id !== id) return;
+      this.comic = { readable: false, pages: 0, reason: (e as Error).message };
+    }
+  }
+
+  // Warm the next page so a page turn is instant. The browser cache does the
+  // rest — pages are immutable, so flipping back is free too.
+  private preloadPage(id: number, n: number) {
+    if (!this.comic?.readable || n < 1 || n > this.comic.pages) return;
+    new Image().src = api.pageURL(id, n);
+  }
+
+  private goPage(n: number) {
+    if (!this.comic?.readable) return;
+    const m = this.full ?? this.media;
+    const next = Math.min(Math.max(n, 1), this.comic.pages);
+    if (next === this.page) return;
+    this.page = next;
+    saveComicPage(m.id, next);
+    this.preloadPage(m.id, next + 1);
+    // In width-fit the page is taller than the viewport; start the new one at
+    // its top rather than wherever the last one was scrolled to.
+    if (this.fit === "width") {
+      this.renderRoot.querySelector(".reader-stage")?.scrollIntoView({ block: "start" });
+    }
+  }
+
+  private setFit(fit: ComicFit) {
+    this.fit = fit;
+    saveComicFit(fit);
+  }
+
   private videoEl(): HTMLVideoElement | null {
     return this.renderRoot?.querySelector("video") ?? null;
   }
 
-  // Keyboard shortcuts for the video stage. Arrow keys are intentionally left to
-  // the library shell (they page between items — see library.ts); seeking here
-  // uses j/l plus the on-screen scrubber, which now works thanks to server-side
-  // HTTP Range support.
+  // Keyboard shortcuts for the stage. On a video, arrow keys are intentionally
+  // left to the library shell (they page between items — see library.ts) and
+  // seeking uses j/l plus the on-screen scrubber. In a comic they turn pages
+  // instead, and the shell stands down for comics.
   private onKey = (e: KeyboardEvent) => {
-    const m = this.full ?? this.media;
-    if (m.kind !== "video") return;
     if (isTypingTarget(e)) return;
+    const m = this.full ?? this.media;
+    if (m.kind === "comic") {
+      this.onComicKey(e);
+      return;
+    }
+    if (m.kind !== "video") return;
     const v = this.videoEl();
     if (!v) return;
     switch (e.key) {
@@ -459,6 +609,31 @@ export class OppaiViewer extends LitElement {
         break;
     }
   };
+
+  private onComicKey(e: KeyboardEvent) {
+    if (!this.comic?.readable) return;
+    switch (e.key) {
+      case "ArrowRight":
+      case "PageDown":
+      case " ":
+        e.preventDefault();
+        this.goPage(this.page + 1);
+        break;
+      case "ArrowLeft":
+      case "PageUp":
+        e.preventDefault();
+        this.goPage(this.page - 1);
+        break;
+      case "Home":
+        e.preventDefault();
+        this.goPage(1);
+        break;
+      case "End":
+        e.preventDefault();
+        this.goPage(this.comic.pages);
+        break;
+    }
+  }
 
   private emitNavigate(dir: number) {
     this.dispatchEvent(
@@ -750,15 +925,9 @@ export class OppaiViewer extends LitElement {
           ></video>
         </div>`;
       case "gif":
-        return html`<div class="stage" style="aspect-ratio:16/9; background:${swatchFor(m)};">
-          <img src=${url} alt=${m.title} />
-        </div>`;
       case "image":
-        return html`<div
-          class="stage"
-          style="max-height:64vh; background:${swatchFor(m)}; display:flex; align-items:center; justify-content:center;"
-        >
-          <img src=${url} alt=${m.title} style="max-height:64vh;" />
+        return html`<div class="stage-fit">
+          <img src=${url} alt=${m.title} />
         </div>`;
       case "comic":
         return this.renderComic(m);
@@ -770,22 +939,93 @@ export class OppaiViewer extends LitElement {
   }
 
   private renderComic(m: Media) {
-    const pages = m.pageCount ?? "?";
     return html`
       <div class="reader">
-        <button class="round-btn" disabled title="Previous page">
+        ${this.comic === null
+          ? html`<div class="reader-fallback" style="background:${swatchFor(m)};">
+              <span class="mono" style="color:#fff;">OPENING…</span>
+            </div>`
+          : this.comic.readable
+            ? this.renderReader(m, this.comic)
+            : this.renderComicFallback(m, this.comic)}
+      </div>
+    `;
+  }
+
+  // The reader proper: one page at a time, streamed from the archive server-side.
+  private renderReader(m: Media, info: ComicInfo) {
+    const first = this.page <= 1;
+    const last = this.page >= info.pages;
+    return html`
+      <div class="reader-stage">
+        <img
+          class="page-img ${this.fit === "width" ? "fit-width" : "fit-page"}"
+          src=${api.pageURL(m.id, this.page)}
+          alt="Page ${this.page} of ${m.title}"
+        />
+        <button
+          class="turn prev"
+          title="Previous page"
+          ?disabled=${first}
+          @click=${() => this.goPage(this.page - 1)}
+        >
+          ${first
+            ? nothing
+            : html`<span class="material-symbols-rounded" style="font-size:28px;">chevron_left</span>`}
+        </button>
+        <button
+          class="turn next"
+          title="Next page"
+          ?disabled=${last}
+          @click=${() => this.goPage(this.page + 1)}
+        >
+          ${last
+            ? nothing
+            : html`<span class="material-symbols-rounded" style="font-size:28px;">chevron_right</span>`}
+        </button>
+      </div>
+
+      <div class="reader-bar">
+        <button class="round-btn" title="Previous page" ?disabled=${first} @click=${() => this.goPage(this.page - 1)}>
           <span class="material-symbols-rounded" style="font-size:22px;">chevron_left</span>
         </button>
-        <div class="reader-page" style="background:${swatchFor(m)};">
-          <span class="material-symbols-rounded" style="font-size:40px; color:#fff;">auto_stories</span>
-          <span class="mono">PAGE 1 OF ${pages}</span>
-          <a href=${api.streamURL(m.id)} download style="color:var(--oppai-primary-bright); font-size:12px; margin-top:6px;"
-            >Download to read</a
-          >
-        </div>
-        <button class="round-btn" disabled title="Next page">
+        <input
+          type="range"
+          min="1"
+          max=${info.pages}
+          .value=${String(this.page)}
+          @input=${(e: Event) => this.goPage(Number((e.target as HTMLInputElement).value))}
+          aria-label="Page"
+        />
+        <span class="mono">${this.page} / ${info.pages}</span>
+        <button class="round-btn" title="Next page" ?disabled=${last} @click=${() => this.goPage(this.page + 1)}>
           <span class="material-symbols-rounded" style="font-size:22px;">chevron_right</span>
         </button>
+        <button
+          class="round-btn"
+          title=${this.fit === "width" ? "Fit whole page" : "Fit to width"}
+          @click=${() => this.setFit(this.fit === "width" ? "page" : "width")}
+        >
+          <span class="material-symbols-rounded" style="font-size:22px;"
+            >${this.fit === "width" ? "fit_screen" : "fit_width"}</span
+          >
+        </button>
+      </div>
+    `;
+  }
+
+  // Archives we can't decode in-app (.cbr, .pdf) still get an honest way out.
+  private renderComicFallback(m: Media, info: ComicInfo) {
+    return html`
+      <div class="reader-fallback" style="background:${swatchFor(m)};">
+        <span class="material-symbols-rounded" style="font-size:40px; color:#fff;">auto_stories</span>
+        <span class="mono" style="color:#fff;">CAN'T READ IN APP</span>
+        <span style="font-size:12px; color:rgba(255,255,255,0.75);">
+          ${info.reason ?? "Unsupported archive."} Only .cbz / .zip comics can be paged through here.
+        </span>
+        <a href=${api.streamURL(m.id)} download style="color:#fff; font-size:12px; font-weight:600; margin-top:6px;"
+          >Download the file</a
+        >
       </div>
     `;
   }

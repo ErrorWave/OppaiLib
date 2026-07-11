@@ -85,11 +85,11 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	// Fire-and-forget AI auto-tagging (no-op if disabled or non-image) and video
-	// poster generation (no-op for non-video / when ffmpeg is absent).
+	// Fire-and-forget AI auto-tagging (no-op if disabled or non-image) and the
+	// per-kind ingest work (video posters, comic page index + cover).
 	if !existed {
 		s.ai.TagMediaAsync(id, res.RelPath, string(kind))
-		s.generateThumbAsync(id, res.RelPath, string(kind), 0)
+		s.processIngestAsync(id, res.RelPath, string(kind), res.Size, 0)
 	}
 
 	status := http.StatusCreated

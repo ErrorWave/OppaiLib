@@ -129,3 +129,50 @@ export function saveFavorites(favs: Set<number>): void {
     /* ignore quota / private-mode errors */
   }
 }
+
+// --- Comic reader ----------------------------------------------------------
+// How a page is sized ("page" fits the whole page on screen, "width" fills the
+// column and scrolls) and where the reader left off, per comic. Both are
+// per-device preferences, so they live client-side.
+
+export type ComicFit = "page" | "width";
+
+const FIT_KEY = "oppai_comic_fit";
+const POS_KEY = "oppai_comic_pos";
+
+export function loadComicFit(): ComicFit {
+  return localStorage.getItem(FIT_KEY) === "width" ? "width" : "page";
+}
+
+export function saveComicFit(fit: ComicFit): void {
+  try {
+    localStorage.setItem(FIT_KEY, fit);
+  } catch {
+    /* ignore */
+  }
+}
+
+function readPositions(): Record<string, number> {
+  try {
+    const raw = localStorage.getItem(POS_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, number>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** The page this comic was last left on (1 if never opened). */
+export function loadComicPage(id: number): number {
+  const n = readPositions()[String(id)];
+  return typeof n === "number" && n >= 1 ? n : 1;
+}
+
+export function saveComicPage(id: number, page: number): void {
+  try {
+    const all = readPositions();
+    all[String(id)] = page;
+    localStorage.setItem(POS_KEY, JSON.stringify(all));
+  } catch {
+    /* ignore */
+  }
+}

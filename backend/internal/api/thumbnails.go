@@ -71,6 +71,17 @@ func (s *Server) handleThumb(w http.ResponseWriter, r *http.Request) {
 	writeErr(w, http.StatusNotFound, "no thumbnail")
 }
 
+// processIngestAsync kicks off the per-kind background work for a freshly stored
+// blob: poster frames for video, page index + cover for comics. Fire-and-forget.
+func (s *Server) processIngestAsync(id int64, blobPath, kind string, size int64, knownDur float64) {
+	switch kind {
+	case "video":
+		s.generateThumbAsync(id, blobPath, kind, knownDur)
+	case "comic":
+		s.indexComicAsync(id, blobPath, size)
+	}
+}
+
 // generateThumbAsync produces a poster frame + probes metadata for a video in the
 // background. No-op for non-video kinds or when ffmpeg isn't installed. Safe to
 // call fire-and-forget after an upload/import.

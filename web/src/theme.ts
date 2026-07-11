@@ -198,6 +198,44 @@ export const motionStyles = css`
   }
 `;
 
+// --- Theme preference -------------------------------------------------------
+// "system" follows the OS setting and keeps following it as it changes; the two
+// explicit modes pin the app. Persisted client-side (a theme is per-device, not
+// per-library) and applied by stamping data-theme on <html>, which the token
+// blocks above key off.
+
+export type ThemePref = "dark" | "light" | "system";
+
+const THEME_KEY = "oppai_theme";
+
+export function loadTheme(): ThemePref {
+  const v = localStorage.getItem(THEME_KEY);
+  return v === "light" || v === "dark" || v === "system" ? v : "dark";
+}
+
+export function saveTheme(pref: ThemePref): void {
+  try {
+    localStorage.setItem(THEME_KEY, pref);
+  } catch {
+    /* ignore quota / private-mode errors */
+  }
+}
+
+/** Resolve "system" against the OS and stamp the result on <html>. */
+export function applyTheme(pref: ThemePref): void {
+  const light =
+    pref === "light" ||
+    (pref === "system" && window.matchMedia("(prefers-color-scheme: light)").matches);
+  document.documentElement.dataset.theme = light ? "light" : "";
+}
+
+/** Re-apply on OS changes while the preference is "system". */
+export function watchSystemTheme(): void {
+  window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => {
+    if (loadTheme() === "system") applyTheme("system");
+  });
+}
+
 // Shared component-level styles.
 export const cardStyles = css`
   .card {

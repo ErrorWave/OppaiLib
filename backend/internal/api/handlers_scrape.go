@@ -275,7 +275,7 @@ func (s *Server) importOne(r *http.Request, mediaURL string, result *models.Scra
 		return 0, err
 	}
 	if !existed {
-		s.generateThumbAsync(id, put.RelPath, kind, 0)
+		s.processIngestAsync(id, put.RelPath, kind, put.Size, 0)
 	}
 	// Attach scraped tags.
 	for _, t := range result.Tags {

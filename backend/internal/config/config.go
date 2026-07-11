@@ -7,6 +7,12 @@ import (
 	"time"
 )
 
+// DefaultScrapeUserAgent is a browser-like UA: many sites only emit
+// OpenGraph/Twitter card metadata (or serve any HTML at all) to recognized
+// agents. Override with OPPAI_SCRAPE_USER_AGENT — or from the Settings screen —
+// to advertise the tool honestly.
+const DefaultScrapeUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+
 type Config struct {
 	HTTPAddr   string
 	MediaDir   string
@@ -46,10 +52,7 @@ func Load() *Config {
 		AIDevice:        env("OPPAI_AI_DEVICE", "cpu"),
 		AIVideoFrames:   envInt("OPPAI_AI_VIDEO_FRAMES", 0),
 		ScrapeDelay:         time.Duration(envInt("OPPAI_SCRAPE_DELAY_MS", 1500)) * time.Millisecond,
-		// A browser-like UA by default: many sites only emit OpenGraph/Twitter
-		// card metadata (or serve any HTML at all) to recognized agents.
-		// Override with OPPAI_SCRAPE_USER_AGENT to advertise the tool honestly.
-		ScrapeUserAgent:     env("OPPAI_SCRAPE_USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"),
+		ScrapeUserAgent:     env("OPPAI_SCRAPE_USER_AGENT", DefaultScrapeUserAgent),
 		ScrapeRespectRobots: envBool("OPPAI_SCRAPE_RESPECT_ROBOTS", true),
 		SessionTTL:      time.Duration(envInt("OPPAI_SESSION_TTL_HOURS", 720)) * time.Hour,
 		Debug:           envBool("OPPAI_DEBUG", false),

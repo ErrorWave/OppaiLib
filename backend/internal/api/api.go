@@ -15,24 +15,26 @@ import (
 	"github.com/youruser/oppailib/internal/config"
 	"github.com/youruser/oppailib/internal/db"
 	"github.com/youruser/oppailib/internal/scraper"
+	"github.com/youruser/oppailib/internal/settings"
 	"github.com/youruser/oppailib/internal/storage"
 	oweb "github.com/youruser/oppailib/internal/web"
 )
 
 type Server struct {
-	cfg     *config.Config
-	db      *db.DB
-	store   *storage.Store
-	scraper *scraper.Engine
-	ai      *ai.Manager
-	kek     []byte
-	log     *slog.Logger
+	cfg      *config.Config
+	db       *db.DB
+	store    *storage.Store
+	scraper  *scraper.Engine
+	ai       *ai.Manager
+	settings *settings.Store
+	kek      []byte
+	log      *slog.Logger
 
 	thumbSem  chan struct{} // bounds concurrent ffmpeg thumbnail jobs
 	thumbWarn sync.Once      // warn once if ffmpeg is missing
 }
 
-func NewServer(cfg *config.Config, database *db.DB, store *storage.Store, sc *scraper.Engine, aiMgr *ai.Manager, kek []byte, log *slog.Logger) *Server {
+func NewServer(cfg *config.Config, database *db.DB, store *storage.Store, sc *scraper.Engine, aiMgr *ai.Manager, set *settings.Store, kek []byte, log *slog.Logger) *Server {
 	// Cap thumbnail workers well below core count: ffmpeg is CPU-heavy and this is
 	// background work that must not starve request handling on a lean Unraid box.
 	workers := runtime.GOMAXPROCS(0) / 2
@@ -43,15 +45,18 @@ func NewServer(cfg *config.Config, database *db.DB, store *storage.Store, sc *sc
 		workers = 4
 	}
 	return &Server{
-		cfg: cfg, db: database, store: store, scraper: sc, ai: aiMgr, kek: kek, log: log,
+		cfg: cfg, db: database, store: store, scraper: sc, ai: aiMgr, settings: set,
+		kek: kek, log: log,
 		thumbSem: make(chan struct{}, workers),
 	}
 }
 
-// StartBackgroundJobs kicks off one-time startup work (thumbnail backfill). Call
+// StartBackgroundJobs kicks off one-time startup work: backfilling video posters
+// and indexing comics (page count + cover) that predate the in-app reader. Call
 // once after the server is constructed.
 func (s *Server) StartBackgroundJobs() {
 	go s.backfillThumbnails()
+	go s.backfillComics()
 }
 
 // Handler builds the full http.Handler (API + static web UI).
@@ -72,6 +77,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
 	mux.HandleFunc("POST /api/auth/logout", s.requireAuth(s.handleLogout))
 	mux.HandleFunc("GET /api/auth/me", s.requireAuth(s.handleMe))
+	mux.HandleFunc("POST /api/auth/password", s.requireAuth(s.handleChangePassword))
+
+	// Settings + library stats (protected; writing settings is admin-only).
+	mux.HandleFunc("GET /api/settings", s.requireAuth(s.handleGetSettings))
+	mux.HandleFunc("PUT /api/settings", s.requireAuth(s.requireAdmin(s.handlePutSettings)))
+	mux.HandleFunc("GET /api/stats", s.requireAuth(s.handleStats))
 
 	// Media (protected).
 	mux.HandleFunc("GET /api/media", s.requireAuth(s.handleListMedia))
@@ -83,6 +94,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/media/{id}/stream", s.requireAuth(s.handleStreamMedia))
 	mux.HandleFunc("GET /api/media/{id}/thumb", s.requireAuth(s.handleThumb))
 	mux.HandleFunc("POST /api/media/{id}/autotag", s.requireAuth(s.handleAutotag))
+
+	// Comics: read page-by-page out of the archive instead of downloading it.
+	mux.HandleFunc("GET /api/media/{id}/comic", s.requireAuth(s.handleComicInfo))
+	mux.HandleFunc("GET /api/media/{id}/page/{n}", s.requireAuth(s.handleComicPage))
 
 	// Scraper (protected).
 	mux.HandleFunc("POST /api/scrape", s.requireAuth(s.handleScrape))
@@ -116,6 +131,20 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		ctx := context.WithValue(r.Context(), userKey, user)
 		next(w, r.WithContext(ctx))
+	}
+}
+
+// requireAdmin gates a handler that has already passed requireAuth. Settings
+// affect every user of the install (and the scraper's behaviour toward third-party
+// hosts), so only an admin may change them.
+func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		u, ok := r.Context().Value(userKey).(*db.UserRow)
+		if !ok || !u.IsAdmin {
+			writeErr(w, http.StatusForbidden, "admin only")
+			return
+		}
+		next(w, r)
 	}
 }
 

@@ -44,11 +44,16 @@ type DirectParser interface {
 // Engine orchestrates fetch → parse. It holds registered parsers (site-specific
 // first, generic last), a polite rate limiter, and an optional robots checker.
 type Engine struct {
-	client    *http.Client
+	client  *http.Client
+	site    []Parser // ordered, site-specific
+	generic Parser
+
+	// User agent, politeness delay and the robots checker are editable at runtime
+	// from the Settings screen, so they're read through optMu rather than fixed at
+	// construction.
+	optMu     sync.RWMutex
 	userAgent string
 	delay     time.Duration
-	site      []Parser // ordered, site-specific
-	generic   Parser
 	robots    *robotsCache
 
 	mu       sync.Mutex
@@ -83,17 +88,50 @@ func New(opts Options) *Engine {
 	}
 	client := &http.Client{Timeout: 30 * time.Second, Transport: transport}
 	e := &Engine{
-		client:    client,
-		userAgent: opts.UserAgent,
-		delay:     opts.Delay,
-		site:      opts.SiteParsers,
-		generic:   &GenericParser{},
-		lastHost:  make(map[string]time.Time),
+		client:   client,
+		site:     opts.SiteParsers,
+		generic:  &GenericParser{},
+		lastHost: make(map[string]time.Time),
 	}
-	if opts.RespectRobots {
-		e.robots = newRobotsCache(client, opts.UserAgent)
-	}
+	e.SetOptions(opts.UserAgent, opts.Delay, opts.RespectRobots)
 	return e
+}
+
+// SetOptions applies the live-editable scrape knobs. Turning robots checking on
+// builds a fresh cache (it bakes in the user agent it evaluates rules for);
+// turning it off drops it.
+func (e *Engine) SetOptions(userAgent string, delay time.Duration, respectRobots bool) {
+	e.optMu.Lock()
+	defer e.optMu.Unlock()
+	e.userAgent = userAgent
+	e.delay = delay
+	if respectRobots {
+		e.robots = newRobotsCache(e.client, userAgent)
+	} else {
+		e.robots = nil
+	}
+}
+
+// ua returns the current user agent.
+func (e *Engine) ua() string {
+	e.optMu.RLock()
+	defer e.optMu.RUnlock()
+	return e.userAgent
+}
+
+// pace returns the current per-host politeness delay.
+func (e *Engine) pace() time.Duration {
+	e.optMu.RLock()
+	defer e.optMu.RUnlock()
+	return e.delay
+}
+
+// robotsChecker returns the current robots cache, or nil when robots checking is
+// disabled.
+func (e *Engine) robotsChecker() *robotsCache {
+	e.optMu.RLock()
+	defer e.optMu.RUnlock()
+	return e.robots
 }
 
 // Register appends a site-specific parser (takes priority over the generic one).
@@ -136,7 +174,7 @@ func (e *Engine) Scrape(ctx context.Context, rawURL string) (*models.ScrapeResul
 		if err := e.throttle(ctx, u.Host); err != nil {
 			return nil, err
 		}
-		res, err := dp.ScrapeDirect(ctx, e.client, e.userAgent, u)
+		res, err := dp.ScrapeDirect(ctx, e.client, e.ua(), u)
 		if err != nil {
 			return nil, err
 		}
@@ -145,8 +183,8 @@ func (e *Engine) Scrape(ctx context.Context, rawURL string) (*models.ScrapeResul
 		return res, nil
 	}
 
-	if e.robots != nil {
-		allowed, err := e.robots.allowed(ctx, u)
+	if rc := e.robotsChecker(); rc != nil {
+		allowed, err := rc.allowed(ctx, u)
 		if err == nil && !allowed {
 			return nil, fmt.Errorf("scrape: blocked by robots.txt for %s", u.Path)
 		}
@@ -202,7 +240,7 @@ func (e *Engine) get(ctx context.Context, u *url.URL) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", e.userAgent)
+	req.Header.Set("User-Agent", e.ua())
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 	return e.client.Do(req)
@@ -213,12 +251,13 @@ func (e *Engine) get(ctx context.Context, u *url.URL) (*http.Response, error) {
 // full wait — important for bulk fetches, where same-host URLs queue up behind
 // each other and the tail can otherwise sleep for tens of seconds.
 func (e *Engine) throttle(ctx context.Context, host string) error {
+	delay := e.pace()
 	e.mu.Lock()
 	last, ok := e.lastHost[host]
 	wait := time.Duration(0)
 	if ok {
-		if elapsed := time.Since(last); elapsed < e.delay {
-			wait = e.delay - elapsed
+		if elapsed := time.Since(last); elapsed < delay {
+			wait = delay - elapsed
 		}
 	}
 	e.lastHost[host] = time.Now().Add(wait)

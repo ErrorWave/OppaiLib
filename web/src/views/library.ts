@@ -16,8 +16,9 @@ import {
 } from "../media-meta.js";
 import "./viewer.js";
 import "./scrape-dialog.js";
+import "./settings.js";
 
-type Section = "home" | "favorites" | Kind;
+type Section = "home" | "favorites" | "settings" | Kind;
 
 interface NavSection {
   id: Section;
@@ -63,7 +64,6 @@ export class OppaiLibrary extends LitElement {
   @state() private favorites = loadFavorites();
   @state() private uploadOpen = false;
   @state() private dragActive = false;
-  @state() private theme: "dark" | "light" = "dark";
   @state() private selectMode = false;
   @state() private selected = new Set<number>();
   @state() private busy = false;
@@ -616,15 +616,20 @@ export class OppaiLibrary extends LitElement {
 
   // In the viewer, Left/Right page between items and Escape closes it. Guarded so
   // it never fires while typing in the search box or with the upload dialog open.
+  // Comics are the exception: there the arrows turn pages (the viewer owns them),
+  // so the shell stands down and only Escape still closes.
   private onKey = (e: KeyboardEvent) => {
     if (this.selectedId == null || this.uploadOpen) return;
     if (isTypingTarget(e)) return;
+    const reading = this.items.find((m) => m.id === this.selectedId)?.kind === "comic";
     switch (e.key) {
       case "ArrowRight":
+        if (reading) return;
         e.preventDefault();
         this.stepItem(1);
         break;
       case "ArrowLeft":
+        if (reading) return;
         e.preventDefault();
         this.stepItem(-1);
         break;
@@ -686,10 +691,6 @@ export class OppaiLibrary extends LitElement {
     next.has(id) ? next.delete(id) : next.add(id);
     this.favorites = next;
     saveFavorites(next);
-  }
-  private toggleTheme() {
-    this.theme = this.theme === "dark" ? "light" : "dark";
-    document.documentElement.dataset.theme = this.theme === "light" ? "light" : "";
   }
 
   // --- Bulk selection -----------------------------------------------------
@@ -827,16 +828,18 @@ export class OppaiLibrary extends LitElement {
   render() {
     const hasSearch = this.search.trim().length > 0;
     const isViewer = this.selectedId != null;
+    const isSettings = !isViewer && this.section === "settings" && !hasSearch;
     const isFavorites = !isViewer && this.section === "favorites" && !hasSearch;
     const isHome = !isViewer && this.section === "home" && !hasSearch && !isFavorites;
     const isSearch = !isViewer && hasSearch;
-    const isGrid = !isViewer && !isHome && !isFavorites && !isSearch;
+    const isGrid = !isViewer && !isHome && !isFavorites && !isSearch && !isSettings;
 
     const activeItem = isViewer ? this.items.find((m) => m.id === this.selectedId) ?? null : null;
 
     let headerTitle = "Library";
     if (isViewer) headerTitle = activeItem ? activeItem.title : "Library";
     else if (isSearch) headerTitle = "Search results";
+    else if (isSettings) headerTitle = "Settings";
     else if (isFavorites) headerTitle = "Favorites";
     else if (isHome) headerTitle = "Library";
     else headerTitle = KIND_META[this.section as Kind]?.label ?? "Library";
@@ -844,9 +847,10 @@ export class OppaiLibrary extends LitElement {
     return html`
       ${this.renderNav()}
       <div class="main-col">
-        ${this.renderHeader(headerTitle, hasSearch, isViewer)}
+        ${this.renderHeader(headerTitle, hasSearch, isViewer, isSettings)}
         <main>
           ${isHome ? this.renderHome() : nothing}
+          ${isSettings ? html`<oppai-settings .user=${this.user}></oppai-settings>` : nothing}
           ${isGrid || isFavorites || isSearch
             ? this.renderGrid(isGrid, isFavorites, isSearch)
             : nothing}
@@ -905,6 +909,7 @@ export class OppaiLibrary extends LitElement {
 
   private renderNav() {
     const initials = (this.user?.username ?? "?").slice(0, 2).toUpperCase();
+    const settingsActive = this.section === "settings" && this.selectedId == null;
     return html`
       <nav>
         <button class="add-btn" title="Add media" @click=${this.toggleUpload}>
@@ -938,11 +943,17 @@ export class OppaiLibrary extends LitElement {
 
         <button
           class="icon-btn"
-          title="Toggle theme"
-          @click=${this.toggleTheme}
-          style="width:48px; height:48px; border-radius:24px; background:var(--oppai-surface-2); color:var(--oppai-text-dim);"
+          title="Settings"
+          @click=${() => this.selectSection("settings")}
+          style="width:48px; height:48px; border-radius:24px; background:${settingsActive
+            ? "var(--oppai-primary-container)"
+            : "var(--oppai-surface-2)"}; color:${settingsActive
+            ? "var(--oppai-primary-bright)"
+            : "var(--oppai-text-dim)"};"
         >
-          <span class="material-symbols-rounded" style="font-size:22px;">settings</span>
+          <span class="material-symbols-rounded ${settingsActive ? "fill-icon" : ""}" style="font-size:22px;"
+            >settings</span
+          >
         </button>
         <button
           class="icon-btn"
@@ -956,7 +967,7 @@ export class OppaiLibrary extends LitElement {
     `;
   }
 
-  private renderHeader(title: string, hasSearch: boolean, isViewer: boolean) {
+  private renderHeader(title: string, hasSearch: boolean, isViewer: boolean, isSettings = false) {
     return html`
       <header>
         ${isViewer
@@ -992,7 +1003,7 @@ export class OppaiLibrary extends LitElement {
 
         <div style="flex:1;"></div>
 
-        ${!isViewer
+        ${!isViewer && !isSettings
           ? html`<button
               class="filters-btn header-toggle ${this.selectMode ? "on" : ""}"
               title="Select multiple"
@@ -1004,11 +1015,12 @@ export class OppaiLibrary extends LitElement {
               <span style="font-size:13px; font-weight:500;">Select</span>
             </button>`
           : nothing}
-
-        <button class="filters-btn">
-          <span class="material-symbols-rounded" style="font-size:18px;">tune</span>
-          <span style="font-size:13px; font-weight:500;">Filters</span>
-        </button>
+        ${!isSettings
+          ? html`<button class="filters-btn">
+              <span class="material-symbols-rounded" style="font-size:18px;">tune</span>
+              <span style="font-size:13px; font-weight:500;">Filters</span>
+            </button>`
+          : nothing}
       </header>
     `;
   }

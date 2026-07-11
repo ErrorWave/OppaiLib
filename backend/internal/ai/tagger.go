@@ -28,6 +28,7 @@ import (
 	"log/slog"
 	"os"
 	"runtime"
+	"sort"
 	"sync"
 	"time"
 
@@ -88,18 +89,22 @@ type Tagger interface {
 
 // Manager wires a Tagger to the store + db and runs tagging jobs.
 type Manager struct {
-	enabled bool
-	tagger  Tagger
-	frames  int // frames sampled per video
-	store   *storage.Store
-	db      *db.DB
-	log     *slog.Logger
+	tagger Tagger
+	frames int // frames sampled per video
+	store  *storage.Store
+	db     *db.DB
+	log    *slog.Logger
 
 	sem        chan struct{} // bounds concurrent background tag jobs
 	ffmpegWarn sync.Once     // warn once if ffmpeg is missing
+
+	mu   sync.RWMutex
+	opts Options
 }
 
-// Config selects and configures the tagger.
+// Config selects and configures the tagger at startup. ModelDir and Device are
+// baked into the tagger and only change on restart; the knobs in Options are
+// live-editable from the Settings screen.
 type Config struct {
 	Enabled     bool
 	ModelDir    string
@@ -107,8 +112,21 @@ type Config struct {
 	VideoFrames int    // frames sampled per video; <=0 uses DefaultVideoFrames
 }
 
+// Options are the runtime-tunable tagging knobs, edited from the Settings
+// screen. They sit on top of the model's own thresholds (see onnx.go): the model
+// decides what it is confident enough to suggest at all, and these decide how
+// much of that the library actually keeps.
+type Options struct {
+	Enabled  bool    // master switch; off means no tagging at all
+	AutoTag  bool    // tag automatically on upload/import
+	MinScore float64 // drop suggestions below this confidence (ratings exempt)
+	MaxTags  int     // keep at most this many suggestions per item (ratings exempt)
+}
+
 // NewManager picks the best available tagger: the ONNX tagger if the build
-// supports it and a model is present, else the heuristic fallback.
+// supports it and a model is present, else the heuristic fallback. The tagger is
+// built even when tagging starts disabled, so switching it on in Settings
+// doesn't require a restart.
 func NewManager(cfg Config, store *storage.Store, database *db.DB, log *slog.Logger) *Manager {
 	frames := cfg.VideoFrames
 	if frames <= 0 {
@@ -129,16 +147,12 @@ func NewManager(cfg Config, store *storage.Store, database *db.DB, log *slog.Log
 	}
 
 	m := &Manager{
-		enabled: cfg.Enabled,
-		frames:  frames,
-		store:   store,
-		db:      database,
-		log:     log,
-		sem:     make(chan struct{}, workers),
-	}
-	if !cfg.Enabled {
-		m.tagger = &HeuristicTagger{}
-		return m
+		frames: frames,
+		store:  store,
+		db:     database,
+		log:    log,
+		sem:    make(chan struct{}, workers),
+		opts:   Options{Enabled: cfg.Enabled, AutoTag: true, MinScore: 0.35, MaxTags: 20},
 	}
 	if t, err := newOnnxTagger(cfg.ModelDir, cfg.Device, log); err == nil {
 		log.Info("ai: using ONNX tagger", "model_dir", cfg.ModelDir, "device", cfg.Device)
@@ -150,8 +164,22 @@ func NewManager(cfg Config, store *storage.Store, database *db.DB, log *slog.Log
 	return m
 }
 
+// SetOptions applies live settings.
+func (m *Manager) SetOptions(o Options) {
+	m.mu.Lock()
+	m.opts = o
+	m.mu.Unlock()
+}
+
+// Options returns the current tuning.
+func (m *Manager) Options() Options {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.opts
+}
+
 // Enabled reports whether auto-tagging is on.
-func (m *Manager) Enabled() bool { return m.enabled }
+func (m *Manager) Enabled() bool { return m.Options().Enabled }
 
 // TaggerName returns the active tagger's name (for status/health).
 func (m *Manager) TaggerName() string {
@@ -164,8 +192,12 @@ func (m *Manager) TaggerName() string {
 // TagMediaAsync runs TagMedia in the background, logging any error. Jobs are
 // bounded by the worker semaphore, so a bulk import queues rather than spawning
 // one ffmpeg per video at once.
+//
+// This is the ingest path, so it also honors the AutoTag switch — an explicit
+// re-tag from the UI goes through TagMedia and runs regardless.
 func (m *Manager) TagMediaAsync(id int64, blobPath, kind string) {
-	if !m.enabled {
+	o := m.Options()
+	if !o.Enabled || !o.AutoTag {
 		return
 	}
 	timeout := 2 * time.Minute
@@ -211,6 +243,7 @@ func (m *Manager) TagMedia(ctx context.Context, id int64, blobPath, kind string)
 	if err != nil {
 		return err
 	}
+	tags = m.filter(tags)
 	if len(tags) == 0 {
 		// Nothing to say: either the tagger found nothing above threshold, or the
 		// kind was skipped for a missing dependency (which already logged why).
@@ -394,4 +427,31 @@ func (m *Manager) persist(ctx context.Context, id int64, tags []Suggestion, mome
 		}
 	}
 	m.log.Info("ai: tagged media", "media", id, "tags", len(tags), "tagger", m.tagger.Name())
+}
+
+// filter applies the user's confidence floor and per-item cap, keeping the
+// highest-scoring suggestions.
+//
+// The content rating is exempt from both. It is chosen by argmax, not by passing
+// a threshold (see onnx.go), so its score is a relative winner rather than a
+// confidence — a tame image can win "general" at 0.3 and still be correctly
+// rated. Thresholding it would silently leave items unrated, and letting a cap
+// evict it would drop the one verdict the model always has an opinion about.
+func (m *Manager) filter(in []Suggestion) []Suggestion {
+	o := m.Options()
+	rated := make([]Suggestion, 0, 1)
+	rest := make([]Suggestion, 0, len(in))
+	for _, s := range in {
+		switch {
+		case s.Category == catRating:
+			rated = append(rated, s)
+		case s.Score >= o.MinScore:
+			rest = append(rest, s)
+		}
+	}
+	sort.SliceStable(rest, func(i, j int) bool { return rest[i].Score > rest[j].Score })
+	if o.MaxTags > 0 && len(rest) > o.MaxTags {
+		rest = rest[:o.MaxTags]
+	}
+	return append(rated, rest...)
 }

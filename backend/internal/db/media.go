@@ -88,6 +88,41 @@ func (d *DB) SetThumbPath(ctx context.Context, id int64, rel string) error {
 	return err
 }
 
+// SetPageCount records how many pages a comic archive holds.
+func (d *DB) SetPageCount(ctx context.Context, id int64, pages int) error {
+	_, err := d.sql.ExecContext(ctx,
+		`UPDATE media SET page_count = ?, updated_at = ? WHERE id = ?`, pages, now(), id)
+	return err
+}
+
+// ComicsMissingIndex returns comics that have never been opened server-side (no
+// page count, or no cover thumbnail), used to backfill both at startup.
+func (d *DB) ComicsMissingIndex(ctx context.Context, limit int) ([]*MediaRow, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 500
+	}
+	rows, err := d.sql.QueryContext(ctx, `
+		SELECT id, kind, blob_path, size
+		FROM media
+		WHERE kind = 'comic'
+		  AND (page_count IS NULL OR page_count = 0
+		       OR thumb_path IS NULL OR thumb_path = '')
+		ORDER BY created_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*MediaRow
+	for rows.Next() {
+		m := &MediaRow{}
+		if err := rows.Scan(&m.ID, &m.Kind, &m.BlobPath, &m.Size); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 // UpdateVideoMeta fills in probed video metadata. Zero values are left untouched
 // so a partial probe (e.g. dimensions but no duration) never clobbers good data.
 func (d *DB) UpdateVideoMeta(ctx context.Context, id int64, dur float64, w, h int) error {

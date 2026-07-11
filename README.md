@@ -20,6 +20,9 @@ container on Unraid, with a companion Android app.
 ## Features
 
 - **Content types:** videos, GIFs, images, comics (cbz/cbr/pdf), and game entries.
+- **In-app comic reader:** cbz/zip comics are paged through server-side — one page
+  streamed at a time, straight out of the encrypted archive, with saved reading
+  position. (cbr/pdf still download.)
 - **Encrypted at rest:** per-file AES-256-GCM envelope encryption; sensitive
   metadata fields encrypted in the database.
 - **Library management:** upload, folder import, collections, favorites, ratings,

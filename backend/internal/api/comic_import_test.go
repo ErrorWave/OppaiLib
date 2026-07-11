@@ -21,6 +21,7 @@ import (
 	"github.com/youruser/oppailib/internal/db"
 	"github.com/youruser/oppailib/internal/models"
 	"github.com/youruser/oppailib/internal/scraper"
+	"github.com/youruser/oppailib/internal/settings"
 	"github.com/youruser/oppailib/internal/storage"
 )
 
@@ -84,7 +85,9 @@ func newTestServer(t *testing.T) (*Server, string) {
 	aiMgr := ai.NewManager(ai.Config{Enabled: false}, store, database, log)
 	cfg := &config.Config{}
 
-	s := NewServer(cfg, database, store, sc, aiMgr, kek, log)
+	set := settings.NewStore(settings.Defaults(cfg))
+
+	s := NewServer(cfg, database, store, sc, aiMgr, set, kek, log)
 
 	ctx := context.Background()
 	uid, err := database.CreateUser(ctx, "tester", "x", true)

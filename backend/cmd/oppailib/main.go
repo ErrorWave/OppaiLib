@@ -22,6 +22,7 @@ import (
 	"github.com/youruser/oppailib/internal/crypto"
 	"github.com/youruser/oppailib/internal/db"
 	"github.com/youruser/oppailib/internal/scraper"
+	"github.com/youruser/oppailib/internal/settings"
 	"github.com/youruser/oppailib/internal/storage"
 )
 
@@ -91,9 +92,21 @@ func run(cfg *config.Config, log *slog.Logger) error {
 		VideoFrames: cfg.AIVideoFrames,
 	}, store, database, log)
 
-	// 7. HTTP server.
-	srv := api.NewServer(cfg, database, store, sc, aiMgr, ks.KEK(), log)
-	srv.StartBackgroundJobs() // backfills missing video thumbnails
+	// 7. Runtime settings: env vars are the defaults, rows in the settings table
+	// (written from the Settings screen) override them.
+	stored, err := database.AllSettings(context.Background())
+	if err != nil {
+		return err
+	}
+	cur := settings.Merge(settings.Defaults(cfg), stored)
+	set := settings.NewStore(cur)
+
+	// 8. HTTP server.
+	srv := api.NewServer(cfg, database, store, sc, aiMgr, set, ks.KEK(), log)
+	// Push the stored settings into the AI + scraper subsystems before serving.
+	srv.ApplySettings(cur)
+	// Backfill video posters; index comics (page count + cover) for the reader.
+	srv.StartBackgroundJobs()
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           srv.Handler(),
