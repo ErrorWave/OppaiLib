@@ -54,7 +54,7 @@ class MainActivity : FragmentActivity() {
             this,
             ContextCompat.getMainExecutor(this),
             object : BiometricPrompt.AuthenticationCallback() {
-                override fun onAuthenticationSucceeded(result: AuthenticationResult) = onSuccess()
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) = onSuccess()
                 override fun onAuthenticationError(code: Int, msg: CharSequence) = onFail()
             },
         )
