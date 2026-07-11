@@ -11,7 +11,11 @@ plugins {
 // so releases must be signed with one persistent key — not the throwaway debug
 // key, which is regenerated per machine. When these are unset (any ordinary
 // local build) the release APK simply comes out unsigned.
-val keystoreFile: String? = System.getenv("ANDROID_KEYSTORE_FILE")
+//
+// Blank counts as unset: a workflow step that has no keystore secret to offer
+// still exports the variable, just empty. Testing only for null would take the
+// empty string as a path and fail the build with "path may not be null or empty".
+val keystoreFile: String? = System.getenv("ANDROID_KEYSTORE_FILE")?.takeIf { it.isNotBlank() }
 
 android {
     namespace = "net.fourbakers.oppailib"
