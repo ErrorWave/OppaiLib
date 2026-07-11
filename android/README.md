@@ -17,35 +17,60 @@ the same auth model (Bearer session token, stored in Jetpack Security's
 Roadmap (scaffolded, not yet wired): encrypted offline download cache, panic/
 decoy mode, per-item rating/favorite editing.
 
-## Build
+## Get an APK
 
-You need the Android SDK (via Android Studio Ladybug+ or the command-line
-tools) and JDK 17.
+### From CI (no toolchain needed)
 
-1. **Generate the Gradle wrapper jar** (not committed):
-   ```sh
-   cd android
-   gradle wrapper --gradle-version 8.11.1
-   ```
-   (or just open the `android/` folder in Android Studio, which does this for you)
+[`.github/workflows/android.yml`](../.github/workflows/android.yml) builds the
+APK on GitHub's runners. This is the easy path — nothing to install locally.
 
-2. **Point to your SDK** — create `android/local.properties`:
-   ```properties
-   sdk.dir=/path/to/Android/sdk
-   ```
+- **Any push to `main`, or a manual run** (Actions → *Build Android APK* → *Run
+  workflow*) produces a **debug APK**, downloadable from the run's *Artifacts*.
+  It installs on any phone with no setup.
+- **Pushing a tag `vX.Y.Z`** produces a **signed release APK** and attaches it to
+  the GitHub Release, so you can download it straight onto the phone.
 
-3. **Build a debug APK:**
-   ```sh
-   ./gradlew assembleDebug
-   # → app/build/outputs/apk/debug/app-debug.apk
-   ```
+Release signing needs a keystore you create once; the workflow header documents
+the four secrets to add. Until you add them, tagged builds fall back to the
+debug APK and say so in the run summary.
 
-   Or a signed release APK:
-   ```sh
-   ./gradlew assembleRelease
-   ```
-   (configure a signing config in `app/build.gradle.kts`, or sign with
-   `apksigner` afterwards).
+> **Debug and release APKs cannot replace each other.** They carry different
+> signatures, and Android refuses an in-place update across a signature change.
+> Pick one and stay on it, or uninstall before switching (which wipes the app's
+> saved server URL and session).
+
+### Locally
+
+You need the Android SDK (via Android Studio Ladybug+ or the command-line tools)
+and JDK 17.
+
+The Gradle wrapper jar is **not** committed, so there is no `./gradlew` in a
+fresh clone. Generate it once with a system Gradle (8.11.1):
+
+```sh
+cd android
+gradle wrapper --gradle-version 8.11.1
+```
+
+(or just open `android/` in Android Studio, which does this for you.)
+
+Point to your SDK — create `android/local.properties`:
+
+```properties
+sdk.dir=/path/to/Android/sdk
+```
+
+Then build:
+
+```sh
+./gradlew assembleDebug
+# → app/build/outputs/apk/debug/app-debug.apk
+```
+
+A local `assembleRelease` is minified but **unsigned** unless you export the
+same `ANDROID_KEYSTORE_FILE` / `ANDROID_KEYSTORE_PASSWORD` / `ANDROID_KEY_ALIAS`
+/ `ANDROID_KEY_PASSWORD` environment variables that CI uses. An unsigned APK
+will not install — sign it with `apksigner`, or just let CI build it.
 
 ## Sideload
 

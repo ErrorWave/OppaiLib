@@ -5,6 +5,14 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
+// Release signing material, supplied by CI through the environment (see
+// .github/workflows/android.yml). Android refuses to update a sideloaded app
+// in place unless the new APK carries the same signature as the installed one,
+// so releases must be signed with one persistent key — not the throwaway debug
+// key, which is regenerated per machine. When these are unset (any ordinary
+// local build) the release APK simply comes out unsigned.
+val keystoreFile: String? = System.getenv("ANDROID_KEYSTORE_FILE")
+
 android {
     namespace = "net.fourbakers.oppailib"
     compileSdk = 35
@@ -13,12 +21,28 @@ android {
         applicationId = "net.fourbakers.oppailib"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        // Overridable by CI so a tagged build gets a monotonically increasing
+        // code — Android rejects an update whose versionCode isn't higher.
+        versionCode = (System.getenv("ANDROID_VERSION_CODE") ?: "1").toInt()
+        versionName = System.getenv("ANDROID_VERSION_NAME") ?: "0.1.0"
+    }
+
+    signingConfigs {
+        if (keystoreFile != null) {
+            create("release") {
+                storeFile = file(keystoreFile)
+                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("ANDROID_KEY_ALIAS")
+                keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
+            if (keystoreFile != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
