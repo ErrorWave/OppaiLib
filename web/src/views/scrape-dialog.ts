@@ -158,6 +158,7 @@ export class OppaiScrapeDialog extends LitElement {
             performers: it.result.performers ?? [],
             mediaUrls: it.result.mediaUrls ?? [],
             screenshots: it.result.screenshots ?? [],
+            categorizedTags: it.result.categorizedTags ?? [],
           };
           this.results = [...this.results, res];
           res.mediaUrls.forEach((u) => chosen.add(u));
@@ -217,6 +218,7 @@ export class OppaiScrapeDialog extends LitElement {
             url: r.sourceUrl,
             title: r.title,
             tags: r.tags,
+            categorizedTags: r.categorizedTags,
             kind: "game",
           });
           imported += res.count;
@@ -231,6 +233,7 @@ export class OppaiScrapeDialog extends LitElement {
           mediaUrls: picked,
           title: r.title,
           tags: r.tags,
+          categorizedTags: r.categorizedTags,
           kind,
         });
         imported += res.count;

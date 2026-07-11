@@ -159,6 +159,12 @@ type scrapeImportReq struct {
 	Title     string   `json:"title"`
 	Tags      []string `json:"tags"`
 	Kind      string   `json:"kind"` // "game" imports one enriched game entry
+	// CategorizedTags is the preview scrape's structured tags, echoed back by the
+	// client. The import doesn't re-fetch the page when the client already picked
+	// its media URLs, so this round-trip is the only way the categories survive.
+	// A client that doesn't send it still imports fine — its tags land as general,
+	// which is what every client did before categories existed.
+	CategorizedTags []models.ScrapedTag `json:"categorizedTags"`
 }
 
 // handleScrapeImport scrapes (or takes provided media URLs), downloads each
@@ -187,6 +193,7 @@ func (s *Server) handleScrapeImport(w http.ResponseWriter, r *http.Request) {
 			scraped.Title = req.Title
 		}
 		scraped.Tags = append(scraped.Tags, req.Tags...)
+		scraped.CategorizedTags = append(scraped.CategorizedTags, req.CategorizedTags...)
 		id, err := s.importGame(r, scraped)
 		if err != nil {
 			s.log.Warn("import game failed", "url", req.URL, "err", err)
@@ -197,7 +204,13 @@ func (s *Server) handleScrapeImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result := &models.ScrapeResult{Title: req.Title, Tags: req.Tags, MediaURLs: req.MediaURLs, SourceURL: req.URL}
+	result := &models.ScrapeResult{
+		Title:           req.Title,
+		Tags:            req.Tags,
+		CategorizedTags: req.CategorizedTags,
+		MediaURLs:       req.MediaURLs,
+		SourceURL:       req.URL,
+	}
 	if len(result.MediaURLs) == 0 && req.URL != "" {
 		scraped, err := s.scraper.Scrape(r.Context(), req.URL)
 		if err != nil {
@@ -209,6 +222,7 @@ func (s *Server) handleScrapeImport(w http.ResponseWriter, r *http.Request) {
 			result.Title = req.Title
 		}
 		result.Tags = append(result.Tags, req.Tags...)
+		result.CategorizedTags = append(result.CategorizedTags, req.CategorizedTags...)
 	}
 	// The dialog's type chip is the user's final word — it starts at whatever the
 	// scraper detected, and overriding it there must reach the import.
@@ -277,13 +291,20 @@ func (s *Server) importOne(r *http.Request, mediaURL string, result *models.Scra
 	if !existed {
 		s.processIngestAsync(id, put.RelPath, kind, put.Size, 0)
 	}
-	// Attach scraped tags.
-	for _, t := range result.Tags {
-		if err := s.db.AddTag(r.Context(), id, t, "general", "scrape", 0); err != nil {
-			s.log.Warn("add scraped tag", "tag", t, "err", err)
+	s.applyScrapeTags(r, id, result)
+	return id, nil
+}
+
+// applyScrapeTags persists everything the scrape learned about an item's tags,
+// preserving the category each one came in under (artist, character, parody, …)
+// rather than flattening the lot into "general". One failed tag doesn't abort
+// the import — a half-tagged item still beats no item.
+func (s *Server) applyScrapeTags(r *http.Request, id int64, result *models.ScrapeResult) {
+	for _, t := range result.ImportTags() {
+		if err := s.db.AddTag(r.Context(), id, t.Name, t.Category, "scrape", 0); err != nil {
+			s.log.Warn("add scraped tag", "tag", t.Name, "category", t.Category, "err", err)
 		}
 	}
-	return id, nil
 }
 
 const (
@@ -374,11 +395,7 @@ func (s *Server) importComic(r *http.Request, result *models.ScrapeResult) (int6
 			s.log.Warn("comic cover thumb", "media", id, "err", err)
 		}
 	}
-	for _, t := range result.Tags {
-		if err := s.db.AddTag(r.Context(), id, t, "general", "scrape", 0); err != nil {
-			s.log.Warn("add comic tag", "tag", t, "err", err)
-		}
-	}
+	s.applyScrapeTags(r, id, result)
 	return id, nil
 }
 
@@ -510,11 +527,7 @@ func (s *Server) importGame(r *http.Request, result *models.ScrapeResult) (int64
 			s.log.Warn("game cover thumb", "media", id, "err", err)
 		}
 	}
-	for _, t := range result.Tags {
-		if err := s.db.AddTag(r.Context(), id, t, "general", "scrape", 0); err != nil {
-			s.log.Warn("add game tag", "tag", t, "err", err)
-		}
-	}
+	s.applyScrapeTags(r, id, result)
 	return id, nil
 }
 

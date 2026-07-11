@@ -60,6 +60,13 @@ data class HealthResponse(
 @Serializable
 data class UrlRequest(val url: String)
 
+/** A tag the site's parser filed under a taxonomy (artist, character, parody, …). */
+@Serializable
+data class ScrapedTag(
+    val name: String = "",
+    val category: String = "general",
+)
+
 @Serializable
 data class ScrapeResult(
     val title: String = "",
@@ -69,6 +76,10 @@ data class ScrapeResult(
     val mediaUrls: List<String> = emptyList(),
     val sourceUrl: String = "",
     val kind: String = "image",
+    // Only populated by parsers that categorize. `tags` still holds the flat union
+    // of every tag, so display can ignore this — but the import has to send it
+    // back, since the server doesn't re-fetch the page when we supply mediaUrls.
+    val categorizedTags: List<ScrapedTag> = emptyList(),
 )
 
 @Serializable
@@ -77,6 +88,7 @@ data class ScrapeImportRequest(
     val mediaUrls: List<String> = emptyList(),
     val title: String? = null,
     val tags: List<String> = emptyList(),
+    val categorizedTags: List<ScrapedTag> = emptyList(),
 )
 
 @Serializable

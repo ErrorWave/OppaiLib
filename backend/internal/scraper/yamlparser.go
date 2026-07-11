@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
@@ -32,6 +33,13 @@ type yamlSpec struct {
 		Tags        Selector `yaml:"tags"`
 		Performers  Selector `yaml:"performers"`
 		Media       Selector `yaml:"media"`
+		// TagGroups maps a tag category (artist, character, parody, language, …)
+		// to the selector that finds tags of that category. Sites that file their
+		// tags under a taxonomy — most doujin/gallery sites do — get one entry per
+		// section here instead of dumping everything into Tags. Categories are
+		// free-form: whatever name is used here becomes tags.category verbatim, so
+		// a new taxonomy needs no code change.
+		TagGroups map[string]Selector `yaml:"tag_groups"`
 	} `yaml:"selectors"`
 }
 
@@ -64,7 +72,30 @@ func (p *YAMLParser) Parse(doc *goquery.Document, _ *url.URL) (*models.ScrapeRes
 		Performers:  extractMany(doc, s.Performers),
 		MediaURLs:   extractMany(doc, s.Media),
 	}
+
+	// Categorized tag sections. Categories are visited in sorted order so a given
+	// page always imports its tags in the same order regardless of Go's map
+	// iteration. Each categorized tag also joins the flat Tags union, which is
+	// what clients that only understand a string list render.
+	for _, category := range sortedKeys(s.TagGroups) {
+		for _, name := range extractMany(doc, s.TagGroups[category]) {
+			res.CategorizedTags = append(res.CategorizedTags, models.ScrapedTag{
+				Name:     name,
+				Category: category,
+			})
+			res.Tags = append(res.Tags, name)
+		}
+	}
 	return res, nil
+}
+
+func sortedKeys(m map[string]Selector) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func extractOne(doc *goquery.Document, sel Selector) string {

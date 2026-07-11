@@ -117,6 +117,7 @@ fun ScrapeDialog(repo: Repository, onDismiss: () -> Unit, onImported: () -> Unit
                                     mediaUrls = r.mediaUrls.filter { chosen[it] == true },
                                     title = r.title,
                                     tags = r.tags,
+                                    categorizedTags = r.categorizedTags,
                                 ),
                             )
                             onImported()

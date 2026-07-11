@@ -60,7 +60,10 @@ CREATE INDEX IF NOT EXISTS idx_media_created ON media(created_at);
 CREATE TABLE IF NOT EXISTS tags (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     name     TEXT NOT NULL,
-    category TEXT NOT NULL DEFAULT 'general', -- general|performer|artist|studio|meta
+    -- Open-ended. general|performer|artist|studio|meta are the built-ins, but a
+    -- YAML site parser's tag_groups names its own (parody, character, language,
+    -- …) and they're created on demand — hence no CHECK constraint here.
+    category TEXT NOT NULL DEFAULT 'general',
     UNIQUE(name, category)
 );
 

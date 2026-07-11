@@ -45,3 +45,19 @@ selectors:
   media:
     selector: "video source, img.full-res"
     attr: src
+
+  # Optional. Tags that belong to a specific taxonomy rather than the general
+  # pile. Each key is a tag category, stored verbatim in the tags.category
+  # column — categories are free-form, so inventing one here is enough to make
+  # it exist. Nothing to recompile, no migration to run.
+  #
+  # Use this on sites that file their tags into sections (most doujin/gallery
+  # sites do). Without it, an artist's name and a content tag are indistinguishable
+  # once imported. See 3hentai.yaml for a full worked example.
+  tag_groups:
+    artist:
+      selector: "div.artists a"
+      attr: text
+    character:
+      selector: "div.characters a"
+      attr: text

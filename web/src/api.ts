@@ -53,6 +53,12 @@ export interface User {
   isAdmin: boolean;
 }
 
+// A tag the parser could attribute to a taxonomy (artist, character, parody, …).
+export interface ScrapedTag {
+  name: string;
+  category: string;
+}
+
 export interface ScrapeResult {
   title: string;
   description: string;
@@ -61,6 +67,10 @@ export interface ScrapeResult {
   mediaUrls: string[];
   sourceUrl: string;
   kind: string;
+  // Present only when the site's parser categorizes its tags. `tags` still holds
+  // the flat union of everything, so rendering can ignore this; the import must
+  // echo it back, or the categories are lost on the round-trip.
+  categorizedTags?: ScrapedTag[];
   cover?: string;
   screenshots: string[];
   downloadUrl?: string;
@@ -257,6 +267,7 @@ export const api = {
     mediaUrls?: string[];
     title?: string;
     tags?: string[];
+    categorizedTags?: ScrapedTag[];
     kind?: string;
   }) =>
     request<{ imported: number[]; count: number }>("/api/scrape/import", {
