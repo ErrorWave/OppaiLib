@@ -74,28 +74,33 @@ type fourChanPost struct {
 	Com      string `json:"com"` // comment, as HTML
 }
 
-func (f *FourChan) Browse(ctx context.Context, feed, cursor string) (*Listing, error) {
+func (f *FourChan) Browse(ctx context.Context, p BrowseParams) (*Listing, error) {
+	feed := p.Feed
+	// An empty board means "whatever this source leads with", so a client that hasn't
+	// picked yet still gets a listing rather than an error.
+	if feed == "" && len(fourChanBoards) > 0 {
+		feed = fourChanBoards[0].ID
+	}
 	if !validBoard(feed) {
 		return nil, fmt.Errorf("unknown board %q", feed)
 	}
 	page := 1
-	if cursor != "" {
-		n, err := strconv.Atoi(cursor)
+	if p.Cursor != "" {
+		n, err := strconv.Atoi(p.Cursor)
 		if err != nil || n < 1 || n > fourChanLastPage {
-			return nil, fmt.Errorf("bad cursor %q", cursor)
+			return nil, fmt.Errorf("bad cursor %q", p.Cursor)
 		}
 		page = n
 	}
 
 	url := fmt.Sprintf("%s/%s/%d.json", f.apiHost, feed, page)
-	resp, err := httpGet(ctx, f.hc, url, defaultUserAgent)
+	body, err := httpGet(ctx, f.hc, url, defaultUserAgent)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
 
 	var idx fourChanIndex
-	if err := json.NewDecoder(resp.Body).Decode(&idx); err != nil {
+	if err := json.Unmarshal(body, &idx); err != nil {
 		return nil, fmt.Errorf("decode 4chan index: %w", err)
 	}
 

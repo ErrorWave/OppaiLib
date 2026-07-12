@@ -4,6 +4,9 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
 
 /**
  * Encrypted local settings: server URL, session token, and the biometric-lock
@@ -95,6 +98,40 @@ class Prefs(context: Context) {
         sp.edit().putInt("$KEY_COMIC_PAGE$id", page).apply()
     }
 
+    // ── pinned remote feeds ──────────────────────────────────────────────
+
+    /**
+     * Remote feeds the user has pinned to the drawer, in pin order.
+     *
+     * Kept on the device rather than on the server: a pin is a shortcut for *this*
+     * phone's sidebar, and storing it server-side would mean a schema, a migration and
+     * a sync path for what is a UI preference.
+     */
+    var pinnedFeeds: List<PinnedFeed>
+        get() = sp.getString(KEY_PINNED, null)
+            // A pin list that fails to parse (an older or hand-edited value) must not
+            // take the drawer down with it — an empty sidebar is recoverable, a crash
+            // loop on launch is not.
+            ?.let { runCatching { Json.decodeFromString(pinListSerializer, it) }.getOrNull() }
+            ?: emptyList()
+        set(v) = sp.edit().putString(KEY_PINNED, Json.encodeToString(pinListSerializer, v)).apply()
+
+    fun isPinned(sourceId: String, feedId: String): Boolean =
+        pinnedFeeds.any { it.sourceId == sourceId && it.feedId == feedId }
+
+    /** Pins the feed, or unpins it if it is already pinned. Returns the new state. */
+    fun togglePin(pin: PinnedFeed): Boolean {
+        val current = pinnedFeeds
+        val existing = current.filter { it.sourceId == pin.sourceId && it.feedId == pin.feedId }
+        return if (existing.isEmpty()) {
+            pinnedFeeds = current + pin
+            true
+        } else {
+            pinnedFeeds = current - existing.toSet()
+            false
+        }
+    }
+
     fun clearSession() {
         sp.edit().remove(KEY_TOKEN).apply()
     }
@@ -117,8 +154,27 @@ class Prefs(context: Context) {
         private const val KEY_BUFFER_AHEAD = "video_buffer_seconds"
         private const val KEY_BACK_BUFFER = "video_back_buffer"
         private const val KEY_SORT = "sort_mode"
+        private const val KEY_PINNED = "pinned_feeds"
+
+        private val pinListSerializer = ListSerializer(PinnedFeed.serializer())
     }
 }
+
+/**
+ * A remote feed pinned to the drawer — enough to reopen it without a round trip to
+ * /api/sources first.
+ *
+ * A search feed carries its [query] too, so "Blue Archive, by popular" is a pin in its
+ * own right rather than a search box the user has to retype every time.
+ */
+@Serializable
+data class PinnedFeed(
+    val sourceId: String,
+    val feedId: String,
+    val label: String,
+    val query: String = "",
+    val sort: String = "",
+)
 
 /**
  * How the library grid is ordered. Sorting is client-side: the app already holds the

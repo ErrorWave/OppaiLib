@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -48,7 +49,9 @@ func NewServer(cfg *config.Config, database *db.DB, store *storage.Store, sc *sc
 	}
 	return &Server{
 		cfg: cfg, db: database, store: store, scraper: sc, ai: aiMgr, settings: set,
-		sources:  sources.NewRegistry(scraperFetcher{e: sc}),
+		// Built-in source definitions are embedded; /config/sources overrides them, so
+		// a site that restyles can be repaired without a rebuild.
+		sources:  sources.NewRegistry(scraperFetcher{e: sc}, filepath.Join(cfg.ConfigDir, "sources"), log),
 		kek:      kek,
 		log:      log,
 		thumbSem: make(chan struct{}, workers),
@@ -111,6 +114,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sources/{id}/item/{item}/pages", s.requireAuth(s.handleSourcePages))
 	mux.HandleFunc("GET /api/sources/stream", s.requireAuth(s.handleSourceStream))
 	mux.HandleFunc("POST /api/sources/{id}/save", s.requireAuth(s.handleSourceSave))
+
+	// The Android app, served from the box that holds the library it talks to.
+	mux.HandleFunc("GET /api/apk/info", s.requireAuth(s.handleAPKInfo))
+	mux.HandleFunc("GET /api/apk", s.requireAuth(s.handleAPKDownload))
 
 	mux.HandleFunc("POST /api/scrape", s.requireAuth(s.handleScrape))
 	mux.HandleFunc("POST /api/scrape/bulk", s.requireAuth(s.handleScrapeBulk))

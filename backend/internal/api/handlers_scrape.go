@@ -30,6 +30,28 @@ const maxBulkURLs = 50
 // high OPPAI_SCRAPE_DELAY_MS may hit this on the tail; lower the delay if so.
 const scrapeTimeout = 30 * time.Second
 
+// importTimeout bounds a whole import rather than a single fetch. A comic is dozens
+// of page downloads with a politeness delay between each, so it is minutes of work,
+// not seconds.
+const importTimeout = 20 * time.Minute
+
+// detachImport gives an import a context that outlives the client's connection.
+//
+// Every download in importComic runs on the request context, so a client that hangs
+// up takes the import down with it — and a 32-page gallery reliably outlives a phone
+// that gets backgrounded or a browser's own fetch timeout. That failed at page 29 of
+// 32 with "context canceled" and threw the whole thing away, having already done all
+// the work and hammered the origin for it. Once the request has been accepted the
+// import is the server's job to finish; the client's connection only decides whether
+// anyone is still listening for the result.
+//
+// WithoutCancel keeps the context's *values* (the authenticated user), and drops only
+// the cancellation.
+func detachImport(r *http.Request) (*http.Request, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), importTimeout)
+	return r.WithContext(ctx), cancel
+}
+
 type scrapeReq struct {
 	URL string `json:"url"`
 }
@@ -175,6 +197,11 @@ func (s *Server) handleScrapeImport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
+
+	// Same reasoning as the source save: a multi-page import is minutes of downloads,
+	// and a client that stops waiting must not undo all of it. See detachImport.
+	r, cancel := detachImport(r)
+	defer cancel()
 
 	// Game import is a distinct flow: one enriched entry (cover art as thumbnail,
 	// description, screenshots, download link) rather than one item per media URL.

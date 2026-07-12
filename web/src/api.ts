@@ -133,6 +133,70 @@ export interface ComicInfo {
   reason?: string;
 }
 
+// ── remote sources ───────────────────────────────────────────────────────────
+// Browsing a source streams from the origin and stores nothing; only save() copies
+// an item into the library.
+
+/** One ordering a feed offers. The first is the default. */
+export interface SourceSort {
+  id: string;
+  label: string;
+}
+
+/**
+ * One browsable listing inside a source: a board, a category, a search.
+ *
+ * `query` marks a feed that needs a search term — the UI shows a search box for it
+ * rather than browsing it blindly, since a term-less search is an error upstream,
+ * not an empty page.
+ */
+export interface SourceFeed {
+  id: string;
+  label: string;
+  query?: boolean;
+  sorts?: SourceSort[];
+}
+
+export interface RemoteSource {
+  id: string;
+  name: string;
+  feeds: SourceFeed[];
+}
+
+/**
+ * An item that lives on the remote source and is *not* in the library. Every URL on
+ * it is remote — the browser never fetches them directly, it asks the server to
+ * proxy them (see `api.sourceStreamURL`).
+ */
+export interface SourceItem {
+  id: string;
+  title: string;
+  kind: "video" | "gif" | "image" | "comic";
+  thumbUrl: string;
+  mediaUrl?: string;
+  pageUrl?: string;
+  width?: number;
+  height?: number;
+}
+
+/** `cursor` is opaque; empty means there is nothing after this page. */
+export interface SourceListing {
+  items: SourceItem[];
+  cursor?: string;
+}
+
+/**
+ * The Android APK this server offers for download. `available` is false when the
+ * image was built without one — a normal state, not an error.
+ */
+export interface APKInfo {
+  available: boolean;
+  size?: number;
+  sha256?: string;
+  modified?: number; // unix seconds
+  filename?: string;
+}
+
 const TOKEN_KEY = "oppai_token";
 
 export function getToken(): string | null {
@@ -274,4 +338,49 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+
+  // The companion Android app, served from the box that holds the library.
+  apkInfo: () => request<APKInfo>("/api/apk/info"),
+
+  // ── remote sources ─────────────────────────────────────────────────────
+  sources: () => request<{ sources: RemoteSource[] }>("/api/sources"),
+
+  browseSource: (
+    id: string,
+    opts: { feed?: string; cursor?: string; q?: string; sort?: string } = {},
+  ) => {
+    const p = new URLSearchParams();
+    if (opts.feed) p.set("feed", opts.feed);
+    if (opts.cursor) p.set("cursor", opts.cursor);
+    if (opts.q) p.set("q", opts.q);
+    if (opts.sort) p.set("sort", opts.sort);
+    // Someone else's site is on the other end of this; give it room to answer.
+    return request<SourceListing>(`/api/sources/${id}/browse?${p}`, {}, 45_000);
+  },
+
+  sourcePages: (id: string, item: string) =>
+    request<{ pages: string[]; count: number }>(
+      `/api/sources/${encodeURIComponent(id)}/item/${encodeURIComponent(item)}/pages`,
+      {},
+      45_000,
+    ),
+
+  // Remote media is proxied so the origin never sees the browser's IP, and so
+  // hotlink-guarded hosts render. The server refuses any host that isn't a
+  // registered source, which is what keeps this from being an open proxy.
+  sourceStreamURL: (u: string) => `/api/sources/stream?url=${encodeURIComponent(u)}`,
+
+  saveFromSource: (
+    id: string,
+    body: { mediaUrl?: string; itemId?: string; pageUrl?: string; title?: string; kind?: string; tags?: string[] },
+  ) =>
+    request<{ imported: number[]; count: number }>(
+      `/api/sources/${encodeURIComponent(id)}/save`,
+      { method: "POST", body: JSON.stringify(body) },
+      // A comic save downloads every page with a politeness delay between them, so a
+      // long gallery is minutes, not seconds. The server finishes the import even if
+      // this gives up (it detaches from the connection) — this deadline only decides
+      // how long we wait to report it.
+      15 * 60_000,
+    ),
 };

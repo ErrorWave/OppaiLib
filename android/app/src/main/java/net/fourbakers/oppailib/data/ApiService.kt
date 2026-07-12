@@ -63,6 +63,9 @@ interface ApiService {
         @Path("id") id: String,
         @Query("feed") feed: String,
         @Query("cursor") cursor: String? = null,
+        // Search feeds only: the term, and which of the feed's orderings to use.
+        @Query("q") q: String? = null,
+        @Query("sort") sort: String? = null,
     ): SourceListing
 
     @GET("api/sources/{id}/item/{item}/pages")

@@ -129,9 +129,24 @@ data class ImportResponse(val imported: List<Long> = emptyList(), val count: Int
 
 // ── remote sources ───────────────────────────────────────────────────────────
 
-/** One browsable listing inside a source: a board, a category, a sort order. */
+/** One ordering a feed offers. The first is the default. */
 @Serializable
-data class SourceFeed(val id: String, val label: String)
+data class SourceSort(val id: String, val label: String)
+
+/**
+ * One browsable listing inside a source: a board, a category, a search.
+ *
+ * [query] marks a feed that needs a search term — the UI shows a search box for it
+ * rather than browsing it blindly, since a term-less search is an error upstream, not
+ * an empty page.
+ */
+@Serializable
+data class SourceFeed(
+    val id: String,
+    val label: String,
+    val query: Boolean = false,
+    val sorts: List<SourceSort> = emptyList(),
+)
 
 @Serializable
 data class RemoteSource(

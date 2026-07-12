@@ -3,6 +3,7 @@ package net.fourbakers.oppailib.data
 import android.content.Context
 import coil.ImageLoader
 import kotlinx.serialization.json.Json
+import java.util.concurrent.TimeUnit
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
@@ -91,6 +92,18 @@ class Repository(private val appContext: Context, val prefs: Prefs) {
 
     private fun okHttp(): OkHttpClient =
         OkHttpClient.Builder()
+            // OkHttp's default read timeout is 10 seconds, which is fine for every call
+            // the app makes except the one that matters most: saving a comic from a
+            // remote source. That downloads dozens of pages with a politeness delay
+            // between them, sending nothing back until it's finished — so the socket
+            // sits quiet for minutes and the default fires long before the answer comes.
+            //
+            // A long *read* timeout is safe: an unreachable server still fails fast on
+            // connect, so this only extends the wait for a server that is connected and
+            // busy. The server finishes the import even if we do give up on it.
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.MINUTES)
+            .writeTimeout(5, TimeUnit.MINUTES)
             .addInterceptor { chain ->
                 val req = chain.request().newBuilder()
                 prefs.token?.let { req.header("Authorization", "Bearer $it") }

@@ -55,7 +55,12 @@ func (s *Server) handleBrowseSource(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), scrapeTimeout)
 	defer cancel()
 
-	listing, err := src.Browse(ctx, q.Get("feed"), q.Get("cursor"))
+	listing, err := src.Browse(ctx, sources.BrowseParams{
+		Feed:   q.Get("feed"),
+		Cursor: q.Get("cursor"),
+		Query:  q.Get("q"),
+		Sort:   q.Get("sort"),
+	})
 	if err != nil {
 		s.log.Warn("source browse", "source", src.ID(), "feed", q.Get("feed"), "err", err)
 		writeErr(w, http.StatusBadGateway, err.Error())
@@ -178,6 +183,11 @@ func (s *Server) handleSourceSave(w http.ResponseWriter, r *http.Request) {
 		SourceURL: req.PageURL,
 		Kind:      req.Kind,
 	}
+
+	// Downloading is minutes of work behind a politeness delay; it must not be
+	// abandoned just because the client stopped waiting for the answer.
+	r, cancel := detachImport(r)
+	defer cancel()
 
 	// A comic's payload is its run of pages, which only the source can resolve.
 	if req.Kind == string(models.KindComic) {

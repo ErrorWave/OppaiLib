@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Collections
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Gif
@@ -35,6 +36,7 @@ import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SportsEsports
@@ -84,6 +86,7 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import kotlinx.coroutines.launch
 import net.fourbakers.oppailib.data.Media
+import net.fourbakers.oppailib.data.PinnedFeed
 import net.fourbakers.oppailib.data.Repository
 import net.fourbakers.oppailib.data.SortMode
 import net.fourbakers.oppailib.util.copyUriToCache
@@ -156,6 +159,9 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
     var searching by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var showBrowse by remember { mutableStateOf(false) }
+    // Which pinned feed to open the browser on; null means the browser's own default.
+    var browsePin by remember { mutableStateOf<PinnedFeed?>(null) }
+    var pins by remember { mutableStateOf(repo.prefs.pinnedFeeds) }
     var sort by remember { mutableStateOf(repo.prefs.sortMode) }
     var sortMenu by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf<Media?>(null) }
@@ -213,8 +219,18 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
 
     if (showBrowse) {
         // Coming back from a browse may have saved new items, so reload rather than
-        // showing a library that's silently missing what was just added.
-        BrowseScreen(repo = repo, onBack = { showBrowse = false; refresh() })
+        // showing a library that's silently missing what was just added. Pins may have
+        // changed while browsing too, so the drawer is re-read on the way back.
+        BrowseScreen(
+            repo = repo,
+            openAt = browsePin,
+            onBack = {
+                showBrowse = false
+                browsePin = null
+                pins = repo.prefs.pinnedFeeds
+                refresh()
+            },
+        )
         return
     }
 
@@ -302,9 +318,41 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
                     icon = { Icon(Icons.Filled.Explore, contentDescription = null) },
                     label = { Text("Browse sources") },
                     selected = false,
-                    onClick = { scope.launch { drawer.close() }; showBrowse = true },
+                    onClick = {
+                        scope.launch { drawer.close() }
+                        browsePin = null
+                        showBrowse = true
+                    },
                     modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
                 )
+                // Pinned remote feeds sit under Browse, as shortcuts into it. A long
+                // press unpins, so a pin can be undone without going back to the feed
+                // it was made from.
+                pins.forEach { p ->
+                    NavigationDrawerItem(
+                        icon = { Icon(Icons.Filled.PushPin, contentDescription = null) },
+                        label = { Text(p.label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        selected = false,
+                        onClick = {
+                            scope.launch { drawer.close() }
+                            browsePin = p
+                            showBrowse = true
+                        },
+                        badge = {
+                            IconButton(onClick = {
+                                repo.prefs.togglePin(p)
+                                pins = repo.prefs.pinnedFeeds
+                            }) {
+                                Icon(
+                                    Icons.Filled.Close,
+                                    contentDescription = "Unpin ${p.label}",
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }
+                        },
+                        modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
+                    )
+                }
                 NavigationDrawerItem(
                     icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
                     label = { Text("Settings") },

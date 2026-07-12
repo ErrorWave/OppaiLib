@@ -6,21 +6,55 @@
 // Nothing here downloads to the blob store: items carry the remote URLs, the client
 // streams them through the server's proxy, and only an explicit save crosses over
 // into the library (where the scrape/import machinery takes back over).
+//
+// Most sources are YAML files rather than Go (see yamlsource.go): a gallery site is
+// a URL template plus a handful of selectors, which is exactly what a Mihon extension
+// is. Only a source that needs real code — 4chan, whose JSON API isn't HTML at all —
+// is written as a Go type.
 package sources
 
 import (
 	"context"
 	"fmt"
+	"io"
+	"io/fs"
 	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 )
 
-// Feed is one browsable listing inside a source: a board, a category, a sort order.
+// kindComic is the library kind for a multi-page item. It's spelled here rather than
+// imported from models to keep this package free of the library's types.
+const kindComic = "comic"
+
+// Feed is one browsable listing inside a source: a board, a category, a search.
 type Feed struct {
 	ID    string `json:"id"`
 	Label string `json:"label"`
+	// Query marks a feed that needs a search term. The client shows a search box for
+	// it instead of browsing it blindly.
+	Query bool `json:"query,omitempty"`
+	// Sorts are the orderings this feed offers, if any. The first is the default.
+	Sorts []Sort `json:"sorts,omitempty"`
+}
+
+type Sort struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
+// BrowseParams is one request for a page of a feed.
+type BrowseParams struct {
+	Feed   string
+	Cursor string
+	// Query is the search term, for feeds that take one.
+	Query string
+	// Sort picks among the feed's Sorts; empty means the feed's default.
+	Sort string
 }
 
 // Item is one piece of media that lives on the remote source. Every URL on it is
@@ -60,7 +94,7 @@ type Source interface {
 	Hosts() []string
 
 	// Browse returns one page of a feed.
-	Browse(ctx context.Context, feed, cursor string) (*Listing, error)
+	Browse(ctx context.Context, p BrowseParams) (*Listing, error)
 
 	// Pages returns the ordered page images of a multi-page item, for reading a
 	// comic in place. Sources with no multi-page items return nil.
@@ -73,12 +107,84 @@ type Registry struct {
 	srcs []Source
 }
 
-// NewRegistry builds the standard set.
-func NewRegistry(pages PageFetcher) *Registry {
-	return &Registry{srcs: []Source{
-		NewFourChan(pages.Client()),
-		NewThreeHentai(pages),
-	}}
+// NewRegistry builds the standard set: the Go-coded sources, the source definitions
+// built into the binary, and any the user has dropped into dir.
+//
+// The built-ins are embedded rather than shipped as files to copy, because a source
+// that only works after the operator finds and copies a YAML file is a source that,
+// for almost everyone, does not work. A user file with the same id wins, so a site
+// that restyles can be fixed by dropping in a corrected spec — no rebuild.
+func NewRegistry(pages PageFetcher, dir string, log Logger) *Registry {
+	r := &Registry{srcs: []Source{NewFourChan(pages.Client())}}
+
+	specs := map[string]SourceSpec{}
+	order := []string{}
+	add := func(name string, data []byte, from string) {
+		spec, err := ParseSpec(data)
+		if err != nil {
+			log.Warn("bad source definition", "file", name, "from", from, "err", err)
+			return
+		}
+		if _, dup := specs[spec.ID]; !dup {
+			order = append(order, spec.ID)
+		}
+		specs[spec.ID] = *spec
+	}
+
+	// Built-in definitions first, user files second, so a user file overrides.
+	entries, err := fs.ReadDir(builtinSources, "builtin")
+	if err == nil {
+		for _, e := range entries {
+			data, err := fs.ReadFile(builtinSources, "builtin/"+e.Name())
+			if err != nil {
+				continue
+			}
+			add(e.Name(), data, "builtin")
+		}
+	}
+	for _, path := range yamlFiles(dir) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			log.Warn("reading source definition", "file", path, "err", err)
+			continue
+		}
+		add(filepath.Base(path), data, "config")
+	}
+
+	for _, id := range order {
+		r.srcs = append(r.srcs, NewYAMLSource(specs[id], pages))
+	}
+	return r
+}
+
+// Logger is the slice of slog the registry needs, taken as an interface so this
+// package doesn't depend on the server's logging setup.
+type Logger interface {
+	Warn(msg string, args ...any)
+}
+
+// yamlFiles lists the *.yaml/*.yml files in dir, sorted. A missing dir is not an
+// error — the built-in sources still work.
+func yamlFiles(dir string) []string {
+	if dir == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		switch strings.ToLower(filepath.Ext(e.Name())) {
+		case ".yaml", ".yml":
+			out = append(out, filepath.Join(dir, e.Name()))
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (r *Registry) All() []Source {
@@ -154,9 +260,17 @@ func kindForExt(ext string) string {
 	}
 }
 
-// httpGet is the shared request shape: a real User-Agent (4chan's JSON API and most
-// gallery sites refuse Go's default) and a bounded deadline.
-func httpGet(ctx context.Context, hc *http.Client, url, userAgent string) (*http.Response, error) {
+// httpGet fetches url and returns the whole body: a real User-Agent (4chan's JSON API
+// and most gallery sites refuse Go's default) and a deadline that covers the read.
+//
+// It returns bytes rather than the live *http.Response on purpose. The timeout context
+// has to outlive the body — cancelling it closes the body mid-read — so an earlier
+// version that did `defer cancel()` and handed back the response killed every fetch as
+// soon as it returned, and callers got "context canceled" instead of an index. A small
+// body hid it (the transport had already buffered it, so the decode still worked, and
+// the unit tests passed against httptest); a real board index did not. Reading the body
+// here means the deadline and the body have the same lifetime and can't disagree.
+func httpGet(ctx context.Context, hc *http.Client, url, userAgent string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
@@ -169,11 +283,19 @@ func httpGet(ctx context.Context, hc *http.Client, url, userAgent string) (*http
 	if err != nil {
 		return nil, err
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
 		return nil, fmt.Errorf("%s: %s", url, resp.Status)
 	}
-	return resp, nil
+	// Bounded so a source that starts streaming gigabytes can't exhaust memory.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxListingBytes))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", url, err)
+	}
+	return body, nil
 }
+
+// maxListingBytes caps a listing/index response. Board indexes run to a few hundred KB.
+const maxListingBytes = 16 << 20
 
 const defaultUserAgent = "OppaiLib/1.0 (+https://github.com/youruser/oppailib)"

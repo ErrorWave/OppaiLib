@@ -90,12 +90,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=backend /out/oppailib /usr/local/bin/oppailib
+# The Android client, offered for download from the server that holds the library.
+# CI drops the freshly-built APK into docker/apk/ before the image build; the
+# directory is committed (with only a .gitkeep in it) so this COPY works either way
+# and a local `docker build` doesn't need an Android toolchain.
+COPY docker/apk/ /app/apk/
 
 ENV OPPAI_HTTP_ADDR=:8080 \
     OPPAI_MEDIA_DIR=/media \
     OPPAI_CONFIG_DIR=/config \
     OPPAI_DB_PATH=/db/oppailib.sqlite \
-    OPPAI_AI_MODEL_DIR=/config/models
+    OPPAI_AI_MODEL_DIR=/config/models \
+    OPPAI_APK_PATH=/app/apk/oppailib.apk
 
 VOLUME ["/media", "/config", "/db"]
 EXPOSE 8080
@@ -115,6 +121,8 @@ COPY --from=onnxdeps /out/lib/ /usr/local/lib/
 # the heuristic tagger. Point OPPAI_AI_MODEL_DIR at /config/models yourself if
 # you would rather manage the model from the host.
 COPY --from=onnxdeps /out/models/ /opt/oppailib/models/
+# See the lean stage: the APK ships with the server that serves the library.
+COPY docker/apk/ /app/apk/
 RUN ldconfig
 
 ENV OPPAI_HTTP_ADDR=:8080 \
@@ -122,6 +130,7 @@ ENV OPPAI_HTTP_ADDR=:8080 \
     OPPAI_CONFIG_DIR=/config \
     OPPAI_DB_PATH=/db/oppailib.sqlite \
     OPPAI_AI_MODEL_DIR=/opt/oppailib/models \
+    OPPAI_APK_PATH=/app/apk/oppailib.apk \
     ONNXRUNTIME_LIB_PATH=/usr/local/lib/libonnxruntime.so
 
 VOLUME ["/media", "/config", "/db"]

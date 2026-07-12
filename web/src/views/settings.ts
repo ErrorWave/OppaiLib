@@ -1,6 +1,6 @@
 import { LitElement, html, css, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import { api, type Settings, type ReadOnlyInfo, type Stats, type User } from "../api.js";
+import { api, type APKInfo, type Settings, type ReadOnlyInfo, type Stats, type User } from "../api.js";
 import {
   iconStyles,
   motionStyles,
@@ -23,6 +23,8 @@ export class OppaiSettings extends LitElement {
   @state() private settings: Settings | null = null;
   @state() private info: ReadOnlyInfo | null = null;
   @state() private stats: Stats | null = null;
+  // null while we're still asking; {available:false} when this image has no APK.
+  @state() private apk: APKInfo | null = null;
   @state() private loadError = "";
 
   @state() private dirty = false;
@@ -318,6 +320,13 @@ export class OppaiSettings extends LitElement {
     } catch (e) {
       this.loadError = (e as Error).message;
     }
+    // Separate from the load above: an image built without an APK is a normal state,
+    // not a settings failure, and it must not surface as "couldn't load settings".
+    try {
+      this.apk = await api.apkInfo();
+    } catch {
+      this.apk = { available: false };
+    }
   }
 
   private get canEdit(): boolean {
@@ -399,7 +408,7 @@ export class OppaiSettings extends LitElement {
           : nothing}
         ${this.renderAppearance()} ${this.renderAI()} ${this.renderScraping()}
         ${this.dirty || this.saved ? this.renderSaveBar() : nothing} ${this.renderLibrary()}
-        ${this.renderAccount()} ${this.renderAbout()}
+        ${this.renderAndroid()} ${this.renderAccount()} ${this.renderAbout()}
       </div>
     `;
   }
@@ -415,6 +424,72 @@ export class OppaiSettings extends LitElement {
           ${this.saving ? "Saving…" : "Save"}
         </button>
       </div>
+    `;
+  }
+
+  /**
+   * The Android client, downloaded from the box that holds the library.
+   *
+   * There is no app store for this, so the server hands out its own client. The QR
+   * code is the point: you scan it with the phone you want the app on, rather than
+   * emailing yourself an APK.
+   */
+  private renderAndroid() {
+    const apk = this.apk;
+    return html`
+      <section class="card">
+        <h3><span class="material-symbols-rounded">android</span>Android app</h3>
+        <p class="card-sub">
+          Install the companion app straight from this server — no app store, no
+          sideloading from a third party.
+        </p>
+
+        ${apk === null
+          ? html`<p class="field-help">Checking…</p>`
+          : !apk.available
+            ? html`<p class="field-help">
+                No APK is bundled with this server build. Drop one at
+                <code>/config/oppailib.apk</code>, or grab it from the Actions run that
+                built this image.
+              </p>`
+            : html`
+                <div class="field">
+                  <div class="field-text">
+                    <div class="field-label">oppailib.apk</div>
+                    <div class="field-help">
+                      ${formatBytes(apk.size ?? 0)} · built
+                      ${new Date((apk.modified ?? 0) * 1000).toLocaleDateString()}
+                      ${apk.sha256
+                        ? html`<br /><span style="font-family:monospace; font-size:11px;"
+                            >sha256 ${apk.sha256.slice(0, 16)}…</span
+                          >`
+                        : nothing}
+                    </div>
+                  </div>
+                  <div class="field-control">
+                    <a href="/api/apk" download="oppailib.apk">
+                      <button class="btn-primary">
+                        <span class="material-symbols-rounded" style="font-size:20px;">download</span>
+                        Download
+                      </button>
+                    </a>
+                  </div>
+                </div>
+
+                <div class="field">
+                  <div class="field-text">
+                    <div class="field-label">Install on a phone</div>
+                    <div class="field-help">
+                      Open this page on the phone, sign in, and tap Download. Android
+                      asks you to allow installing from the browser the first time.
+                    </div>
+                  </div>
+                  <div class="field-control">
+                    <code style="font-size:12px; opacity:0.8;">${location.origin}/api/apk</code>
+                  </div>
+                </div>
+              `}
+      </section>
     `;
   }
 

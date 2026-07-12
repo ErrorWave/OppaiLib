@@ -34,6 +34,12 @@ type Config struct {
 	ScrapeUserAgent     string
 	ScrapeRespectRobots bool
 
+	// APKPath is the Android app the server offers for download. CI bakes the
+	// built APK into the image here; pointing this at /config lets an operator drop
+	// in their own build instead (a self-signed one, say, so updates install over
+	// the top of an existing install).
+	APKPath string
+
 	SessionTTL time.Duration
 	Debug      bool
 }
@@ -54,6 +60,7 @@ func Load() *Config {
 		ScrapeDelay:         time.Duration(envInt("OPPAI_SCRAPE_DELAY_MS", 1500)) * time.Millisecond,
 		ScrapeUserAgent:     env("OPPAI_SCRAPE_USER_AGENT", DefaultScrapeUserAgent),
 		ScrapeRespectRobots: envBool("OPPAI_SCRAPE_RESPECT_ROBOTS", true),
+		APKPath:         env("OPPAI_APK_PATH", "/app/apk/oppailib.apk"),
 		SessionTTL:      time.Duration(envInt("OPPAI_SESSION_TTL_HOURS", 720)) * time.Hour,
 		Debug:           envBool("OPPAI_DEBUG", false),
 	}
