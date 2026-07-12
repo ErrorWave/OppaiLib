@@ -122,6 +122,12 @@ fun BrowseScreen(repo: Repository, openAt: PinnedFeed? = null, onBack: () -> Uni
     // The thread whose comments are open, if any.
     var commentsFor by remember { mutableStateOf<SourceItem?>(null) }
 
+    // A file asked for from the comments that isn't in the grid yet. Reading a thread's
+    // comments from the *board* means the grid still holds threads, not their files — so
+    // tapping a video in one has to go into the thread first and open the file once its
+    // feed has actually landed. This is what remembers what we were going in for.
+    var pendingOpen by remember { mutableStateOf<String?>(null) }
+
     // Stamps each browse request so a late reply from a board we've left can't land in
     // the grid of the board we're on. See load().
     var req by remember { mutableIntStateOf(0) }
@@ -239,13 +245,30 @@ fun BrowseScreen(repo: Repository, openAt: PinnedFeed? = null, onBack: () -> Uni
     /** Leaving a thread goes back to its board, not out of the browser. */
     BackHandler(enabled = container != null) { container = null }
 
+    // Containers aren't viewable, so the viewer's feed is the files only — and every
+    // index handed to it has to be into *this* list, not into `items`.
+    val viewable = items.filter { !it.isContainer }
+
+    // A file we went into a thread to open. It can't be resolved at the moment it's
+    // asked for — the thread's feed hasn't been fetched yet — so it waits here until
+    // the file turns up. If the thread has loaded and it still isn't there (it 404'd,
+    // or it was pruned), the want is dropped rather than left to fire later.
+    LaunchedEffect(viewable, loading, pendingOpen) {
+        val want = pendingOpen ?: return@LaunchedEffect
+        val at = viewable.indexOfFirst { it.id == want }
+        if (at >= 0) {
+            viewerAt = at
+            pendingOpen = null
+        } else if (!loading && viewable.isNotEmpty()) {
+            pendingOpen = null
+        }
+    }
+
     viewerAt?.let { start ->
         RemoteViewerScreen(
             repo = repo,
             sourceId = source?.id ?: return@let,
-            // Containers aren't viewable, so the viewer's feed is the files only — and
-            // the index it's given has to be into *that* list.
-            items = items.filter { !it.isContainer },
+            items = viewable,
             startIndex = start,
             onClose = { viewerAt = null },
             onSaved = { scope.launch { snackbar.showSnackbar("Saved to library") } },
@@ -362,6 +385,19 @@ fun BrowseScreen(repo: Repository, openAt: PinnedFeed? = null, onBack: () -> Uni
                 sourceId = source?.id.orEmpty(),
                 item = thread,
                 onDismiss = { commentsFor = null },
+                onOpen = { c ->
+                    val at = viewable.indexOfFirst { it.id == c.itemId }
+                    when {
+                        // Already inside the thread: the file is right there in the grid.
+                        at >= 0 -> viewerAt = at
+                        // Still on the board. Go into the thread; `pendingOpen` finishes
+                        // the job when its files arrive.
+                        thread.isContainer -> {
+                            pendingOpen = c.itemId
+                            container = thread
+                        }
+                    }
+                },
             )
         }
 
@@ -467,7 +503,7 @@ fun BrowseScreen(repo: Repository, openAt: PinnedFeed? = null, onBack: () -> Uni
                             if (item.isContainer) {
                                 container = item
                             } else {
-                                viewerAt = items.filter { !it.isContainer }.indexOf(item)
+                                viewerAt = viewable.indexOf(item)
                             }
                         }
                     }

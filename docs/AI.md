@@ -28,29 +28,29 @@ everything else keeps working, exactly like video poster generation.
 
 ## Two modes
 
-### 1. ONNX + wd14 (default image)
+### 1. ONNX + JoyTag (default image)
 The default image (`--target runtime-onnx`) bakes in
-[ONNX Runtime](https://onnxruntime.ai/) and the
-[wd-vit-tagger-v3](https://huggingface.co/SmilingWolf/wd-vit-tagger-v3) model, so
-real content tagging works with no setup. It emits:
+[ONNX Runtime](https://onnxruntime.ai/) and
+[JoyTag](https://huggingface.co/fancyfeast/joytag), so real content tagging works
+with no setup. It emits ~5000 Danbooru-vocabulary `general` tags, each scored
+independently, at `threshold` (0.4) or above.
 
-| category | what | how it's picked |
-|----------|------|-----------------|
-| `rating` | exactly one of `general`, `sensitive`, `questionable`, `explicit` | highest-scoring of the four (argmax), always emitted |
-| `general` | content tags — hundreds of them | score ≥ `threshold` (0.35) |
-| `character` | recognised characters | score ≥ `character_threshold` (0.85) |
+**Why JoyTag.** This library holds photographs *and* drawn art, and it needs NSFW
+tags on both. A wd14 tagger is trained on Danbooru alone — point it at a photo and
+it has nothing true to say, so it either goes quiet or invents anime tags for a
+real person. JoyTag is a ViT over the same tag vocabulary but deliberately trained
+past that domain onto photographic content, with NSFW concepts as an explicit goal
+rather than an embarrassment. One model covers both halves of the library, and —
+because it is one vocabulary — a tag search spans them. It is also fully open and
+self-hostable (no API, no licence phone-home), runs on CPU and accelerates on GPU,
+and ships as a plain `model.onnx` + `top_tags.txt`, so it stays swappable.
 
-The `rating` tag is your NSFW signal, and it leads the suggestion list. It is a
-tag category — unrelated to the numeric star `rating` field on a media item.
-
-Character tags get their own, much higher threshold because the model is far more
-confident about them than about general tags; 0.35 would flood every item with
-lookalike characters.
-
-**Why wd14.** It is fully open and self-hostable (no API, no licence
-phone-home), outputs hundreds of human-meaningful tags with confidence scores,
-runs comfortably on CPU (~0.3–1s/frame) and accelerates on GPU, and is a plain
-`model.onnx` + `selected_tags.csv`, so it is trivially swappable.
+**What you give up.** JoyTag has no `rating` label, so items get no
+`general`/`sensitive`/`questionable`/`explicit` verdict — the explicit *content*
+tags carry that instead. It is also a little weaker than wd14 v3 on pure anime,
+which is the trade for it working on photographs at all. If your library is
+anime-only and you want the rating back, wd14 is still fully supported — see
+[Swapping the model](#swapping-the-model).
 
 ### 2. Heuristic (lean image, always available)
 The `:lean` tag (`--target runtime`) is a **cgo-free** image with no model and no ONNX Runtime.
@@ -67,7 +67,7 @@ files in a directory and point `OPPAI_AI_MODEL_DIR` at it:
 ```
 /opt/oppailib/models/          # baked-in default; override the env var to move it
 ├── model.onnx
-├── selected_tags.csv          # or labels.txt — see below
+├── top_tags.txt               # or a wd14 selected_tags.csv — see below
 └── model.json                 # tells OppaiLib how to feed the model
 ```
 
@@ -77,10 +77,22 @@ files in a directory and point `OPPAI_AI_MODEL_DIR` at it:
 > the model from the host, put it in `/config/models` and set
 > `OPPAI_AI_MODEL_DIR=/config/models`.
 
-To use a different wd14 variant, rebuild with
-`--build-arg MODEL_REPO=SmilingWolf/wd-swinv2-tagger-v3` (or `wd-convnext-tagger-v3`).
-For real-photo NSFW detection rather than illustrated content, an open
-NudeNet-style ONNX classifier works too — describe it in `model.json`.
+**Back to a wd14 tagger** (anime-only, but it restores the `rating` verdict and is
+a little sharper on illustrated content):
+
+```
+--build-arg MODEL_REPO=SmilingWolf/wd-vit-tagger-v3 \
+--build-arg MODEL_LABELS=selected_tags.csv
+```
+
+and edit the generated `model.json` to wd14's contract — it wants raw 0–255 **BGR**
+pixels in **NHWC** and already ends in its own activation, i.e. `"layout": "nhwc"`,
+`"bgr": true`, `"scale": 1.0`, no `mean`/`std`, `"activation": "none"`,
+`"threshold": 0.35`, `"character_threshold": 0.85`. The other v3 variants
+(`wd-swinv2-tagger-v3`, `wd-convnext-tagger-v3`) use the same contract.
+
+Anything else that is a single-input image classifier emitting a 1×N score vector
+works too — describe it in `model.json`.
 
 ### Label files
 Two formats are accepted, both index-aligned to the model's output vector:
@@ -99,15 +111,18 @@ Every field is optional — `{}` is valid. Tensor names, input size and layout a
 read from the ONNX graph itself, because tagger exports disagree wildly on names
 (`input_1:0`, `input`, `pixel_values`).
 
+This is the baked-in default (JoyTag): CLIP-normalized RGB in NCHW.
+
 ```json
 {
   "model": "model.onnx",
-  "labels": "selected_tags.csv",
-  "layout": "nhwc",
-  "bgr": true,
-  "scale": 1.0,
-  "threshold": 0.35,
-  "character_threshold": 0.85,
+  "labels": "top_tags.txt",
+  "layout": "nchw",
+  "scale": 0.00392156862745098,
+  "mean": [0.48145466, 0.4578275, 0.40821073],
+  "std":  [0.26862954, 0.26130258, 0.27577711],
+  "activation": "sigmoid",
+  "threshold": 0.4,
   "category": "general"
 }
 ```
@@ -118,18 +133,27 @@ read from the ONNX graph itself, because tagger exports disagree wildly on names
 | `input_name` / `output_name` | from the graph | graph tensor names |
 | `input_size` | from the graph | square side the model expects (e.g. 448) |
 | `layout` | from the graph | `nchw` or `nhwc` tensor layout |
-| `bgr` | `false` | swap RGB→BGR (many taggers want BGR) |
+| `bgr` | `false` | swap RGB→BGR (wd14 wants BGR; JoyTag does not) |
 | `scale` | `1/255` | pixel multiplier (`1.0` keeps 0–255, as wd14 wants) |
 | `mean`/`std` | none | optional per-channel normalization (ImageNet-style) |
+| `activation` | `none` | `none` or `sigmoid` — see below |
 | `threshold` | `0.35` | minimum confidence to emit a general tag |
 | `character_threshold` | `threshold` | minimum confidence for `character` tags |
 | `category` | `general` | category for labels without one of their own |
 
+**`activation` is the one that bites.** Exports disagree on whether the final
+activation is part of the graph. A wd14 tagger bakes it in and returns
+probabilities, so it wants `none`. JoyTag's graph stops at the tag **logits**, so it
+wants `sigmoid` — set it to `none` and nothing errors, but every threshold is now
+being compared against an unbounded number and the confidence stored on each tag
+escapes `[0,1]`, which is the range `min_score` and the tag list assume. An
+unrecognised value is rejected at startup rather than treated as `none`.
+
 ### Preprocessing
 Frames are composited onto **white**, padded to a square, then resized — never
-stretched. wd14 was trained on white-padded squares, so stretching a portrait to
-448×448 distorts every aspect-sensitive tag. Compositing is what stops a
-transparent PNG arriving as a black rectangle (Go's RGBA is alpha-premultiplied,
+stretched. Both JoyTag and wd14 were trained on white-padded squares, so stretching
+a portrait to 448×448 distorts every aspect-sensitive tag. Compositing is what stops
+a transparent PNG arriving as a black rectangle (Go's RGBA is alpha-premultiplied,
 so an untouched transparent pixel reads as zero).
 
 ## Building it yourself

@@ -233,6 +233,13 @@ func (f *FourChan) threadItem(board string, op fourChanPost) Item {
 	return item
 }
 
+// fileItemID names a post's upload. A post's file is identified by its upload
+// timestamp, not by the post number: that is what the CDN paths are keyed on, and
+// it is what makes the id derivable from a comment as well as from a listing.
+func fileItemID(board string, tim int64) string {
+	return fmt.Sprintf("%s:f%d", board, tim)
+}
+
 // fileItem turns one post's upload into a viewable item.
 func (f *FourChan) fileItem(board string, thread int64, p fourChanPost, subject string) Item {
 	title := strings.TrimSpace(p.Filename + p.Ext)
@@ -247,7 +254,7 @@ func (f *FourChan) fileItem(board string, thread int64, p fourChanPost, subject 
 	}
 
 	return Item{
-		ID:    fmt.Sprintf("%s:f%d", board, p.Tim),
+		ID:    fileItemID(board, p.Tim),
 		Title: truncate(title, 120),
 		Kind:  kindForExt(p.Ext),
 		// 4chan always renders a JPEG thumbnail, whatever the original was — a .webm's
@@ -301,6 +308,10 @@ func (f *FourChan) Comments(ctx context.Context, itemID string) ([]Comment, erro
 		if p.Tim != 0 && p.Ext != "" {
 			c.ThumbURL = fmt.Sprintf("%s/%s/%ds.jpg", f.cdnHost, board, p.Tim)
 			c.MediaURL = fmt.Sprintf("%s/%s/%d%s", f.cdnHost, board, p.Tim, p.Ext)
+			c.Kind = kindForExt(p.Ext)
+			// The same id browseThread gives this post's file, so a client reading the
+			// thread can point at the item it already has rather than a lookalike.
+			c.ItemID = fileItemID(board, p.Tim)
 		}
 		out = append(out, c)
 	}

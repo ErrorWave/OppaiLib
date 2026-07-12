@@ -47,10 +47,16 @@ RUN CGO_ENABLED=1 go build -tags onnx -ldflags="${LDFLAGS}" -o /out/oppailib-onn
 # "Error setting ORT API base". Verified against 1.26.0.
 FROM debian:bookworm-slim AS onnxdeps
 ARG ORT_VERSION=1.26.0
-# Any wd14-family repo works: wd-vit-tagger-v3 (fast), wd-swinv2-tagger-v3
-# (slightly better), wd-convnext-tagger-v3. All expose model.onnx +
-# selected_tags.csv with the same 448px NHWC/BGR contract.
-ARG MODEL_REPO=SmilingWolf/wd-vit-tagger-v3
+# JoyTag: a ViT over the Danbooru tag schema, but trained past the Danbooru domain onto
+# photographs as well as drawn art. That is the whole reason it's the default. A wd14
+# tagger only ever saw anime, so on a photograph it either says nothing or says something
+# it made up — and this library holds both. JoyTag tags the drawn and the real with one
+# model and one vocabulary, which also means one set of tags to search across.
+#
+# Files: model.onnx + top_tags.txt (~5k tags, one per line). See MODEL_JSON below for the
+# contract, and docs/AI.md for swapping in something else.
+ARG MODEL_REPO=fancyfeast/joytag
+ARG MODEL_LABELS=top_tags.txt
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /out/lib /out/models \
@@ -63,24 +69,34 @@ RUN mkdir -p /out/lib /out/models \
 # model into the image that only fails at the first inference, so resume on
 # failure and sanity-check the sizes before the layer is committed. (These are
 # floors, not checksums — MODEL_REPO is a build arg, so exact digests would go
-# stale the moment anyone points it at a different wd14 variant.)
+# stale the moment anyone points it at a different model.)
 RUN curl -fL --retry 8 --retry-all-errors --retry-delay 3 -C - \
         -o /out/models/model.onnx "https://huggingface.co/${MODEL_REPO}/resolve/main/model.onnx" \
     && curl -fL --retry 8 --retry-all-errors --retry-delay 3 \
-        -o /out/models/selected_tags.csv "https://huggingface.co/${MODEL_REPO}/resolve/main/selected_tags.csv" \
+        -o "/out/models/${MODEL_LABELS}" "https://huggingface.co/${MODEL_REPO}/resolve/main/${MODEL_LABELS}" \
     && [ "$(wc -c < /out/models/model.onnx)" -gt 100000000 ] \
-    && [ "$(wc -l < /out/models/selected_tags.csv)" -gt 1000 ]
-# wd14 wants raw 0–255 BGR pixels in NHWC. input_name/output_name/input_size are
-# read from the graph, so they stay unset here.
+    && [ "$(wc -l < "/out/models/${MODEL_LABELS}")" -gt 1000 ]
+# JoyTag wants CLIP-normalized RGB in NCHW: 0–255 scaled to 0–1, then the CLIP mean and
+# std. Getting these wrong doesn't fail — it just quietly produces worse tags — so they
+# are spelled out rather than left to the defaults. input_name/output_name/input_size are
+# read from the graph, so they stay unset.
+#
+# "activation" is the one that isn't merely a quality knob: JoyTag's graph ends at the
+# tag *logits*, so without the sigmoid the 0.4 threshold would be compared against
+# unbounded numbers and the scores stored on every tag would leave [0,1]. A wd14 export
+# bakes its activation in and needs "none" — which is the default.
+ARG MODEL_THRESHOLD=0.4
+ARG MODEL_ACTIVATION=sigmoid
 RUN printf '%s\n' \
     '{' \
     '  "model": "model.onnx",' \
-    '  "labels": "selected_tags.csv",' \
-    '  "layout": "nhwc",' \
-    '  "bgr": true,' \
-    '  "scale": 1.0,' \
-    '  "threshold": 0.35,' \
-    '  "character_threshold": 0.85,' \
+    "  \"labels\": \"${MODEL_LABELS}\"," \
+    '  "layout": "nchw",' \
+    '  "scale": 0.00392156862745098,' \
+    '  "mean": [0.48145466, 0.4578275, 0.40821073],' \
+    '  "std":  [0.26862954, 0.26130258, 0.27577711],' \
+    "  \"activation\": \"${MODEL_ACTIVATION}\"," \
+    "  \"threshold\": ${MODEL_THRESHOLD}," \
     '  "category": "general"' \
     '}' > /out/models/model.json
 

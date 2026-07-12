@@ -475,9 +475,15 @@ export class OppaiViewer extends LitElement {
         gap: 10px;
         margin-top: 4px;
       }
-      /* "Up next" — the rest of the queue as a scrubbable strip under the player. */
+      /* "Up next" — the rest of the queue as a scrubbable strip under the player.
+         The gap is deliberately larger than it looks like it needs to be: the
+         player's control bar is drawn *inside* the video, along its bottom edge, so
+         the strip's top edge and the scrubber are only ever this far apart. At 14px
+         reaching for the scrubber meant crossing the tiles — and the tiles lifted on
+         hover, into the very gap you were aiming through. Hence both the clearance
+         and the lift being a scale rather than a translate. */
       .upnext {
-        margin-top: 14px;
+        margin-top: 32px;
       }
       .upnext-label {
         font-size: 12px;
@@ -510,7 +516,7 @@ export class OppaiViewer extends LitElement {
         transition: transform 0.18s var(--oppai-ease-spring), border-color 0.18s ease;
       }
       .strip-item:hover {
-        transform: translateY(-2px);
+        transform: scale(1.03);
       }
       .strip-item.on {
         border-color: var(--oppai-accent);

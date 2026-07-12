@@ -20,6 +20,7 @@ import (
 	"image"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -59,7 +60,17 @@ type modelConfig struct {
 	Scale      float32   `json:"scale"`       // multiply pixels by this (e.g. 1/255)
 	Mean       []float32 `json:"mean"`        // per-channel mean (optional)
 	Std        []float32 `json:"std"`         // per-channel std  (optional)
-	Threshold  float32   `json:"threshold"`   // min score to emit a general tag
+	// Activation is what turns a raw output into a confidence: "none" (default) or
+	// "sigmoid". Exports disagree on whether the activation is part of the graph — a
+	// wd14 tagger bakes it in and hands back probabilities, while JoyTag hands back
+	// logits and expects the caller to squash them.
+	//
+	// Getting this wrong does not fail, it lies: thresholds stop meaning anything
+	// (a logit of 2.4 clears a 0.4 threshold that a *less* confident 0.5 probability
+	// would too), and the scores written to the database leave [0,1] entirely, which
+	// is the range MinScore and the tag list are built on.
+	Activation string  `json:"activation"`
+	Threshold  float32 `json:"threshold"` // min score to emit a general tag
 	// CharThreshold gates character tags, which are far more confidently
 	// predicted than general ones — wd14's own UI defaults it to 0.85 against a
 	// general threshold of 0.35. Only meaningful for CSV label files.
@@ -79,6 +90,7 @@ type onnxTagger struct {
 	session *ort.DynamicAdvancedSession
 	inShape ort.Shape
 	device  string // the execution provider actually in use
+	sigmoid bool   // squash raw outputs into [0,1] before scoring; see modelConfig.Activation
 
 	// hasRating reports whether any label is a rating. Rating labels are scored
 	// by argmax rather than thresholded — they are mutually exclusive, and every
@@ -122,7 +134,13 @@ func newOnnxTagger(modelDir, device string, log *slog.Logger) (Tagger, error) {
 		return nil, err
 	}
 
-	t := &onnxTagger{cfg: cfg, labels: labels, session: sess, device: used}
+	t := &onnxTagger{
+		cfg:     cfg,
+		labels:  labels,
+		session: sess,
+		device:  used,
+		sigmoid: cfg.Activation == activationSigmoid,
+	}
 	s := int64(cfg.InputSize)
 	if cfg.Layout == "nhwc" {
 		t.inShape = ort.NewShape(1, s, s, 3)
@@ -137,7 +155,7 @@ func newOnnxTagger(modelDir, device string, log *slog.Logger) (Tagger, error) {
 	}
 	log.Info("ai: onnx model loaded",
 		"model", cfg.Model, "labels", len(labels), "input_size", cfg.InputSize,
-		"layout", cfg.Layout, "device", used, "ratings", t.hasRating)
+		"layout", cfg.Layout, "activation", cfg.Activation, "device", used, "ratings", t.hasRating)
 	return t, nil
 }
 
@@ -170,17 +188,20 @@ func (t *onnxTagger) Tag(_ context.Context, img image.Image) ([]Suggestion, erro
 }
 
 // collect turns a raw score vector into suggestions: rating labels compete for a
-// single argmax slot, everything else is thresholded per category.
-func (t *onnxTagger) collect(scores []float32) []Suggestion {
+// single argmax slot, everything else is thresholded per category. Raw outputs are
+// run through the model's activation first, so everything downstream — thresholds,
+// the user's MinScore, the score stored on the tag — is a confidence in [0,1].
+func (t *onnxTagger) collect(raw []float32) []Suggestion {
 	var (
 		res       []Suggestion
 		bestRate  float32 = -1
 		bestRateI         = -1
 	)
-	for i, sc := range scores {
+	for i, out := range raw {
 		if i >= len(t.labels) {
 			break
 		}
+		sc := t.confidence(out)
 		l := t.labels[i]
 		if l.category == catRating {
 			if sc > bestRate {
@@ -201,6 +222,16 @@ func (t *onnxTagger) collect(scores []float32) []Suggestion {
 		res = append([]Suggestion{r}, res...)
 	}
 	return res
+}
+
+// confidence turns one raw model output into a probability in [0,1]. An export that
+// already ends in an activation needs none, which is why "none" is the default: it is
+// the identity, and it is what the wd14 family wants.
+func (t *onnxTagger) confidence(out float32) float32 {
+	if !t.sigmoid {
+		return out
+	}
+	return float32(1 / (1 + math.Exp(float64(-out))))
 }
 
 func (t *onnxTagger) threshold(category string) float32 {
@@ -367,8 +398,20 @@ func loadModelConfig(modelDir string) (modelConfig, error) {
 		return cfg, err
 	}
 	applyDefaults(&cfg)
+	if err := validateConfig(cfg); err != nil {
+		return cfg, err
+	}
 	return cfg, nil
 }
+
+// The activations a model.json may ask for. A typo here would otherwise be read as
+// "none" and quietly produce a tagger that thresholds logits — plausible-looking tags,
+// scores outside [0,1], and nothing to say it went wrong — so an unknown value is an
+// error and the heuristic fallback takes over loudly.
+const (
+	activationNone    = "none"
+	activationSigmoid = "sigmoid"
+)
 
 func applyDefaults(c *modelConfig) {
 	if c.Scale == 0 {
@@ -386,6 +429,31 @@ func applyDefaults(c *modelConfig) {
 	if c.Labels == "" {
 		c.Labels = "labels.txt"
 	}
+	if c.Activation == "" {
+		c.Activation = activationNone
+	}
+	c.Activation = strings.ToLower(strings.TrimSpace(c.Activation))
+}
+
+func validateConfig(c modelConfig) error {
+	switch c.Activation {
+	case activationNone, activationSigmoid:
+		return nil
+	default:
+		return fmt.Errorf("ai: unknown activation %q in model.json (want %q or %q)",
+			c.Activation, activationNone, activationSigmoid)
+	}
+}
+
+// tagName normalizes one label as it comes off disk.
+//
+// Both vocabularies here are Danbooru's, which spells a multi-word tag with
+// underscores ("no_humans"). Spaces read better in a UI and are what someone types
+// into the tag box, so the underscores go — and they have to go on *both* label
+// paths, or the same tag is one thing when it comes from a CSV and another when it
+// comes from a text file, and searching for it only finds half the library.
+func tagName(s string) string {
+	return strings.ReplaceAll(strings.TrimSpace(s), "_", " ")
 }
 
 // readLabels reads either a wd14 `selected_tags.csv` (tag_id,name,category,count)
@@ -408,7 +476,7 @@ func readLabels(path, fallbackCategory string) ([]label, error) {
 	var labels []label
 	for _, line := range strings.Split(string(raw), "\n") {
 		if l := strings.TrimSpace(line); l != "" {
-			labels = append(labels, label{name: l, category: fallbackCategory})
+			labels = append(labels, label{name: tagName(l), category: fallbackCategory})
 		}
 	}
 	return labels, nil
@@ -431,10 +499,7 @@ func readLabelsCSV(r io.Reader, fallbackCategory string) ([]label, error) {
 		if !ok {
 			cat = fallbackCategory
 		}
-		// Danbooru tags are underscore-separated; spaces read better in a UI and
-		// match what users type into the tag box.
-		name := strings.ReplaceAll(strings.TrimSpace(row[1]), "_", " ")
-		labels = append(labels, label{name: name, category: cat})
+		labels = append(labels, label{name: tagName(row[1]), category: cat})
 	}
 	return labels, nil
 }

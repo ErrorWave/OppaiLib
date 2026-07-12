@@ -113,6 +113,16 @@ type Comment struct {
 	// image is extremely common on 4chan and the picture is often the point of it.
 	ThumbURL string `json:"thumbUrl,omitempty"`
 	MediaURL string `json:"mediaUrl,omitempty"`
+	// Kind and ItemID describe that upload as a *viewable item* rather than a URL —
+	// same vocabulary as Item.Kind and Item.ID, and set only when there is one.
+	//
+	// A 4chan thumbnail is always a JPEG, whatever it stands for, so a client looking
+	// at ThumbURL alone cannot tell a .webm apart from a .jpg. Without Kind it has to
+	// sniff the extension off MediaURL to know a post is a video, and without ItemID
+	// it has no way to say "that video, the one already in this feed". Both are things
+	// the source knows for free and the client would otherwise have to reconstruct.
+	Kind   string `json:"kind,omitempty"`
+	ItemID string `json:"itemId,omitempty"`
 	// Quotes are the post numbers this post replies to.
 	Quotes []int64 `json:"quotes,omitempty"`
 	// OP marks the post that opened the thread.

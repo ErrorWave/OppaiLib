@@ -234,6 +234,16 @@ data class SourceComment(
     val text: String = "",
     val thumbUrl: String = "",
     val mediaUrl: String = "",
+    /**
+     * The post's upload described as an item — the same [SourceItem.kind] vocabulary,
+     * and the id the feed knows that file by. Both empty when the post has no file.
+     *
+     * 4chan renders a JPEG thumbnail for everything, so [thumbUrl] alone can't tell a
+     * webm from a photo: [kind] is how a video gets a play badge, and [itemId] is how
+     * tapping it lands on that exact item rather than something that looks like it.
+     */
+    val kind: String = "",
+    val itemId: String = "",
     val quotes: List<Long> = emptyList(),
     val op: Boolean = false,
 )

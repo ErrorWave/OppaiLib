@@ -73,6 +73,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -180,6 +181,12 @@ fun ViewerScreen(
     val player = rememberVideoPlayer(repo, settled)
     val comic = rememberComicReader(repo, settled)
 
+    // The chrome takes itself away over a playing video. Every touch of it pokes the
+    // timer, so it only goes while you're actually just watching.
+    var poke by remember { mutableIntStateOf(0) }
+    val playing = playingState(player)
+    ChromeAutoHide(active = chrome && playing, poke = poke) { chrome = false }
+
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         VerticalPager(
             state = feed,
@@ -229,15 +236,14 @@ fun ViewerScreen(
                                     )
                                 },
                                 current = feed.currentPage,
-                                onPick = { scope.launch { feed.scrollToPage(it) } },
-                                modifier = Modifier.padding(top = 8.dp),
+                                onPick = { poke++; scope.launch { feed.scrollToPage(it) } },
                             )
                         }
                     },
                 ) {
                     // Per-kind controls, sat directly above the metadata bar.
                     when {
-                        current.kind == "video" && player != null -> VideoControls(player)
+                        current.kind == "video" && player != null -> VideoControls(player) { poke++ }
                         current.kind == "comic" && comic != null -> ComicControls(comic)
                     }
                 }
@@ -688,6 +694,48 @@ private fun ComicControls(comic: ComicReader) {
     }
 }
 
+// ── chrome auto-hide ─────────────────────────────────────────────────────────
+
+/** How long the chrome lingers over a playing video before it gets out of the way. */
+private const val CHROME_IDLE_MS = 4_000L
+
+/**
+ * Takes the chrome away after [CHROME_IDLE_MS] of not being touched, while [active].
+ *
+ * Callers pass `chrome && playing` for [active], so the bars only ever vanish from a
+ * video that is actually running: a paused player is one you're doing something with,
+ * and hiding the controls out from under that would be taking the thing away mid-reach.
+ * They also hold the [poke] counter and bump it on every interaction — incrementing it
+ * restarts the wait, which is what keeps the chrome up while you're using it.
+ *
+ * The up-next carousel lives in the chrome, so this is what auto-hides the carousel:
+ * it is the reason the chrome is tall enough to be worth hiding in the first place.
+ */
+@Composable
+internal fun ChromeAutoHide(active: Boolean, poke: Int, onHide: () -> Unit) {
+    LaunchedEffect(active, poke) {
+        if (!active) return@LaunchedEffect
+        delay(CHROME_IDLE_MS)
+        onHide()
+    }
+}
+
+/** Whether [player] is playing right now, as state. False when there is no player. */
+@Composable
+internal fun playingState(player: ExoPlayer?): Boolean {
+    var playing by remember(player) { mutableStateOf(player?.isPlaying == true) }
+    DisposableEffect(player) {
+        if (player == null) return@DisposableEffect onDispose { }
+        playing = player.isPlaying
+        val listener = object : Player.Listener {
+            override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying }
+        }
+        player.addListener(listener)
+        onDispose { player.removeListener(listener) }
+    }
+    return playing
+}
+
 // ── video ────────────────────────────────────────────────────────────────────
 
 // How much has to be buffered before playback starts, and before it resumes after a
@@ -793,9 +841,14 @@ private fun VideoSurface(player: ExoPlayer, fit: VideoFit, onToggleChrome: () ->
     }
 }
 
-/** Transport controls: scrubber, play/pause, ±10s, mute, and playback speed. */
+/**
+ * Transport controls: scrubber, play/pause, ±10s, mute, and playback speed.
+ *
+ * [onInteract] is called on every touch of them, so the chrome's idle timer can tell
+ * "watching" from "using the controls" and not disappear mid-scrub.
+ */
 @Composable
-private fun VideoControls(player: ExoPlayer) {
+internal fun VideoControls(player: ExoPlayer, onInteract: () -> Unit = {}) {
     var playing by remember(player) { mutableStateOf(player.isPlaying) }
     var position by remember(player) { mutableLongStateOf(0L) }
     var duration by remember(player) { mutableLongStateOf(0L) }
@@ -826,17 +879,18 @@ private fun VideoControls(player: ExoPlayer) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
         Slider(
             value = scrub ?: position.toFloat(),
-            onValueChange = { scrub = it },
+            onValueChange = { onInteract(); scrub = it },
             onValueChangeFinished = {
                 scrub?.let { player.seekTo(it.toLong()) }
                 scrub = null
+                onInteract()
             },
             valueRange = 0f..duration.coerceAtLeast(1L).toFloat(),
             enabled = duration > 0L,
             colors = whiteSlider(),
         )
         Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = { if (playing) player.pause() else player.play() }) {
+            IconButton(onClick = { onInteract(); if (playing) player.pause() else player.play() }) {
                 if (buffering) {
                     CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(20.dp))
                 } else {
@@ -847,10 +901,13 @@ private fun VideoControls(player: ExoPlayer) {
                     )
                 }
             }
-            IconButton(onClick = { player.seekTo((player.currentPosition - SEEK_STEP_MS).coerceAtLeast(0L)) }) {
+            IconButton(onClick = {
+                onInteract()
+                player.seekTo((player.currentPosition - SEEK_STEP_MS).coerceAtLeast(0L))
+            }) {
                 Icon(Icons.Filled.Replay10, contentDescription = "Back 10 seconds", tint = Color.White)
             }
-            IconButton(onClick = { player.seekTo(player.currentPosition + SEEK_STEP_MS) }) {
+            IconButton(onClick = { onInteract(); player.seekTo(player.currentPosition + SEEK_STEP_MS) }) {
                 Icon(Icons.Filled.Forward10, contentDescription = "Forward 10 seconds", tint = Color.White)
             }
             Text(
@@ -861,12 +918,14 @@ private fun VideoControls(player: ExoPlayer) {
             )
             Spacer(Modifier.weight(1f))
             TextButton(onClick = {
+                onInteract()
                 speed = nextSpeed(speed)
                 player.setPlaybackSpeed(speed)
             }) {
                 Text(formatSpeedLabel(speed), color = Color.White, style = MaterialTheme.typography.labelMedium)
             }
             IconButton(onClick = {
+                onInteract()
                 muted = !muted
                 player.volume = if (muted) 0f else 1f
             }) {

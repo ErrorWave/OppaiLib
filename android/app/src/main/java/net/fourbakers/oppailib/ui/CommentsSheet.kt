@@ -1,6 +1,7 @@
 package net.fourbakers.oppailib.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -8,12 +9,16 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
@@ -56,6 +61,11 @@ import java.util.Locale
  *
  * [item] must carry a [SourceItem.threadId] — the caller only offers this for items
  * that have one.
+ *
+ * [onOpen] is called with a post whose file the reader tapped. The sheet doesn't know
+ * how to get to it — that depends on whether the caller is already inside the thread or
+ * still looking at the board — so it says which file was asked for and lets the caller
+ * do the going.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -64,6 +74,7 @@ fun CommentsSheet(
     sourceId: String,
     item: SourceItem,
     onDismiss: () -> Unit,
+    onOpen: (SourceComment) -> Unit = {},
 ) {
     var comments by remember(item.threadId) { mutableStateOf<List<SourceComment>?>(null) }
     var error by remember(item.threadId) { mutableStateOf<String?>(null) }
@@ -107,7 +118,12 @@ fun CommentsSheet(
                 items(loaded, key = { it.no }) { c ->
                     // The post the open file came from. Without it the list is a wall of
                     // anonymous text with no way to find your place in it.
-                    CommentRow(repo, c, here = item.postNo != 0L && c.no == item.postNo)
+                    CommentRow(
+                        repo = repo,
+                        c = c,
+                        here = item.postNo != 0L && c.no == item.postNo,
+                        onOpen = { onOpen(c); onDismiss() },
+                    )
                 }
             }
         }
@@ -115,7 +131,7 @@ fun CommentsSheet(
 }
 
 @Composable
-private fun CommentRow(repo: Repository, c: SourceComment, here: Boolean) {
+private fun CommentRow(repo: Repository, c: SourceComment, here: Boolean, onOpen: () -> Unit) {
     val context = LocalContext.current
     val background = when {
         here -> MaterialTheme.colorScheme.primaryContainer
@@ -161,17 +177,35 @@ private fun CommentRow(repo: Repository, c: SourceComment, here: Boolean) {
         }
 
         if (c.thumbUrl.isNotEmpty()) {
-            AsyncImage(
-                // Even here the thumbnail goes through our server: it carries our auth,
-                // and the origin never sees the phone.
-                model = ImageRequest.Builder(context)
-                    .data(repo.sourceStreamUrl(c.thumbUrl)).crossfade(true).build(),
-                imageLoader = repo.imageLoader,
-                contentDescription = null,
-                contentScale = ContentScale.Fit,
-                modifier = Modifier.padding(top = 6.dp).widthIn(max = 160.dp)
-                    .clip(RoundedCornerShape(8.dp)),
-            )
+            val video = c.kind == "video"
+            // The post's file, and a way into it. 4chan thumbnails a .webm with a JPEG,
+            // so without the badge a video in the thread is indistinguishable from a
+            // picture — and without the tap there was no way to watch it from here at all.
+            Box(
+                Modifier.padding(top = 6.dp).widthIn(max = 160.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(enabled = c.itemId.isNotEmpty(), onClick = onOpen),
+                contentAlignment = Alignment.Center,
+            ) {
+                AsyncImage(
+                    // Even here the thumbnail goes through our server: it carries our auth,
+                    // and the origin never sees the phone.
+                    model = ImageRequest.Builder(context)
+                        .data(repo.sourceStreamUrl(c.thumbUrl)).crossfade(true).build(),
+                    imageLoader = repo.imageLoader,
+                    contentDescription = if (video) "Play this video" else "Open this file",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (video) {
+                    Icon(
+                        Icons.Filled.PlayCircle,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(40.dp),
+                    )
+                }
+            }
         }
 
         if (c.text.isNotEmpty()) {

@@ -30,6 +30,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -63,6 +64,14 @@ import net.fourbakers.oppailib.data.SourceSaveRequest
  * The viewer for a *remote* item. Same feed gesture as the library's viewer, but
  * nothing here is in the library: media streams from the origin through the server's
  * proxy, and the only way it lands on disk is the save button.
+ *
+ * The player is hoisted here rather than owned by the page it renders into, for the
+ * same reason it is in the library's viewer: its controls belong to the chrome, which
+ * is drawn over the feed and so can't reach into a page's state. That is not just tidy.
+ * While the page owned the player it also drew media3's *own* controller — a second
+ * seek bar, pinned to the bottom of the video, directly underneath the chrome's up-next
+ * carousel. The two were laid over each other, and the one you could see was not the
+ * one your thumb landed on.
  */
 @Composable
 fun RemoteViewerScreen(
@@ -93,6 +102,13 @@ fun RemoteViewerScreen(
     val saving = remember { mutableStateMapOf<String, Boolean>() }
     val saved = remember { mutableStateMapOf<String, Boolean>() }
 
+    val player = rememberRemotePlayer(repo, settled)
+
+    // The chrome takes itself away over a playing video; touching it puts the wait back.
+    var poke by remember { mutableIntStateOf(0) }
+    val playing = playingState(player)
+    ChromeAutoHide(active = chrome && playing, poke = poke) { chrome = false }
+
     // The thread whose comments are open over the viewer, if any.
     var commentsFor by remember { mutableStateOf<SourceItem?>(null) }
 
@@ -102,6 +118,17 @@ fun RemoteViewerScreen(
             sourceId = sourceId,
             item = item,
             onDismiss = { commentsFor = null },
+            // A file in the thread is a file in this feed — the ids are the same ones —
+            // so "open that video" is just a jump to its page. A post whose file isn't
+            // in the feed (it 404'd, or the page hasn't loaded) leaves us where we are,
+            // which beats swiping the reader to something arbitrary.
+            onOpen = { c ->
+                val at = items.indexOfFirst { it.id == c.itemId }
+                if (at >= 0) {
+                    chrome = true
+                    scope.launch { feed.scrollToPage(at) }
+                }
+            },
         )
     }
 
@@ -116,6 +143,7 @@ fun RemoteViewerScreen(
                 sourceId = sourceId,
                 item = items[page],
                 active = feed.settledPage == page,
+                player = player,
                 onToggleChrome = { chrome = !chrome },
             )
         }
@@ -215,9 +243,13 @@ fun RemoteViewerScreen(
                                 )
                             },
                             current = feed.settledPage,
-                            onPick = { scope.launch { feed.scrollToPage(it) } },
-                            modifier = Modifier.padding(top = 8.dp),
+                            onPick = { poke++; scope.launch { feed.scrollToPage(it) } },
                         )
+                    }
+                    // The same transport the library's viewer has, and the only one on
+                    // screen: the player itself draws no controller (see RemoteVideo).
+                    if (settled.kind == "video" && player != null) {
+                        VideoControls(player) { poke++ }
                     }
                     Text(
                         settled.kind + (if (settled.width > 0) " · ${settled.width}×${settled.height}" else ""),
@@ -237,11 +269,14 @@ private fun RemotePage(
     sourceId: String,
     item: SourceItem,
     active: Boolean,
+    player: ExoPlayer?,
     onToggleChrome: () -> Unit,
 ) {
     when {
         item.kind == "comic" -> RemoteComic(repo, sourceId, item, onToggleChrome)
-        item.kind == "video" && active -> RemoteVideo(repo, item, onToggleChrome)
+        // Only the settled page gets the player; the neighbours the pager keeps warm
+        // show their thumbnail, so swiping never leaves a video running behind you.
+        item.kind == "video" && active && player != null -> RemoteVideo(player, onToggleChrome)
         else -> ZoomableRemoteImage(
             repo = repo,
             url = item.mediaUrl.ifEmpty { item.thumbUrl },
@@ -318,13 +353,19 @@ private fun RemoteComic(repo: Repository, sourceId: String, item: SourceItem, on
     }
 }
 
+/**
+ * The player for the settled item, or null when that item isn't a video. Rebuilt on
+ * every item change and released with it, so at most one player exists at a time.
+ */
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
-private fun RemoteVideo(repo: Repository, item: SourceItem, onToggleChrome: () -> Unit) {
+private fun rememberRemotePlayer(repo: Repository, item: SourceItem?): ExoPlayer? {
     val context = LocalContext.current
     val prefs = repo.prefs
+    val url = item?.takeIf { it.kind == "video" }?.mediaUrl?.takeIf { it.isNotEmpty() }
 
-    val player = remember(item.id) {
+    val player = remember(url) {
+        if (url == null) return@remember null
         // The stream goes through our own server, so it needs our bearer token — the
         // origin never sees the phone.
         val http = DefaultHttpDataSource.Factory().apply {
@@ -333,7 +374,7 @@ private fun RemoteVideo(repo: Repository, item: SourceItem, onToggleChrome: () -
         ExoPlayer.Builder(context)
             .setMediaSourceFactory(DefaultMediaSourceFactory(http))
             .build().apply {
-                setMediaItem(MediaItem.fromUri(repo.sourceStreamUrl(item.mediaUrl)))
+                setMediaItem(MediaItem.fromUri(repo.sourceStreamUrl(url)))
                 repeatMode = if (prefs.videoLoop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
                 volume = if (prefs.videoMuted) 0f else 1f
                 prepare()
@@ -342,15 +383,23 @@ private fun RemoteVideo(repo: Repository, item: SourceItem, onToggleChrome: () -
     }
     // Nothing about a browsed video is worth keeping once you've swiped past it.
     DisposableEffect(player) {
-        onDispose { player.run { stop(); clearMediaItems(); release() } }
+        onDispose { player?.run { stop(); clearMediaItems(); release() } }
     }
+    return player
+}
 
+@androidx.annotation.OptIn(UnstableApi::class)
+@Composable
+private fun RemoteVideo(player: ExoPlayer, onToggleChrome: () -> Unit) {
     Box(Modifier.fillMaxSize().pointerInput(player) { detectTapGestures { onToggleChrome() } }) {
         AndroidView(
             factory = { ctx ->
                 PlayerView(ctx).apply {
                     this.player = player
-                    useController = true
+                    // The chrome's own controls drive this. media3's controller would
+                    // draw a second seek bar along the bottom of the video, under the
+                    // chrome's carousel and fighting it for the same touches.
+                    useController = false
                     setBackgroundColor(android.graphics.Color.BLACK)
                 }
             },

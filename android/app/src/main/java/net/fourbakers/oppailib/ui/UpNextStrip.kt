@@ -57,6 +57,11 @@ data class StripItem(
  * The strip follows the feed: whenever the settled item changes, it scrubs itself so the
  * current tile is in view — otherwise swiping the feed would silently leave the strip
  * pointing somewhere else.
+ *
+ * It keeps a hand's width clear beneath itself. The transport controls sit directly
+ * under it, and the scrubber is the one thing in the chrome you have to hit precisely:
+ * with the tiles butted up against it, reaching for the seek bar meant reaching across
+ * the carousel.
  */
 @Composable
 fun UpNextStrip(
@@ -64,7 +69,7 @@ fun UpNextStrip(
     items: List<StripItem>,
     current: Int,
     onPick: (Int) -> Unit,
-    modifier: Modifier = Modifier,
+    modifier: Modifier = Modifier.padding(top = 8.dp, bottom = 16.dp),
 ) {
     if (items.size < 2) return
     val context = LocalContext.current

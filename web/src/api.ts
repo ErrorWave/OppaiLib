@@ -212,6 +212,16 @@ export interface SourceComment {
   text: string;
   thumbUrl?: string;
   mediaUrl?: string;
+  /**
+   * The post's upload, described the way a `SourceItem` is. Both are set only when
+   * the post has a file.
+   *
+   * A 4chan thumbnail is a JPEG whatever it stands for, so `thumbUrl` alone can't
+   * tell a webm apart from a photo — `kind` is what lets the panel put a play badge
+   * on a video, and `itemId` is what lets clicking it land on that exact item.
+   */
+  kind?: SourceItem["kind"];
+  itemId?: string;
   quotes?: number[];
   op?: boolean;
 }

@@ -345,9 +345,16 @@ export class OppaiBrowse extends LitElement {
         font-size: 13px;
       }
 
-      /* "Up next" — the rest of the feed as a scrubbable strip under the player. */
+      /* "Up next" — the rest of the feed as a scrubbable strip under the player.
+
+         The rigid flex basis and the top padding are both about the scrubber. The
+         player's controls are drawn inside the video along its bottom edge, so the
+         strip's top edge is the only thing between them and the pointer — and as a
+         shrinkable flex item the strip could be squeezed right up against the video on a
+         short viewport. It keeps its size; the stage gives way instead. */
       .upnext {
-        padding: 8px 16px 14px;
+        flex: 0 0 auto;
+        padding: 24px 16px 14px;
         color: #fff;
       }
       .upnext-label {
@@ -390,7 +397,7 @@ export class OppaiBrowse extends LitElement {
         transition: transform 0.18s var(--oppai-ease-spring), border-color 0.18s ease;
       }
       .strip-item:hover {
-        transform: translateY(-2px);
+        transform: scale(1.03);
       }
       .strip-item.on {
         border-color: var(--oppai-accent);
@@ -517,11 +524,38 @@ export class OppaiBrowse extends LitElement {
         color: var(--oppai-text);
         margin-bottom: 4px;
       }
+      /* A post's own upload. It is a button, not a link: the file is already something
+         this app can play, and sending a .webm out to a raw browser tab was throwing
+         away the viewer, the thread it belongs to, and the way back. */
+      .cattach {
+        position: relative;
+        display: block;
+        padding: 0;
+        border: none;
+        background: none;
+        cursor: pointer;
+        margin: 4px 0 6px;
+        border-radius: 8px;
+        line-height: 0;
+        transition: transform 0.18s var(--oppai-ease-spring);
+      }
+      .cattach:hover {
+        transform: scale(1.02);
+      }
       .cthumb {
         max-width: 140px;
         border-radius: 8px;
-        margin: 4px 0 6px;
         display: block;
+      }
+      .cplay {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        font-size: 34px;
+        color: #fff;
+        text-shadow: 0 0 8px rgba(0, 0, 0, 0.8);
+        pointer-events: none;
       }
       .ctext {
         font-size: 13px;
@@ -988,14 +1022,57 @@ export class OppaiBrowse extends LitElement {
           <span class="ctime">${formatPostTime(c.time)}</span>
         </header>
         ${c.subject ? html`<div class="csub">${c.subject}</div>` : nothing}
-        ${c.thumbUrl
-          ? html`<a href=${api.sourceStreamURL(c.mediaUrl ?? c.thumbUrl)} target="_blank" rel="noopener noreferrer">
-              <img class="cthumb" src=${api.sourceStreamURL(c.thumbUrl)} loading="lazy" alt="" />
-            </a>`
-          : nothing}
+        ${this.renderAttachment(c)}
         ${c.text ? html`<div class="ctext">${renderPostText(c.text)}</div>` : nothing}
       </article>
     `;
+  }
+
+  /**
+   * The file a post was made with, as something you can open.
+   *
+   * The thumbnail 4chan serves is a JPEG even for a .webm, so a video in the thread
+   * looked exactly like a picture and clicking it dumped the raw file into a browser
+   * tab. It gets a play badge and opens in the viewer instead — which is where the
+   * thing can actually be watched, with the rest of the thread still around it.
+   */
+  private renderAttachment(c: SourceComment) {
+    if (!c.thumbUrl) return nothing;
+    const video = c.kind === "video";
+    return html`
+      <button
+        class="cattach"
+        title=${video ? "Play this video" : "Open this file"}
+        @click=${() => this.openAttachment(c)}
+      >
+        <img class="cthumb" src=${api.sourceStreamURL(c.thumbUrl)} loading="lazy" alt="" />
+        ${video ? html`<span class="cplay material-symbols-rounded">play_circle</span>` : nothing}
+      </button>
+    `;
+  }
+
+  /**
+   * Opens a post's file in the viewer, closing the thread panel over it.
+   *
+   * Prefer the item the feed already holds — inside a thread that's the same file, and
+   * using it keeps the "up next" strip pointed at the right place in the run. From a
+   * board listing there is no such item (the feed holds threads, not files), so the
+   * comment is enough to build one: it carries the id the thread feed would have given
+   * it anyway.
+   */
+  private openAttachment(c: SourceComment) {
+    const known = c.itemId ? this.items.find((i) => i.id === c.itemId) : undefined;
+    const item: SourceItem = known ?? {
+      id: c.itemId ?? `post-${c.no}`,
+      title: c.subject || `No.${c.no}`,
+      kind: c.kind ?? "image",
+      thumbUrl: c.thumbUrl ?? "",
+      mediaUrl: c.mediaUrl,
+      threadId: this.commentsFor?.threadId,
+      postNo: c.no,
+    };
+    this.closeComments();
+    void this.open(item);
   }
 
   /** The thread header: what we're inside, how to get out, and how to keep it. */

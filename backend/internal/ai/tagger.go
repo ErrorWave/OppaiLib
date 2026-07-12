@@ -4,9 +4,10 @@
 // Two implementations exist:
 //
 //   - onnxTagger (build tag `onnx`): runs a real multi-label image classifier via
-//     ONNX Runtime. The default Docker image bakes in a wd14 tagger, which emits
-//     a rating (general/sensitive/questionable/explicit) plus general and
-//     character tags. See docs/AI.md.
+//     ONNX Runtime. The default Docker image bakes in JoyTag, which tags drawn art
+//     and photographs alike over the Danbooru vocabulary — the library holds both,
+//     and an anime-only tagger has nothing true to say about a photo. A wd14 tagger
+//     still works and additionally emits a rating; see docs/AI.md.
 //   - HeuristicTagger (always compiled, CPU-only, zero external deps): derives a
 //     few structural tags (orientation, resolution). It is the guaranteed
 //     fallback, used by the lean cgo-free image and whenever the ONNX tagger
@@ -67,6 +68,9 @@ const (
 // takes the most severe rating any frame saw, not the highest-scoring one: a
 // clip with four tame frames and one explicit frame is an explicit clip, even
 // though "general" will have scored higher on more of them.
+//
+// Only a model that emits ratings reaches this — JoyTag, the default, does not; a
+// wd14 tagger does. It stays because the rule is about ratings, not about wd14.
 var ratingSeverity = map[string]int{
 	"general":      0,
 	"sensitive":    1,
