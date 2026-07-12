@@ -3,6 +3,7 @@ package net.fourbakers.oppailib.data
 import okhttp3.MultipartBody
 import okhttp3.RequestBody
 import retrofit2.http.Body
+import retrofit2.http.DELETE
 import retrofit2.http.GET
 import retrofit2.http.Multipart
 import retrofit2.http.POST
@@ -42,6 +43,33 @@ interface ApiService {
 
     @POST("api/media/{id}/autotag")
     suspend fun autotag(@Path("id") id: Long): AutotagResponse
+
+    /** Probes a comic's archive. Page images come from [Repository.pageUrl]. */
+    @GET("api/media/{id}/comic")
+    suspend fun comicInfo(@Path("id") id: Long): ComicInfo
+
+    @DELETE("api/media/{id}")
+    suspend fun deleteMedia(@Path("id") id: Long)
+
+    // ── remote sources ───────────────────────────────────────────────────
+    // Browsing streams straight from the origin and stores nothing. Only save()
+    // pulls an item into the library.
+
+    @GET("api/sources")
+    suspend fun sources(): SourceListResponse
+
+    @GET("api/sources/{id}/browse")
+    suspend fun browseSource(
+        @Path("id") id: String,
+        @Query("feed") feed: String,
+        @Query("cursor") cursor: String? = null,
+    ): SourceListing
+
+    @GET("api/sources/{id}/item/{item}/pages")
+    suspend fun sourcePages(@Path("id") id: String, @Path("item") item: String): SourcePagesResponse
+
+    @POST("api/sources/{id}/save")
+    suspend fun saveFromSource(@Path("id") id: String, @Body body: SourceSaveRequest): ImportResponse
 
     @POST("api/scrape")
     suspend fun scrape(@Body body: UrlRequest): ScrapeResult
