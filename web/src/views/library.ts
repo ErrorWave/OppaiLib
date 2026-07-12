@@ -2,6 +2,7 @@ import { LitElement, html, css, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { api, type Media, type User } from "../api.js";
 import { iconStyles, motionStyles } from "../theme.js";
+import { logoSVG } from "../logo.js";
 import {
   KIND_META,
   KIND_ORDER,
@@ -105,6 +106,26 @@ export class OppaiLibrary extends LitElement {
         align-items: center;
         padding: 20px 0 16px;
         gap: 20px;
+      }
+      /* The mark, inlined so it takes currentColor and follows the theme. */
+      .logo {
+        width: 44px;
+        height: 44px;
+        padding: 0;
+        border: none;
+        background: none;
+        cursor: pointer;
+        color: var(--oppai-primary);
+        transition: transform 0.22s var(--oppai-ease-spring), color 0.2s ease;
+      }
+      .logo:hover {
+        transform: scale(1.08);
+        color: var(--oppai-primary-bright);
+      }
+      .logo svg {
+        width: 100%;
+        height: 100%;
+        display: block;
       }
       .add-btn {
         width: 56px;
@@ -922,6 +943,9 @@ export class OppaiLibrary extends LitElement {
     const settingsActive = this.section === "settings" && this.selectedId == null;
     return html`
       <nav>
+        <button class="logo" title="OppaiLib" @click=${() => this.selectSection("home")}>
+          ${logoSVG}
+        </button>
         <button class="add-btn" title="Add media" @click=${this.toggleUpload}>
           <span class="material-symbols-rounded" style="font-size:26px;">add</span>
         </button>

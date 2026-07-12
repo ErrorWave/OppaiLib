@@ -31,6 +31,11 @@ import (
 // imported from models to keep this package free of the library's types.
 const kindComic = "comic"
 
+// kindThread is a *container*: an item you browse into rather than view. It has no
+// library kind — a thread saved to the library lands as a comic (its images, in post
+// order) — so it exists only between here and the client's grid.
+const kindThread = "thread"
+
 // Feed is one browsable listing inside a source: a board, a category, a search.
 type Feed struct {
 	ID    string `json:"id"`
@@ -70,8 +75,15 @@ type Item struct {
 	// PageURL is the human page the item came from: what a save is pointed at, and
 	// what gets recorded as its source.
 	PageURL string `json:"pageUrl,omitempty"`
-	Width   int    `json:"width,omitempty"`
-	Height  int    `json:"height,omitempty"`
+	// FeedID marks a container — an item that is browsed *into* rather than viewed.
+	// A 4chan thread is one: the tile stands for a set, and clicking it should list
+	// the set, not open the OP's image. The client browses this feed id; nothing else
+	// about it is meaningful to the client.
+	FeedID string `json:"feedId,omitempty"`
+	// Count is how many files a container holds, for the tile's caption.
+	Count  int `json:"count,omitempty"`
+	Width  int `json:"width,omitempty"`
+	Height int `json:"height,omitempty"`
 }
 
 // Listing is one page of a feed. Cursor is opaque to the client; an empty cursor

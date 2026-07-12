@@ -1,11 +1,13 @@
 package net.fourbakers.oppailib.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
@@ -24,10 +26,12 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PushPin
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.PushPin
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -53,6 +57,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -67,11 +72,17 @@ import net.fourbakers.oppailib.data.RemoteSource
 import net.fourbakers.oppailib.data.Repository
 import net.fourbakers.oppailib.data.SourceFeed
 import net.fourbakers.oppailib.data.SourceItem
+import net.fourbakers.oppailib.data.SourceSaveRequest
 
 /**
  * Browses a remote catalogue — a 4chan board, a doujin listing — without importing
  * anything. Items stream from the origin through the server's proxy; only the save
  * button pulls one into the library.
+ *
+ * Some items are *containers* rather than files: a 4chan board lists threads, and a
+ * thread is a set you browse into (see [SourceItem.isContainer]). Drilling in is just
+ * another feed — [container] holds the one we're inside, and clearing it goes back to
+ * the board.
  *
  * [openAt] lands the screen straight on a pinned feed (search term and all) instead of
  * on whatever source happens to come first.
@@ -81,7 +92,13 @@ import net.fourbakers.oppailib.data.SourceItem
 fun BrowseScreen(repo: Repository, openAt: PinnedFeed? = null, onBack: () -> Unit) {
     var sources by remember { mutableStateOf<List<RemoteSource>>(emptyList()) }
     var source by remember { mutableStateOf<RemoteSource?>(null) }
-    var feed by remember { mutableStateOf("") }
+
+    // The feed chosen from the chips. `container` is the thread browsed into from it,
+    // if any — the feed actually being fetched is one or the other, never both.
+    var boardFeed by remember { mutableStateOf("") }
+    var container by remember { mutableStateOf<SourceItem?>(null) }
+    val feed = container?.feedId ?: boardFeed
+
     var sort by remember { mutableStateOf("") }
 
     // The committed search term — what was actually fetched. `draft` is what's in the
@@ -98,14 +115,17 @@ fun BrowseScreen(repo: Repository, openAt: PinnedFeed? = null, onBack: () -> Uni
     var error by remember { mutableStateOf<String?>(null) }
     var viewerAt by remember { mutableStateOf<Int?>(null) }
     var pinned by remember { mutableStateOf(repo.prefs.pinnedFeeds) }
+    var savingThread by remember { mutableStateOf(false) }
 
     val grid = rememberLazyGridState()
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
     val keyboard = LocalSoftwareKeyboardController.current
 
-    val currentFeed: SourceFeed? = source?.feeds?.firstOrNull { it.id == feed }
-    val isSearch = currentFeed?.query == true
+    // The chip-level feed, which is what search and pinning are about. Inside a thread
+    // there is no chip selected, so neither applies.
+    val currentFeed: SourceFeed? = source?.feeds?.firstOrNull { it.id == boardFeed }
+    val isSearch = container == null && currentFeed?.query == true
 
     LaunchedEffect(Unit) {
         runCatching { repo.api.sources().sources }
@@ -116,14 +136,14 @@ fun BrowseScreen(repo: Repository, openAt: PinnedFeed? = null, onBack: () -> Uni
                 val want = openAt?.let { pin -> list.firstOrNull { it.id == pin.sourceId } }
                 if (want != null && openAt != null) {
                     source = want
-                    feed = openAt.feedId
+                    boardFeed = openAt.feedId
                     query = openAt.query
                     draft = openAt.query
                     sort = openAt.sort
                 } else {
                     list.firstOrNull()?.let { first ->
                         source = first
-                        feed = first.feeds.firstOrNull()?.id ?: ""
+                        boardFeed = first.feeds.firstOrNull()?.id ?: ""
                     }
                 }
             }
@@ -145,8 +165,10 @@ fun BrowseScreen(repo: Repository, openAt: PinnedFeed? = null, onBack: () -> Uni
                     id = src.id,
                     feed = feed,
                     cursor = if (reset) null else cursor.ifEmpty { null },
-                    q = query.ifBlank { null },
-                    sort = sort.ifBlank { null },
+                    // A thread is its own feed; the board's search term means nothing
+                    // inside it and would only be handed back to the source as noise.
+                    q = if (container == null) query.ifBlank { null } else null,
+                    sort = if (container == null) sort.ifBlank { null } else null,
                 )
             }
                 .onSuccess { page ->
@@ -161,11 +183,16 @@ fun BrowseScreen(repo: Repository, openAt: PinnedFeed? = null, onBack: () -> Uni
 
     // Refetch whenever the thing being asked for changes. `query` is the committed
     // term, not the draft, so typing doesn't stream requests at the site.
+    //
+    // Nothing here may suspend before load(): clearing `items` swaps the grid out for
+    // the empty state, so the LazyVerticalGrid is no longer composed — and a
+    // grid.scrollToItem() here would then wait forever for a layout that never comes,
+    // never reaching load(). That is exactly what left the screen stuck on "Nothing on
+    // this feed". Emptying the list resets the scroll on its own anyway.
     LaunchedEffect(source?.id, feed, query, sort) {
         if (source != null && feed.isNotEmpty()) {
             items = emptyList()
             cursor = ""
-            grid.scrollToItem(0)
             load(reset = true)
         }
     }
@@ -181,11 +208,16 @@ fun BrowseScreen(repo: Repository, openAt: PinnedFeed? = null, onBack: () -> Uni
         snapshotFlow { nearEnd }.collect { if (it && cursor.isNotEmpty()) load(reset = false) }
     }
 
+    /** Leaving a thread goes back to its board, not out of the browser. */
+    BackHandler(enabled = container != null) { container = null }
+
     viewerAt?.let { start ->
         RemoteViewerScreen(
             repo = repo,
             sourceId = source?.id ?: return@let,
-            items = items,
+            // Containers aren't viewable, so the viewer's feed is the files only — and
+            // the index it's given has to be into *that* list.
+            items = items.filter { !it.isContainer },
             startIndex = start,
             onClose = { viewerAt = null },
             onSaved = { scope.launch { snackbar.showSnackbar("Saved to library") } },
@@ -195,8 +227,10 @@ fun BrowseScreen(repo: Repository, openAt: PinnedFeed? = null, onBack: () -> Uni
     }
 
     // What pinning this view would store. A search pin remembers its term and sort, so
-    // reopening it doesn't mean retyping the search.
+    // reopening it doesn't mean retyping the search. A thread is not pinnable: it 404s
+    // as soon as it slides off the board.
     val pin: PinnedFeed? = source?.let { src ->
+        if (container != null) return@let null
         val f = currentFeed ?: return@let null
         if (isSearch && query.isBlank()) return@let null // nothing to pin yet
         PinnedFeed(
@@ -214,13 +248,47 @@ fun BrowseScreen(repo: Repository, openAt: PinnedFeed? = null, onBack: () -> Uni
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(source?.name ?: "Browse") },
+                title = { Text(container?.title ?: source?.name ?: "Browse", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    IconButton(onClick = { if (container != null) container = null else onBack() }) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = if (container != null) "Back to the board" else "Back",
+                        )
                     }
                 },
                 actions = {
+                    // A whole thread saves as one comic: its images, in post order.
+                    container?.let { thread ->
+                        IconButton(
+                            enabled = !savingThread,
+                            onClick = {
+                                savingThread = true
+                                scope.launch {
+                                    runCatching {
+                                        repo.api.saveFromSource(
+                                            source?.id.orEmpty(),
+                                            SourceSaveRequest(
+                                                itemId = thread.id,
+                                                pageUrl = thread.pageUrl.ifEmpty { null },
+                                                title = thread.title.ifEmpty { null },
+                                                kind = "comic",
+                                            ),
+                                        )
+                                    }
+                                        .onSuccess { snackbar.showSnackbar("Saved the thread to your library") }
+                                        .onFailure { snackbar.showSnackbar(it.message ?: "Couldn't save that thread") }
+                                    savingThread = false
+                                }
+                            },
+                        ) {
+                            if (savingThread) {
+                                CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(20.dp))
+                            } else {
+                                Icon(Icons.Filled.Download, contentDescription = "Save this whole thread")
+                            }
+                        }
+                    }
                     if (pin != null) {
                         IconButton(
                             onClick = {
@@ -254,36 +322,47 @@ fun BrowseScreen(repo: Repository, openAt: PinnedFeed? = null, onBack: () -> Uni
         snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
-            if (sources.size > 1) {
-                ChipRow(
-                    options = sources.map { it.id to it.name },
-                    selected = source?.id,
-                    onSelect = { id ->
-                        sources.firstOrNull { it.id == id }?.let {
-                            source = it
-                            feed = it.feeds.firstOrNull()?.id ?: ""
-                            query = ""
-                            draft = ""
+            // Inside a thread the pickers would be lying about what's on screen, so the
+            // thread's own header replaces them.
+            if (container == null) {
+                if (sources.size > 1) {
+                    ChipRow(
+                        options = sources.map { it.id to it.name },
+                        selected = source?.id,
+                        onSelect = { id ->
+                            sources.firstOrNull { it.id == id }?.let {
+                                source = it
+                                boardFeed = it.feeds.firstOrNull()?.id ?: ""
+                                query = ""
+                                draft = ""
+                                sort = ""
+                            }
+                        },
+                    )
+                }
+                source?.let { src ->
+                    ChipRow(
+                        options = src.feeds.map { it.id to it.label },
+                        selected = boardFeed,
+                        onSelect = { id ->
+                            boardFeed = id
+                            // Each feed carries its own orderings; the previous feed's
+                            // sort is meaningless here, so fall back to its default.
                             sort = ""
-                        }
-                    },
-                )
-            }
-            source?.let { src ->
-                ChipRow(
-                    options = src.feeds.map { it.id to it.label },
-                    selected = feed,
-                    onSelect = { id ->
-                        feed = id
-                        // Each feed carries its own orderings; the previous feed's sort
-                        // is meaningless here, so fall back to the new feed's default.
-                        sort = ""
-                        val f = src.feeds.firstOrNull { it.id == id }
-                        if (f?.query != true) {
-                            query = ""
-                            draft = ""
-                        }
-                    },
+                            val f = src.feeds.firstOrNull { it.id == id }
+                            if (f?.query != true) {
+                                query = ""
+                                draft = ""
+                            }
+                        },
+                    )
+                }
+            } else {
+                Text(
+                    "${items.size} files in this thread",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
                 )
             }
 
@@ -324,7 +403,11 @@ fun BrowseScreen(repo: Repository, openAt: PinnedFeed? = null, onBack: () -> Uni
                 }
                 items.isEmpty() -> Box(Modifier.fillMaxSize(), Alignment.Center) {
                     Text(
-                        if (isSearch) "Nothing matched “$query”." else "Nothing on this feed.",
+                        when {
+                            container != null -> "Nothing left in this thread — it may have 404'd."
+                            isSearch -> "Nothing matched “$query”."
+                            else -> "Nothing on this feed."
+                        },
                         Modifier.padding(24.dp),
                     )
                 }
@@ -336,7 +419,13 @@ fun BrowseScreen(repo: Repository, openAt: PinnedFeed? = null, onBack: () -> Uni
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     items(items, key = { it.id }) { item ->
-                        RemoteTile(repo, item) { viewerAt = items.indexOf(item) }
+                        RemoteTile(repo, item) {
+                            if (item.isContainer) {
+                                container = item
+                            } else {
+                                viewerAt = items.filter { !it.isContainer }.indexOf(item)
+                            }
+                        }
                     }
                 }
             }
@@ -368,43 +457,80 @@ private fun RemoteTile(repo: Repository, item: SourceItem, onClick: () -> Unit) 
         Modifier.aspectRatio(0.75f).clip(RoundedCornerShape(16.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant).clickable(onClick = onClick),
     ) {
-        AsyncImage(
-            // Even the thumbnail goes through the server: it carries our auth, and the
-            // origin would otherwise see the phone's IP on every tile it scrolls past.
-            model = ImageRequest.Builder(context).data(repo.sourceStreamUrl(item.thumbUrl)).crossfade(true).build(),
-            imageLoader = repo.imageLoader,
-            contentDescription = item.title,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize(),
-        )
-        if (item.kind == "video") {
-            Box(
-                Modifier.align(Alignment.Center).size(44.dp).clip(CircleShape).background(Color(0x66000000)),
-                Alignment.Center,
-            ) { Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = Color.White) }
-        }
-        if (item.kind == "comic") {
-            Box(
-                Modifier.align(Alignment.TopEnd).padding(6.dp).size(28.dp)
-                    .clip(CircleShape).background(Color(0x99000000)),
-                Alignment.Center,
-            ) {
+        if (item.thumbUrl.isNotEmpty()) {
+            AsyncImage(
+                // Even the thumbnail goes through the server: it carries our auth, and
+                // the origin would otherwise see the phone's IP on every tile it scrolls
+                // past.
+                model = ImageRequest.Builder(context).data(repo.sourceStreamUrl(item.thumbUrl))
+                    .crossfade(true).build(),
+                imageLoader = repo.imageLoader,
+                contentDescription = item.title,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        } else {
+            // A text-only OP has no cover. The thread is still worth opening — its files
+            // are in the replies.
+            Box(Modifier.fillMaxSize(), Alignment.Center) {
                 Icon(
-                    Icons.AutoMirrored.Filled.MenuBook,
-                    contentDescription = "Comic",
-                    tint = Color.White,
-                    modifier = Modifier.size(16.dp),
+                    Icons.Filled.Forum,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(40.dp),
                 )
             }
         }
+
+        when (item.kind) {
+            "video" -> Box(
+                Modifier.align(Alignment.Center).size(44.dp).clip(CircleShape).background(Color(0x66000000)),
+                Alignment.Center,
+            ) { Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = Color.White) }
+
+            "comic" -> Badge(Icons.AutoMirrored.Filled.MenuBook, "Comic")
+
+            // A thread says how much is inside it, which is the thing you actually pick
+            // threads on.
+            "thread" -> Row(
+                Modifier.align(Alignment.TopEnd).padding(6.dp).clip(RoundedCornerShape(12.dp))
+                    .background(Color(0x99000000)).padding(horizontal = 8.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.Filled.Forum,
+                    contentDescription = "Thread",
+                    tint = Color.White,
+                    modifier = Modifier.size(14.dp),
+                )
+                Text(
+                    item.count.toString(),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+        }
+
         Text(
             item.title,
-            maxLines = 1,
+            maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             style = MaterialTheme.typography.labelMedium,
             color = Color.White,
             modifier = Modifier.align(Alignment.BottomStart)
                 .background(Color(0x99000000)).fillMaxWidth().padding(6.dp),
         )
+    }
+}
+
+@Composable
+private fun BoxScope.Badge(icon: ImageVector, label: String) {
+    Box(
+        Modifier.align(Alignment.TopEnd).padding(6.dp).size(28.dp)
+            .clip(CircleShape).background(Color(0x99000000)),
+        Alignment.Center,
+    ) {
+        Icon(icon, contentDescription = label, tint = Color.White, modifier = Modifier.size(16.dp))
     }
 }

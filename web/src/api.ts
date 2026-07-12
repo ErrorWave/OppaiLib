@@ -171,10 +171,20 @@ export interface RemoteSource {
 export interface SourceItem {
   id: string;
   title: string;
-  kind: "video" | "gif" | "image" | "comic";
+  /**
+   * "thread" is a *container* — an item you browse into rather than view. A 4chan
+   * board lists threads, and a thread stands for a set of files, so opening it must
+   * list the set rather than put the OP's image in the viewer. Containers carry
+   * `feedId`; nothing else does.
+   */
+  kind: "video" | "gif" | "image" | "comic" | "thread";
   thumbUrl: string;
   mediaUrl?: string;
   pageUrl?: string;
+  /** The feed to browse when this item is opened. Set only on a container. */
+  feedId?: string;
+  /** How many files a container holds. */
+  count?: number;
   width?: number;
   height?: number;
 }

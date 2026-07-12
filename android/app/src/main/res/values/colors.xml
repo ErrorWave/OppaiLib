@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Matches the Compose seed colour in ui/theme/Theme.kt. -->
-    <color name="ic_launcher_background">#6750A4</color>
+    <!-- The launcher icon is the orange mark on the app's own dark surface; a purple
+         plate behind it belongs to the template it was generated from, not to us. -->
+    <color name="ic_launcher_background">#191410</color>
     <color name="window_background">#FFFBFE</color>
 </resources>

@@ -171,9 +171,19 @@ data class SourceItem(
     val thumbUrl: String = "",
     val mediaUrl: String = "",
     val pageUrl: String = "",
+    /**
+     * Set when the item is a *container* — a 4chan thread — rather than a file. The
+     * tile stands for a set, so opening it browses [feedId] instead of putting the
+     * OP's image in the viewer.
+     */
+    val feedId: String = "",
+    /** How many files a container holds. Zero on anything else. */
+    val count: Int = 0,
     val width: Int = 0,
     val height: Int = 0,
-)
+) {
+    val isContainer: Boolean get() = feedId.isNotEmpty()
+}
 
 /** [cursor] is opaque; empty means there is nothing after this page. */
 @Serializable

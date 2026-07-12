@@ -16,6 +16,14 @@ import (
 // The API is the whole reason this source is cheap: a.4cdn.org serves each board's
 // index as JSON, so there is no HTML to parse and nothing to break when the site is
 // restyled. Media lives on i.4cdn.org under the post's upload timestamp.
+//
+// A board is browsed as *threads*, not as a flat run of files. That's how the site
+// works and it's how people read it: an /h/ thread is a set — one dump, one artist,
+// one theme — and shredding it into 400 unlabelled tiles throws away the only
+// structure the board has. So a board listing yields one tile per thread (the OP's
+// image, the subject, the file count), and opening a thread browses *into* it. See
+// Item.FeedID: a thread is a container, and the client drills into containers rather
+// than opening them in the viewer.
 type FourChan struct {
 	hc      *http.Client
 	apiHost string // overridable in tests
@@ -56,11 +64,17 @@ func (f *FourChan) Hosts() []string {
 	return []string{"a.4cdn.org", "i.4cdn.org", "is2.4chan.org"}
 }
 
-// fourChanIndex is the shape of /{board}/{page}.json, narrowed to what we read.
+// fourChanIndex is the shape of /{board}/{page}.json, narrowed to what we read. The
+// first post of each thread is its OP.
 type fourChanIndex struct {
 	Threads []struct {
 		Posts []fourChanPost `json:"posts"`
 	} `json:"threads"`
+}
+
+// fourChanThread is the shape of /{board}/thread/{no}.json — every post, in order.
+type fourChanThread struct {
+	Posts []fourChanPost `json:"posts"`
 }
 
 type fourChanPost struct {
@@ -72,9 +86,38 @@ type fourChanPost struct {
 	Height   int    `json:"h"`
 	Sub      string `json:"sub"` // thread subject
 	Com      string `json:"com"` // comment, as HTML
+	// Replies and Images are only on an OP, and count the *replies* — the OP's own
+	// upload is not among them.
+	Replies int `json:"replies"`
+	Images  int `json:"images"`
+}
+
+// threadFeed reads a feed id of the form "<board>:t<no>" — a single thread, browsed
+// as if it were a feed of its own. Ids avoid "/" so they survive a round trip through
+// a path segment without depending on how a client escapes a slash.
+func threadFeed(feed string) (board string, no int64, ok bool) {
+	board, rest, found := strings.Cut(feed, ":")
+	if !found || !validBoard(board) || !strings.HasPrefix(rest, "t") {
+		return "", 0, false
+	}
+	n, err := strconv.ParseInt(strings.TrimPrefix(rest, "t"), 10, 64)
+	if err != nil || n <= 0 {
+		return "", 0, false
+	}
+	return board, n, true
 }
 
 func (f *FourChan) Browse(ctx context.Context, p BrowseParams) (*Listing, error) {
+	// A thread is addressed as a feed, so opening one is the same request as browsing
+	// a board — the client doesn't need a second endpoint to drill into a container.
+	if board, no, ok := threadFeed(p.Feed); ok {
+		return f.browseThread(ctx, board, no)
+	}
+	return f.browseBoard(ctx, p)
+}
+
+// browseBoard lists a board's threads, one tile per thread.
+func (f *FourChan) browseBoard(ctx context.Context, p BrowseParams) (*Listing, error) {
 	feed := p.Feed
 	// An empty board means "whatever this source leads with", so a client that hasn't
 	// picked yet still gets a listing rather than an error.
@@ -106,19 +149,13 @@ func (f *FourChan) Browse(ctx context.Context, p BrowseParams) (*Listing, error)
 
 	out := &Listing{}
 	for _, thread := range idx.Threads {
-		// The OP's subject titles the whole thread; replies rarely have one, so it's
-		// the most useful label to hang on every file in it.
-		subject := ""
-		if len(thread.Posts) > 0 {
-			subject = cleanPostText(thread.Posts[0].Sub)
+		if len(thread.Posts) == 0 {
+			continue
 		}
-		for _, p := range thread.Posts {
-			// A post without an upload is just text — nothing to browse.
-			if p.Tim == 0 || p.Ext == "" {
-				continue
-			}
-			out.Items = append(out.Items, f.itemOf(feed, p, subject))
-		}
+		// The index gives the OP plus a few preview replies. The OP is the thread: its
+		// image is the cover, its subject is the title, and its counters say how much
+		// is inside.
+		out.Items = append(out.Items, f.threadItem(feed, thread.Posts[0]))
 	}
 
 	if page < fourChanLastPage {
@@ -127,34 +164,121 @@ func (f *FourChan) Browse(ctx context.Context, p BrowseParams) (*Listing, error)
 	return out, nil
 }
 
-func (f *FourChan) itemOf(board string, p fourChanPost, subject string) Item {
-	title := strings.TrimSpace(p.Filename + p.Ext)
-	if subject != "" {
-		title = subject
+// browseThread lists the media inside one thread. There is no paging: a thread is
+// served whole.
+func (f *FourChan) browseThread(ctx context.Context, board string, no int64) (*Listing, error) {
+	url := fmt.Sprintf("%s/%s/thread/%d.json", f.apiHost, board, no)
+	body, err := httpGet(ctx, f.hc, url, defaultUserAgent)
+	if err != nil {
+		return nil, err
+	}
+
+	var thread fourChanThread
+	if err := json.Unmarshal(body, &thread); err != nil {
+		return nil, fmt.Errorf("decode 4chan thread: %w", err)
+	}
+
+	subject := ""
+	if len(thread.Posts) > 0 {
+		subject = cleanPostText(thread.Posts[0].Sub)
+	}
+
+	out := &Listing{}
+	for _, p := range thread.Posts {
+		// A post without an upload is just text — nothing to browse.
+		if p.Tim == 0 || p.Ext == "" {
+			continue
+		}
+		out.Items = append(out.Items, f.fileItem(board, no, p, subject))
+	}
+	return out, nil
+}
+
+// threadItem turns an OP into the tile that stands for its whole thread.
+func (f *FourChan) threadItem(board string, op fourChanPost) Item {
+	title := cleanPostText(op.Sub)
+	if title == "" {
+		title = cleanPostText(op.Com)
 	}
 	if title == "" {
+		title = fmt.Sprintf("/%s/%d", board, op.No)
+	}
+
+	// Images counts the replies' uploads; the OP's own file is separate.
+	files := op.Images
+	if op.Tim != 0 {
+		files++
+	}
+
+	item := Item{
+		ID:      fmt.Sprintf("%s:t%d", board, op.No),
+		Title:   truncate(title, 120),
+		Kind:    kindThread,
+		FeedID:  fmt.Sprintf("%s:t%d", board, op.No),
+		PageURL: fmt.Sprintf("https://boards.4chan.org/%s/thread/%d", board, op.No),
+		Count:   files,
+		Width:   op.Width,
+		Height:  op.Height,
+	}
+	// A thread whose OP posted no image (rare on these boards) still lists; the client
+	// draws a placeholder rather than a broken tile.
+	if op.Tim != 0 {
+		item.ThumbURL = fmt.Sprintf("%s/%s/%ds.jpg", f.cdnHost, board, op.Tim)
+	}
+	return item
+}
+
+// fileItem turns one post's upload into a viewable item.
+func (f *FourChan) fileItem(board string, thread int64, p fourChanPost, subject string) Item {
+	title := strings.TrimSpace(p.Filename + p.Ext)
+	if title == "" {
 		title = cleanPostText(p.Com)
+	}
+	if title == "" {
+		title = subject
 	}
 	if title == "" {
 		title = fmt.Sprintf("/%s/%d", board, p.No)
 	}
 
 	return Item{
-		ID:    fmt.Sprintf("%s/%d", board, p.Tim),
+		ID:    fmt.Sprintf("%s:f%d", board, p.Tim),
 		Title: truncate(title, 120),
 		Kind:  kindForExt(p.Ext),
 		// 4chan always renders a JPEG thumbnail, whatever the original was — a .webm's
 		// thumb is "{tim}s.jpg", not "{tim}s.webm".
 		ThumbURL: fmt.Sprintf("%s/%s/%ds.jpg", f.cdnHost, board, p.Tim),
 		MediaURL: fmt.Sprintf("%s/%s/%d%s", f.cdnHost, board, p.Tim, p.Ext),
-		PageURL:  fmt.Sprintf("https://boards.4chan.org/%s/thread/%d", board, p.No),
-		Width:    p.Width,
-		Height:   p.Height,
+		// The post, not just the thread: #p{no} lands on the actual reply.
+		PageURL: fmt.Sprintf("https://boards.4chan.org/%s/thread/%d#p%d", board, thread, p.No),
+		Width:   p.Width,
+		Height:  p.Height,
 	}
 }
 
-// Pages: 4chan has no multi-page items — every post is one file.
-func (f *FourChan) Pages(context.Context, string) ([]string, error) { return nil, nil }
+// Pages returns a thread's images, in post order — what a thread saved to the library
+// becomes. Videos are left out: a comic is a run of pages, and a .webm is not a page.
+//
+// Only a thread has pages. Asking for the pages of a single file gets nothing, which
+// is the right answer rather than an error: the caller has the file's own URL already.
+func (f *FourChan) Pages(ctx context.Context, itemID string) ([]string, error) {
+	board, no, ok := threadFeed(itemID)
+	if !ok {
+		return nil, nil
+	}
+	listing, err := f.browseThread(ctx, board, no)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, item := range listing.Items {
+		if item.Kind == "video" || item.MediaURL == "" {
+			continue
+		}
+		out = append(out, item.MediaURL)
+	}
+	return out, nil
+}
 
 func validBoard(id string) bool {
 	for _, b := range fourChanBoards {

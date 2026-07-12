@@ -14,23 +14,35 @@ import (
 
 // ── 4chan ───────────────────────────────────────────────────────────────────
 
-// One board index with: a video post, an image post, and a text-only post that must
-// be skipped because it has no upload.
-const fourChanIndexJSON = `{"threads":[{"posts":[
+// A board index: two threads, the second with no subject and no OP upload.
+const fourChanIndexJSON = `{"threads":[
+  {"posts":[
+    {"no":1001,"tim":1600000000001,"ext":".jpg","filename":"op","w":800,"h":600,"sub":"Cool thread","replies":9,"images":4},
+    {"no":1002,"tim":1600000000002,"ext":".jpg","filename":"reply"}
+  ]},
+  {"posts":[{"no":2001,"com":"text OP, <b>no</b> file","replies":2,"images":2}]}
+]}`
+
+// One thread: a video post, an image post, and a text-only post that must be skipped
+// because it has no upload.
+const fourChanThreadJSON = `{"posts":[
   {"no":1001,"tim":1600000000001,"ext":".webm","filename":"clip","w":1280,"h":720,"sub":"Cool thread"},
   {"no":1002,"tim":1600000000002,"ext":".jpg","filename":"pic","w":800,"h":600},
   {"no":1003,"com":"just a reply, no file"}
-]}]}`
+]}`
 
 func newFourChanStub(t *testing.T) (*FourChan, *httptest.Server) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/gif/1.json" {
-			http.NotFound(w, r)
-			return
-		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(fourChanIndexJSON))
+		switch r.URL.Path {
+		case "/gif/1.json":
+			_, _ = w.Write([]byte(fourChanIndexJSON))
+		case "/gif/thread/1001.json":
+			_, _ = w.Write([]byte(fourChanThreadJSON))
+		default:
+			http.NotFound(w, r)
+		}
 	}))
 	f := NewFourChan(srv.Client())
 	f.apiHost = srv.URL
@@ -38,7 +50,8 @@ func newFourChanStub(t *testing.T) (*FourChan, *httptest.Server) {
 	return f, srv
 }
 
-func TestFourChanBrowse(t *testing.T) {
+// A board lists threads, not a shredded pile of every file on it.
+func TestFourChanBrowseListsThreads(t *testing.T) {
 	f, srv := newFourChanStub(t)
 	defer srv.Close()
 
@@ -47,7 +60,60 @@ func TestFourChanBrowse(t *testing.T) {
 		t.Fatalf("Browse: %v", err)
 	}
 	if len(got.Items) != 2 {
+		t.Fatalf("items = %d, want 2 — one tile per thread, not per file", len(got.Items))
+	}
+
+	th := got.Items[0]
+	if th.Kind != "thread" {
+		t.Errorf("kind = %q, want thread", th.Kind)
+	}
+	// Without a feed id the client has nothing to browse into, and the tile is dead.
+	if th.FeedID != "gif:t1001" {
+		t.Errorf("feed id = %q, want gif:t1001", th.FeedID)
+	}
+	if th.Title != "Cool thread" {
+		t.Errorf("title = %q, want the OP's subject", th.Title)
+	}
+	if th.ThumbURL != "https://i.4cdn.org/gif/1600000000001s.jpg" {
+		t.Errorf("thumb url = %q, want the OP's s.jpg thumbnail", th.ThumbURL)
+	}
+	// "images" counts the replies' uploads; the OP's own file is not among them.
+	if th.Count != 5 {
+		t.Errorf("count = %d, want 5 (4 reply images + the OP's)", th.Count)
+	}
+	if th.MediaURL != "" {
+		t.Errorf("media url = %q, want empty — a thread is browsed, not streamed", th.MediaURL)
+	}
+
+	// A text-only OP still makes a thread: its files are in the replies.
+	text := got.Items[1]
+	if text.ThumbURL != "" {
+		t.Errorf("thumb url = %q, want empty for an OP with no upload", text.ThumbURL)
+	}
+	if text.Title != "text OP, no file" {
+		t.Errorf("title = %q, want the OP's comment with its markup stripped", text.Title)
+	}
+	if text.Count != 2 {
+		t.Errorf("count = %d, want 2", text.Count)
+	}
+}
+
+// Opening a thread is just browsing its feed id — that's what keeps drilling in from
+// needing a second endpoint.
+func TestFourChanBrowseThread(t *testing.T) {
+	f, srv := newFourChanStub(t)
+	defer srv.Close()
+
+	got, err := f.Browse(context.Background(), BrowseParams{Feed: "gif:t1001"})
+	if err != nil {
+		t.Fatalf("Browse: %v", err)
+	}
+	if len(got.Items) != 2 {
 		t.Fatalf("items = %d, want 2 (the text-only post has no file)", len(got.Items))
+	}
+	// A thread is served whole; a cursor would page it into itself forever.
+	if got.Cursor != "" {
+		t.Errorf("cursor = %q, want empty — a thread has one page", got.Cursor)
 	}
 
 	v := got.Items[0]
@@ -61,12 +127,39 @@ func TestFourChanBrowse(t *testing.T) {
 	if v.ThumbURL != "https://i.4cdn.org/gif/1600000000001s.jpg" {
 		t.Errorf("thumb url = %q, want the s.jpg form", v.ThumbURL)
 	}
-	// The OP's subject titles every file in the thread.
-	if v.Title != "Cool thread" {
-		t.Errorf("title = %q, want the thread subject", v.Title)
+	// Inside a thread the subject is on every tile already; the filename is the only
+	// thing that tells one file from the next.
+	if v.Title != "clip.webm" {
+		t.Errorf("title = %q, want the uploader's filename", v.Title)
 	}
 	if got.Items[1].Kind != "image" {
 		t.Errorf("jpg kind = %q, want image", got.Items[1].Kind)
+	}
+}
+
+// Saving a thread means saving its images as a comic — the webm in it is not a page.
+func TestFourChanThreadPagesSkipVideo(t *testing.T) {
+	f, srv := newFourChanStub(t)
+	defer srv.Close()
+
+	got, err := f.Pages(context.Background(), "gif:t1001")
+	if err != nil {
+		t.Fatalf("Pages: %v", err)
+	}
+	want := []string{"https://i.4cdn.org/gif/1600000000002.jpg"}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Errorf("pages = %v, want %v — a .webm is not a comic page", got, want)
+	}
+}
+
+func TestFourChanRejectsBadThreadFeed(t *testing.T) {
+	f, srv := newFourChanStub(t)
+	defer srv.Close()
+
+	for _, feed := range []string{"nope:t1", "gif:tabc", "gif:t0", "gif:x1"} {
+		if _, err := f.Browse(context.Background(), BrowseParams{Feed: feed}); err == nil {
+			t.Errorf("Browse(%q) should fail", feed)
+		}
 	}
 }
 
@@ -110,13 +203,13 @@ func TestFourChanStopsAtLastPage(t *testing.T) {
 // stub streams a body far larger than any buffer: it fails against that bug and passes
 // against a fetch that reads the body under its own deadline.
 func TestFourChanReadsABodyBiggerThanTheBuffer(t *testing.T) {
-	var posts []string
+	var threads []string
 	for i := range 4000 {
-		posts = append(posts, fmt.Sprintf(
-			`{"no":%d,"tim":%d,"ext":".jpg","filename":"pic%d","sub":"thread %d"}`,
+		threads = append(threads, fmt.Sprintf(
+			`{"posts":[{"no":%d,"tim":%d,"ext":".jpg","filename":"pic%d","sub":"thread %d","images":3}]}`,
 			i+1, 1600000000000+i, i, i))
 	}
-	body := `{"threads":[{"posts":[` + strings.Join(posts, ",") + `]}]}`
+	body := `{"threads":[` + strings.Join(threads, ",") + `]}`
 	if len(body) < 256<<10 {
 		t.Fatalf("stub body is only %d bytes — too small to outrun the transport buffer", len(body))
 	}

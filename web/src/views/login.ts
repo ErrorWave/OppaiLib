@@ -2,6 +2,7 @@ import { LitElement, html, css } from "lit";
 import { customElement, state, query } from "lit/decorators.js";
 import { api, setToken, type User } from "../api.js";
 import { motionStyles } from "../theme.js";
+import { logoSVG } from "../logo.js";
 
 @customElement("oppai-login")
 export class OppaiLogin extends LitElement {
@@ -16,11 +17,38 @@ export class OppaiLogin extends LitElement {
         place-items: center;
         min-height: 100vh;
         padding: 1rem;
+        position: relative;
+        overflow: hidden;
         background:
           radial-gradient(1200px 600px at 50% -10%, color-mix(in srgb, var(--md-sys-color-primary) 14%, transparent), transparent 70%),
           var(--md-sys-color-background);
       }
+
+      /* The mascot is anchored to the bottom edge and bleeds off it — she has no legs,
+         so any gap under her reads as a cut-off. She sits behind the card and must
+         never swallow a click meant for the form. */
+      .mascot {
+        position: absolute;
+        right: 0;
+        bottom: 0;
+        height: min(78vh, 620px);
+        width: auto;
+        pointer-events: none;
+        user-select: none;
+        animation: oppai-fade-in-up 0.7s var(--oppai-ease-emphasized) both;
+        animation-delay: 0.15s;
+      }
+      @media (max-width: 900px) {
+        .mascot {
+          right: 50%;
+          transform: translateX(50%);
+          height: min(42vh, 360px);
+          opacity: 0.5;
+        }
+      }
+
       .card {
+        position: relative;
         background: var(--md-sys-color-surface-container);
         border: 1px solid var(--md-sys-color-outline-variant);
         border-radius: 28px;
@@ -32,6 +60,10 @@ export class OppaiLogin extends LitElement {
         box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
         animation: oppai-scale-in 0.42s var(--oppai-ease-spring) both;
       }
+      /* Above the mascot, and pulled up off the bottom edge she occupies. */
+      @media (max-width: 900px) {
+        .card { margin-bottom: 22vh; }
+      }
       h1 {
         margin: 0 0 0.25rem;
         text-align: center;
@@ -39,6 +71,19 @@ export class OppaiLogin extends LitElement {
         font-weight: 600;
       }
       .brand { text-align: center; color: var(--md-sys-color-primary); }
+      /* The mark takes its colour from here, which is what makes it themeable. */
+      .logo {
+        display: block;
+        width: 84px;
+        height: 84px;
+        margin: 0 auto;
+        color: var(--md-sys-color-primary);
+      }
+      .logo svg {
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
       .tagline {
         text-align: center;
         margin: 0 0 0.5rem;
@@ -90,7 +135,9 @@ export class OppaiLogin extends LitElement {
 
   render() {
     return html`
+      <img class="mascot" src="/mascot-lg.png" alt="" />
       <form class="card" @submit=${this.submit} @keydown=${this.onKeydown}>
+        <span class="logo">${logoSVG}</span>
         <h1 class="brand">OppaiLib</h1>
         <p class="tagline">Your private media library</p>
         <md-filled-text-field label="Username" name="username" autofocus required></md-filled-text-field>
