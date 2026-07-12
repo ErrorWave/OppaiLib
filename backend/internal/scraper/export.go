@@ -1,0 +1,74 @@
+package scraper
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+)
+
+// The surface the sources package needs. Browsing a remote catalogue is not
+// scraping — but it does need the same disciplined HTTP: the configured
+// User-Agent, the per-host throttle, and the robots policy. Rather than let
+// sources build its own client and quietly bypass all three, it borrows the
+// engine's through these.
+
+// HTTPClient is the engine's bounded HTTP client.
+func (e *Engine) HTTPClient() *http.Client { return e.client }
+
+// maxDocumentBytes caps a fetched HTML page. A listing is tens of kilobytes; a
+// server that streams forever should not be able to exhaust us.
+const maxDocumentBytes = 8 << 20
+
+// Fetch returns the HTML body at rawURL, subject to the engine's throttle and
+// robots policy.
+func (e *Engine) Fetch(ctx context.Context, rawURL string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return "", fmt.Errorf("bad url: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("unsupported scheme %q", u.Scheme)
+	}
+	if rc := e.robotsChecker(); rc != nil {
+		if allowed, err := rc.allowed(ctx, u); err == nil && !allowed {
+			return "", fmt.Errorf("fetch: blocked by robots.txt for %s", u.Path)
+		}
+	}
+	if err := e.throttle(ctx, u.Host); err != nil {
+		return "", err
+	}
+
+	resp, err := e.get(ctx, u)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("fetch: %s returned %d", u, resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxDocumentBytes))
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
+}
+
+// ComicPages returns the ordered page images of the comic at rawURL.
+//
+// It goes through Scrape rather than reimplementing the walk, so a comic read from
+// a remote source and a comic imported from the same URL resolve to exactly the
+// same pages — including the preference for the full-res source over the thumbnail.
+func (e *Engine) ComicPages(ctx context.Context, rawURL string) ([]string, error) {
+	res, err := e.Scrape(ctx, rawURL)
+	if err != nil {
+		return nil, err
+	}
+	if len(res.MediaURLs) == 0 {
+		return nil, fmt.Errorf("no pages found at %s", rawURL)
+	}
+	return res.MediaURLs, nil
+}

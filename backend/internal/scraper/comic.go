@@ -115,9 +115,26 @@ func hasReaderContainer(doc *goquery.Document) bool {
 	return found
 }
 
-// collectComicPages returns candidate page images in document order. Comic
-// readers lazy-load aggressively, so the real source often hides in a data-*
-// attribute while src holds a spinner.
+// fullResAttrs are attributes that hold the *original* image outright. Gallery
+// software routinely renders a downscaled <img> and keeps the real file here, so
+// these outrank src — reading src first is how you end up archiving thumbnails.
+var fullResAttrs = []string{
+	"data-full", "data-full-src", "data-original", "data-origin",
+	"data-large", "data-large-src", "data-big", "data-image", "data-zoom-src",
+}
+
+// lazyAttrs hold the real source on a lazy-loading reader, where src is a spinner
+// or a blurred placeholder. Same resolution as src would have been — not better —
+// so they rank below the full-res attributes but above src itself.
+var lazyAttrs = []string{"data-src", "data-lazy-src", "data-lazy", "lazy-src"}
+
+// collectComicPages returns candidate page images in document order, preferring the
+// highest-resolution source each <img> offers.
+//
+// The naive read — take src — is what makes a scraped comic look bad: on a gallery
+// page src is very often a thumbnail, with the full page one hop away in a srcset
+// candidate, a data-* attribute, or the anchor the thumbnail is wrapped in. Archiving
+// the thumbnail is silent: the import "works" and the comic is simply mush.
 func collectComicPages(doc *goquery.Document) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -125,21 +142,113 @@ func collectComicPages(doc *goquery.Document) []string {
 		if !looksLikeContentImage(s) {
 			return
 		}
-		for _, attr := range []string{"data-src", "data-original", "data-lazy-src", "src"} {
-			v, ok := s.Attr(attr)
-			if !ok {
-				continue
-			}
-			v = strings.TrimSpace(v)
-			if v == "" || strings.HasPrefix(v, "data:") || seen[v] {
-				return
-			}
-			seen[v] = true
-			out = append(out, v)
+		v := bestImageURL(s)
+		if v == "" || seen[v] {
 			return
 		}
+		seen[v] = true
+		out = append(out, v)
 	})
 	return out
+}
+
+// bestImageURL picks the largest source an <img> can offer, in descending order of
+// how good the evidence is.
+func bestImageURL(s *goquery.Selection) string {
+	// A thumbnail wrapped in a link to the full file: <a href="p01.jpg"><img …></a>.
+	// Only trust the href when it actually names an image — plenty of readers wrap
+	// each page in a link to the *next page*, which is an HTML document.
+	if href, ok := s.Parent().Filter("a").Attr("href"); ok {
+		if v := clean(href); v != "" && looksLikeImageURL(v) {
+			return v
+		}
+	}
+	for _, attr := range fullResAttrs {
+		if v, ok := s.Attr(attr); ok {
+			if v := clean(v); v != "" {
+				return v
+			}
+		}
+	}
+	// srcset enumerates the same image at several sizes; the biggest is the one we want.
+	if set, ok := s.Attr("srcset"); ok {
+		if v := largestInSrcset(set); v != "" {
+			return v
+		}
+	}
+	for _, attr := range append(lazyAttrs, "src") {
+		if v, ok := s.Attr(attr); ok {
+			if v := clean(v); v != "" {
+				return v
+			}
+		}
+	}
+	return ""
+}
+
+// largestInSrcset returns the highest-resolution candidate of a srcset, comparing on
+// the width ("640w") or pixel-density ("2x") descriptor. A candidate with no
+// descriptor is the 1x baseline.
+func largestInSrcset(set string) string {
+	best, bestScore := "", -1.0
+	for _, candidate := range strings.Split(set, ",") {
+		fields := strings.Fields(strings.TrimSpace(candidate))
+		if len(fields) == 0 {
+			continue
+		}
+		u := clean(fields[0])
+		if u == "" {
+			continue
+		}
+		score := 1.0 // a bare candidate is the 1x default
+		if len(fields) > 1 {
+			d := strings.ToLower(fields[1])
+			switch {
+			case strings.HasSuffix(d, "w"):
+				if n, err := strconv.ParseFloat(strings.TrimSuffix(d, "w"), 64); err == nil {
+					score = n
+				}
+			case strings.HasSuffix(d, "x"):
+				// Densities and widths share one scale here, and a density is a small
+				// number next to any real width — which is fine, because a srcset mixing
+				// the two is malformed and we only ever compare within one list.
+				if n, err := strconv.ParseFloat(strings.TrimSuffix(d, "x"), 64); err == nil {
+					score = n
+				}
+			}
+		}
+		if score > bestScore {
+			best, bestScore = u, score
+		}
+	}
+	return best
+}
+
+// imageURLExts are the extensions a page image is actually served as.
+var imageURLExts = []string{".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".jxl", ".bmp"}
+
+// looksLikeImageURL reports whether a URL names an image file, ignoring any query.
+func looksLikeImageURL(raw string) bool {
+	p := raw
+	if u, err := url.Parse(raw); err == nil {
+		p = u.Path
+	}
+	ext := strings.ToLower(path.Ext(p))
+	for _, e := range imageURLExts {
+		if ext == e {
+			return true
+		}
+	}
+	return false
+}
+
+// clean trims a candidate URL and rejects the ones that aren't fetchable.
+func clean(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" || strings.HasPrefix(v, "data:") {
+		return ""
+	}
+	return v
 }
 
 var lastDigitsRe = regexp.MustCompile(`^(.*?)(\d+)(\D*)$`)

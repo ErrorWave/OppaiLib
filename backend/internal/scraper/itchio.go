@@ -82,6 +82,14 @@ func (ItchParser) Parse(doc *goquery.Document, u *url.URL) (*models.ScrapeResult
 			}
 		})
 
+	// Platforms are filed as their own tag category rather than dumped in with the
+	// genre tags, so a client can actually ask "does this run on Android?" instead
+	// of string-matching a general tag that might just be about the subject matter.
+	for _, p := range itchPlatforms(doc) {
+		res.CategorizedTags = append(res.CategorizedTags, models.ScrapedTag{Name: p, Category: "platform"})
+		res.Tags = append(res.Tags, p)
+	}
+
 	// itch hosts the download itself; the page is the place to get it. If the
 	// project links out to an external host, prefer that.
 	res.DownloadURL = u.String()
@@ -92,4 +100,82 @@ func (ItchParser) Parse(doc *goquery.Document, u *url.URL) (*models.ScrapeResult
 	}
 
 	return res, nil
+}
+
+// itchPlatformIcons maps itch's per-upload platform glyphs onto our canonical
+// names. itch labels Linux uploads with a Tux icon and browser-playable games
+// with a globe, so neither is guessable from the class name alone.
+var itchPlatformIcons = map[string]string{
+	"icon-windows": "windows",
+	"icon-apple":   "macos",
+	"icon-tux":     "linux",
+	"icon-android": "android",
+	"icon-globe":   "web",
+}
+
+// itchPlatforms reads the platforms a project publishes for, canonicalized and
+// deduped, in no particular order.
+//
+// Two places carry the fact and neither is reliable alone: the info panel lists
+// platforms as links, but only for downloadable projects — a browser-playable game
+// has no such row. The download/upload rows carry a platform icon each, but are
+// absent when the project is gated behind a purchase. So read both and union them.
+func itchPlatforms(doc *goquery.Document) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(p string) {
+		if p == "" || seen[p] {
+			return
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+
+	// Info panel: <a href="https://itch.io/games/platform-android">Android</a>
+	doc.Find(`a[href*="/platform-"]`).Each(func(_ int, s *goquery.Selection) {
+		href, ok := s.Attr("href")
+		if !ok {
+			return
+		}
+		i := strings.LastIndex(href, "/platform-")
+		if i < 0 {
+			return
+		}
+		add(canonicalPlatform(strings.Trim(href[i+len("/platform-"):], "/")))
+	})
+
+	// Upload rows: <span class="icon icon-android"></span>
+	doc.Find(`span[class*="icon-"]`).Each(func(_ int, s *goquery.Selection) {
+		class, ok := s.Attr("class")
+		if !ok {
+			return
+		}
+		for _, c := range strings.Fields(class) {
+			if p, hit := itchPlatformIcons[c]; hit {
+				add(p)
+			}
+		}
+	})
+
+	return out
+}
+
+// canonicalPlatform folds itch's several spellings of a platform onto one name.
+func canonicalPlatform(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "windows":
+		return "windows"
+	case "osx", "macos", "mac":
+		return "macos"
+	case "linux":
+		return "linux"
+	case "android":
+		return "android"
+	case "ios":
+		return "ios"
+	case "web", "html5", "flash", "unity", "java":
+		return "web"
+	default:
+		return ""
+	}
 }

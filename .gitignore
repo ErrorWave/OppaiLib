@@ -36,3 +36,6 @@ keystore.json
 
 # AI models (large binaries — user supplies)
 /config/models/*.onnx
+
+# Exported Docker images (`docker save`) — hundreds of MB, rebuilt on demand
+*.tar

@@ -14,24 +14,21 @@ import (
 	"github.com/youruser/oppailib/internal/crypto"
 	"github.com/youruser/oppailib/internal/db"
 	"github.com/youruser/oppailib/internal/models"
+	"github.com/youruser/oppailib/internal/recognize"
 )
 
 const maxUpload = 8 << 30 // 8 GiB
 
-// kindFromFilename guesses a media kind from a file extension.
-func kindFromFilename(name string) models.MediaKind {
-	switch strings.ToLower(filepath.Ext(name)) {
-	case ".mp4", ".mkv", ".webm", ".mov", ".avi":
-		return models.KindVideo
-	case ".gif":
-		return models.KindGIF
-	case ".cbz", ".cbr", ".pdf":
-		return models.KindComic
-	case ".zip", ".7z", ".exe", ".apk":
-		return models.KindGame
-	default:
-		return models.KindImage
+// recognizeKind identifies a stored blob by reading it. The filename is a claim,
+// not evidence — it's consulted only when the bytes say nothing.
+func (s *Server) recognizeKind(relPath string, size int64, filename string) models.MediaKind {
+	ra, err := s.store.OpenAt(relPath, size)
+	if err != nil {
+		s.log.Warn("recognize: cannot open blob", "path", relPath, "err", err)
+		return recognize.KindFromFilename(filename)
 	}
+	defer ra.Close()
+	return recognize.Kind(ra, size, filename)
 }
 
 func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
@@ -68,7 +65,9 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 		sourceEnc, _ = crypto.SealBytes(s.kek, []byte(src), []byte("source"))
 	}
 
-	kind := kindFromFilename(header.Filename)
+	// What the file *is*, read from the file. An explicit kind from the client still
+	// wins: that's the user overriding us on purpose.
+	kind := s.recognizeKind(res.RelPath, res.Size, header.Filename)
 	if k := r.FormValue("kind"); k != "" {
 		kind = models.MediaKind(k)
 	}

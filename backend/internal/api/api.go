@@ -17,6 +17,7 @@ import (
 	"github.com/youruser/oppailib/internal/scraper"
 	"github.com/youruser/oppailib/internal/settings"
 	"github.com/youruser/oppailib/internal/storage"
+	"github.com/youruser/oppailib/internal/sources"
 	oweb "github.com/youruser/oppailib/internal/web"
 )
 
@@ -25,6 +26,7 @@ type Server struct {
 	db       *db.DB
 	store    *storage.Store
 	scraper  *scraper.Engine
+	sources  *sources.Registry
 	ai       *ai.Manager
 	settings *settings.Store
 	kek      []byte
@@ -46,7 +48,9 @@ func NewServer(cfg *config.Config, database *db.DB, store *storage.Store, sc *sc
 	}
 	return &Server{
 		cfg: cfg, db: database, store: store, scraper: sc, ai: aiMgr, settings: set,
-		kek: kek, log: log,
+		sources:  sources.NewRegistry(scraperFetcher{e: sc}),
+		kek:      kek,
+		log:      log,
 		thumbSem: make(chan struct{}, workers),
 	}
 }
@@ -100,6 +104,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/media/{id}/page/{n}", s.requireAuth(s.handleComicPage))
 
 	// Scraper (protected).
+	// Remote sources: browse and stream a catalogue without importing anything.
+	// Only /save crosses over into the library.
+	mux.HandleFunc("GET /api/sources", s.requireAuth(s.handleListSources))
+	mux.HandleFunc("GET /api/sources/{id}/browse", s.requireAuth(s.handleBrowseSource))
+	mux.HandleFunc("GET /api/sources/{id}/item/{item}/pages", s.requireAuth(s.handleSourcePages))
+	mux.HandleFunc("GET /api/sources/stream", s.requireAuth(s.handleSourceStream))
+	mux.HandleFunc("POST /api/sources/{id}/save", s.requireAuth(s.handleSourceSave))
+
 	mux.HandleFunc("POST /api/scrape", s.requireAuth(s.handleScrape))
 	mux.HandleFunc("POST /api/scrape/bulk", s.requireAuth(s.handleScrapeBulk))
 	mux.HandleFunc("POST /api/scrape/import", s.requireAuth(s.handleScrapeImport))

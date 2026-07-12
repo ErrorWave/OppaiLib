@@ -244,7 +244,7 @@ func (s *Server) handleScrapeImport(w http.ResponseWriter, r *http.Request) {
 
 	imported := make([]int64, 0, len(result.MediaURLs))
 	for _, mu := range result.MediaURLs {
-		id, err := s.importOne(r, mu, result)
+		id, err := s.importOne(r, mu, result, req.Kind)
 		if err != nil {
 			s.log.Warn("import media failed", "url", mu, "err", err)
 			continue
@@ -254,7 +254,14 @@ func (s *Server) handleScrapeImport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"imported": imported, "count": len(imported)})
 }
 
-func (s *Server) importOne(r *http.Request, mediaURL string, result *models.ScrapeResult) (int64, error) {
+// importOne stores one media URL as one library item.
+//
+// kindOverride, when set, is the user's explicit choice from the import dialog and
+// is final. Otherwise the kind is read out of the downloaded bytes rather than
+// taken from result.Kind: a parser's kind is a guess about the *page* (the generic
+// one just says "image"), so a WebM linked from an ordinary page would be filed as
+// a picture. The bytes are never wrong about this.
+func (s *Server) importOne(r *http.Request, mediaURL string, result *models.ScrapeResult, kindOverride string) (int64, error) {
 	dl, err := s.scraper.Download(r.Context(), mediaURL)
 	if err != nil {
 		return 0, err
@@ -276,7 +283,10 @@ func (s *Server) importOne(r *http.Request, mediaURL string, result *models.Scra
 		sourceEnc, _ = crypto.SealBytes(s.kek, []byte(result.SourceURL), []byte("source"))
 	}
 
-	kind := kindOrDefault(result.Kind, kindFromFilename(dl.Filename))
+	kind := kindOverride
+	if kind == "" {
+		kind = string(s.recognizeKind(put.RelPath, put.Size, dl.Filename))
+	}
 	id, existed, err := s.db.InsertMedia(r.Context(), &db.MediaRow{
 		Kind:      kind,
 		SHA256:    put.SHA256,
@@ -334,7 +344,10 @@ func (s *Server) importComic(r *http.Request, result *models.ScrapeResult) (int6
 		return 0, fmt.Errorf("no pages found on that page")
 	}
 	if len(pages) == 1 {
-		return s.importOne(r, pages[0], result)
+		// One page is not a comic, whatever the dialog said — and storing a bare JPEG
+		// under kind=comic leaves the reader trying to open it as an archive. Let the
+		// bytes decide, which files it as the image it is.
+		return s.importOne(r, pages[0], result, "")
 	}
 	if len(pages) > maxComicPages {
 		return 0, fmt.Errorf("too many pages (%d, max %d)", len(pages), maxComicPages)
@@ -423,15 +436,22 @@ func (s *Server) writeCBZ(r *http.Request, w io.Writer, pages []string) (cover [
 			return nil, err
 		}
 
-		var src io.Reader = io.LimitReader(dl.Body, maxComicPageBytes)
+		// Read one byte past the cap: a page that reaches it was being silently cut in
+		// half, and half a JPEG in the archive is a corrupt page the reader will choke
+		// on. Better to fail the import loudly than to quietly produce a broken comic.
+		var src io.Reader = io.LimitReader(dl.Body, maxComicPageBytes+1)
 		var coverBuf bytes.Buffer
 		if i == 0 {
 			src = io.TeeReader(src, &capWriter{w: &coverBuf, remaining: maxCoverBytes})
 		}
-		_, copyErr := io.Copy(entry, src)
+		written, copyErr := io.Copy(entry, src)
 		dl.Body.Close()
 		if copyErr != nil {
 			return nil, fmt.Errorf("page %d of %d: %w", i+1, len(pages), copyErr)
+		}
+		if written > maxComicPageBytes {
+			return nil, fmt.Errorf("page %d of %d: larger than the %d MB per-page limit",
+				i+1, len(pages), maxComicPageBytes>>20)
 		}
 		if i == 0 && coverBuf.Len() < maxCoverBytes {
 			// A buffer that reached the cap was cut mid-image; half a JPEG is a worse
