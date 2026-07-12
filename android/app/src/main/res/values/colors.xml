@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Matches the Compose seed colour in ui/theme/Theme.kt. -->
+    <color name="ic_launcher_background">#6750A4</color>
+    <color name="window_background">#FFFBFE</color>
+</resources>
