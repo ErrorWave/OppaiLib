@@ -84,8 +84,10 @@ type fourChanPost struct {
 	Filename string `json:"filename"` // the uploader's original name, without extension
 	Width    int    `json:"w"`
 	Height   int    `json:"h"`
-	Sub      string `json:"sub"` // thread subject
-	Com      string `json:"com"` // comment, as HTML
+	Sub      string `json:"sub"`  // thread subject
+	Com      string `json:"com"`  // comment, as HTML
+	Name     string `json:"name"` // poster name; "Anonymous" unless they set one
+	Time     int64  `json:"time"` // unix seconds
 	// Replies and Images are only on an OP, and count the *replies* — the OP's own
 	// upload is not among them.
 	Replies int `json:"replies"`
@@ -219,6 +221,9 @@ func (f *FourChan) threadItem(board string, op fourChanPost) Item {
 		Count:   files,
 		Width:   op.Width,
 		Height:  op.Height,
+		// The tile stands for the whole discussion, so it is its own thread.
+		ThreadID: fmt.Sprintf("%s:t%d", board, op.No),
+		PostNo:   op.No,
 	}
 	// A thread whose OP posted no image (rare on these boards) still lists; the client
 	// draws a placeholder rather than a broken tile.
@@ -253,7 +258,53 @@ func (f *FourChan) fileItem(board string, thread int64, p fourChanPost, subject 
 		PageURL: fmt.Sprintf("https://boards.4chan.org/%s/thread/%d#p%d", board, thread, p.No),
 		Width:   p.Width,
 		Height:  p.Height,
+		// A file carries the thread it was posted in, so the viewer can pull up the
+		// conversation around it, and PostNo says which post in that conversation is
+		// the one on screen.
+		ThreadID: fmt.Sprintf("%s:t%d", board, thread),
+		PostNo:   p.No,
 	}
+}
+
+// Comments returns a thread's posts, in post order — the conversation, rather than
+// the files hanging off it.
+//
+// Every post is included, not just the ones with text: an image posted with no
+// comment is still a turn in the conversation, and dropping it would leave the
+// >>quotes pointing at posts that aren't in the list.
+func (f *FourChan) Comments(ctx context.Context, itemID string) ([]Comment, error) {
+	board, no, ok := threadFeed(itemID)
+	if !ok {
+		return nil, fmt.Errorf("not a thread: %q", itemID)
+	}
+	url := fmt.Sprintf("%s/%s/thread/%d.json", f.apiHost, board, no)
+	body, err := httpGet(ctx, f.hc, url, defaultUserAgent)
+	if err != nil {
+		return nil, err
+	}
+	var thread fourChanThread
+	if err := json.Unmarshal(body, &thread); err != nil {
+		return nil, fmt.Errorf("decode 4chan thread: %w", err)
+	}
+
+	out := make([]Comment, 0, len(thread.Posts))
+	for i, p := range thread.Posts {
+		c := Comment{
+			No:     p.No,
+			Time:   p.Time,
+			Name:   strings.TrimSpace(p.Name),
+			Sub:    cleanPostText(p.Sub),
+			Text:   postText(p.Com),
+			Quotes: quotedPosts(p.Com),
+			OP:     i == 0,
+		}
+		if p.Tim != 0 && p.Ext != "" {
+			c.ThumbURL = fmt.Sprintf("%s/%s/%ds.jpg", f.cdnHost, board, p.Tim)
+			c.MediaURL = fmt.Sprintf("%s/%s/%d%s", f.cdnHost, board, p.Tim, p.Ext)
+		}
+		out = append(out, c)
+	}
+	return out, nil
 }
 
 // Pages returns a thread's images, in post order — what a thread saved to the library
@@ -297,6 +348,59 @@ func cleanPostText(s string) string {
 	s = tagRe.ReplaceAllString(s, "")
 	s = html.UnescapeString(s)
 	return strings.TrimSpace(strings.Join(strings.Fields(s), " "))
+}
+
+// brRe matches the line breaks 4chan writes, in whichever spelling it used.
+var brRe = regexp.MustCompile(`(?i)<br\s*/?>`)
+
+// postText turns a post's HTML comment into plain text for display.
+//
+// Unlike cleanPostText — which flattens a post into a one-line *label* for a tile —
+// this keeps the shape of the post, because the post is the thing being read here.
+// Line breaks survive as line breaks, and greentext survives as the ">" that makes
+// it greentext: strip that and a quoted line becomes indistinguishable from the
+// reply to it, which is most of what a 4chan post is doing.
+func postText(com string) string {
+	s := brRe.ReplaceAllString(com, "\n")
+	// <s> is 4chan's spoiler tag. The text under it is part of the post, so it stays;
+	// what's lost is only that it was hidden — which a comment list can't honour anyway.
+	s = tagRe.ReplaceAllString(s, "")
+	s = html.UnescapeString(s)
+
+	// Trim each line but keep the blank ones between paragraphs, then drop the leading
+	// and trailing run of empties.
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		lines[i] = strings.TrimRight(strings.TrimSpace(l), " \t")
+	}
+	for len(lines) > 0 && lines[0] == "" {
+		lines = lines[1:]
+	}
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return strings.Join(lines, "\n")
+}
+
+// quoteRe finds the post numbers a comment replies to. 4chan marks these up as
+// <a class="quotelink">&gt;&gt;12345</a>, so the number is matched after unescaping
+// rather than by picking the anchor apart.
+var quoteRe = regexp.MustCompile(`>>(\d+)`)
+
+// quotedPosts lists, in order and without repeats, the posts a comment replies to.
+func quotedPosts(com string) []int64 {
+	text := html.UnescapeString(tagRe.ReplaceAllString(brRe.ReplaceAllString(com, "\n"), ""))
+	var out []int64
+	seen := map[int64]bool{}
+	for _, m := range quoteRe.FindAllStringSubmatch(text, -1) {
+		n, err := strconv.ParseInt(m[1], 10, 64)
+		if err != nil || seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+	}
+	return out
 }
 
 func truncate(s string, n int) string {

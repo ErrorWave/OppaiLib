@@ -4,6 +4,7 @@ import { iconStyles, motionStyles } from "../theme.js";
 import {
   api,
   type RemoteSource,
+  type SourceComment,
   type SourceFeed,
   type SourceItem,
 } from "../api.js";
@@ -51,6 +52,18 @@ export class OppaiBrowse extends LitElement {
   @state() private pageAt = 0;
   @state() private saving = false;
   @state() private toast = "";
+
+  /** The item whose thread is open in the comments panel, if any. */
+  @state() private commentsFor: SourceItem | null = null;
+  @state() private comments: SourceComment[] = [];
+  @state() private commentsLoading = false;
+  @state() private commentsError = "";
+
+  /**
+   * Stamps each browse request so a late reply from a board we've left can't land in
+   * the grid of the board we're on. Not reactive — nothing renders it. See `load`.
+   */
+  private reqId = 0;
 
   static styles = [
     iconStyles,
@@ -332,6 +345,200 @@ export class OppaiBrowse extends LitElement {
         font-size: 13px;
       }
 
+      /* "Up next" — the rest of the feed as a scrubbable strip under the player. */
+      .upnext {
+        padding: 8px 16px 14px;
+        color: #fff;
+      }
+      .upnext-label {
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.7);
+        margin-bottom: 8px;
+      }
+      .strip {
+        display: flex;
+        gap: 10px;
+        overflow-x: auto;
+        scroll-snap-type: x proximity;
+        padding-bottom: 6px;
+        /* A thin rail: this is a filmstrip, not a second grid. */
+        scrollbar-width: thin;
+        scrollbar-color: rgba(255, 255, 255, 0.35) transparent;
+      }
+      .strip::-webkit-scrollbar {
+        height: 6px;
+      }
+      .strip::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.35);
+        border-radius: 3px;
+      }
+      .strip-item {
+        position: relative;
+        flex: 0 0 auto;
+        width: 128px;
+        aspect-ratio: 16 / 10;
+        border: 2px solid transparent;
+        border-radius: 10px;
+        overflow: hidden;
+        padding: 0;
+        background: var(--oppai-surface-2);
+        cursor: pointer;
+        scroll-snap-align: start;
+        transition: transform 0.18s var(--oppai-ease-spring), border-color 0.18s ease;
+      }
+      .strip-item:hover {
+        transform: translateY(-2px);
+      }
+      .strip-item.on {
+        border-color: var(--oppai-accent);
+      }
+      .strip-item img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+      .strip-play {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        font-size: 28px;
+        color: #fff;
+        text-shadow: 0 0 8px rgba(0, 0, 0, 0.8);
+      }
+      .strip-next {
+        position: absolute;
+        left: 4px;
+        bottom: 4px;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.3px;
+        background: var(--oppai-accent);
+        color: var(--oppai-on-accent);
+        padding: 1px 6px;
+        border-radius: 6px;
+      }
+
+      /* Comments — the thread the file was posted in. */
+      .comments {
+        justify-content: flex-end;
+        align-items: stretch;
+        flex-direction: row;
+        z-index: 55;
+      }
+      .cpanel {
+        width: min(460px, 100%);
+        background: var(--oppai-surface);
+        display: flex;
+        flex-direction: column;
+        box-shadow: -12px 0 40px rgba(0, 0, 0, 0.5);
+        animation: oppai-fade-in 0.2s var(--oppai-ease-standard) both;
+      }
+      .chead {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--oppai-border-strong);
+      }
+      .chead .t {
+        flex: 1;
+        font-size: 14px;
+        font-weight: 500;
+        color: var(--oppai-text);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .chead .obtn {
+        background: var(--oppai-surface-2);
+        color: var(--oppai-text);
+      }
+      .clist {
+        flex: 1;
+        overflow-y: auto;
+        padding: 8px 12px 20px;
+      }
+      .cempty {
+        flex: 1;
+        display: grid;
+        place-items: center;
+        color: var(--oppai-text-muted);
+        font-size: 14px;
+        padding: 40px 20px;
+        text-align: center;
+      }
+      .cpost {
+        border-radius: 12px;
+        padding: 10px 12px;
+        margin-top: 8px;
+        background: var(--oppai-surface-2);
+      }
+      .cpost.op {
+        background: var(--oppai-nav-hover);
+      }
+      /* The post the open file came from. Without this the list is a wall of
+         anonymous text with no way to find your place in it. */
+      .cpost.here {
+        outline: 2px solid var(--oppai-accent);
+      }
+      .cmeta {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+        font-size: 11px;
+        color: var(--oppai-text-muted);
+        margin-bottom: 6px;
+      }
+      .cname {
+        font-weight: 600;
+        color: var(--oppai-primary-bright);
+      }
+      .cbadge {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.3px;
+        background: var(--oppai-surface);
+        color: var(--oppai-text-dim);
+        padding: 1px 6px;
+        border-radius: 6px;
+      }
+      .cbadge.here-badge {
+        background: var(--oppai-accent);
+        color: var(--oppai-on-accent);
+      }
+      .csub {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--oppai-text);
+        margin-bottom: 4px;
+      }
+      .cthumb {
+        max-width: 140px;
+        border-radius: 8px;
+        margin: 4px 0 6px;
+        display: block;
+      }
+      .ctext {
+        font-size: 13px;
+        line-height: 1.5;
+        color: var(--oppai-text-dim);
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      /* Greentext is green; a quote points at another post. Flattening both into plain
+         text would lose what the post is actually saying. */
+      .cgreen {
+        color: #789922;
+      }
+      .cquote {
+        color: var(--oppai-primary-bright);
+      }
+
       .toast {
         position: fixed;
         bottom: 24px;
@@ -386,11 +593,22 @@ export class OppaiBrowse extends LitElement {
   }
 
   private async load(reset: boolean) {
-    if (!this.sourceId || this.loading) return;
-    if (!reset && !this.cursor) return; // at the end
+    if (!this.sourceId) return;
+    // Paging is one-at-a-time and stops at the end. A *reset* is never refused: it
+    // means the user picked a different board, and that has to win over whatever is
+    // in flight — see `req` below.
+    if (!reset && (this.loading || !this.cursor)) return;
     // A search feed with no term would 400 upstream; wait for one instead.
     if (this.isSearch && !this.query) return;
 
+    // Every request is stamped, and only the newest one is allowed to land.
+    //
+    // This is what stopped one board's threads appearing under another's. Switching
+    // feeds fires a fresh request while the previous board's is still in flight, and
+    // whichever *returns* last used to win — so /h/'s reply would overwrite /gif/'s
+    // grid, or worse, land as `reset` and repopulate the new board with the old
+    // board's threads. The tiles came from the right server and the wrong place.
+    const req = ++this.reqId;
     this.loading = true;
     try {
       const page = await api.browseSource(this.sourceId, {
@@ -400,13 +618,15 @@ export class OppaiBrowse extends LitElement {
         q: this.container ? undefined : this.query || undefined,
         sort: this.container ? undefined : this.sort || undefined,
       });
+      if (req !== this.reqId) return; // superseded — these tiles belong to a feed we've left
       this.items = reset ? page.items : [...this.items, ...page.items];
       this.cursor = page.cursor ?? "";
       this.error = "";
     } catch (e) {
+      if (req !== this.reqId) return; // a feed we've left failing is not this feed's error
       this.error = e instanceof Error ? e.message : "Couldn't load that feed";
     } finally {
-      this.loading = false;
+      if (req === this.reqId) this.loading = false;
     }
   }
 
@@ -476,16 +696,74 @@ export class OppaiBrowse extends LitElement {
     if (item.kind !== "comic") return;
     try {
       const { pages } = await api.sourcePages(this.sourceId, item.id);
+      // A slow gallery can resolve after the user has already closed it or opened
+      // another; don't shove its pages into whatever is on screen now.
+      if (this.active?.id !== item.id) return;
       this.pages = pages;
+      this.warmPages(0);
     } catch (e) {
+      if (this.active?.id !== item.id) return;
       this.error = e instanceof Error ? e.message : "Couldn't open that comic";
       this.active = null;
     }
   }
 
+  /**
+   * Pulls the pages around `from` into the browser cache so a page turn is instant.
+   *
+   * Opening a comic used to show a spinner, then fetch page 1, and then fetch page 2
+   * only once you asked for it — every turn paying a full round trip to the origin
+   * through our proxy. The pages are immutable and already served with a cache
+   * header, so fetching the next couple ahead of time costs nothing but a little
+   * bandwidth and removes the wait entirely. The window is small on purpose: warming
+   * a 200-page gallery on open would hammer the site we're being polite to.
+   */
+  private warmPages(from: number) {
+    for (let n = from; n < Math.min(from + PAGE_LOOKAHEAD, this.pages.length); n++) {
+      new Image().src = api.sourceStreamURL(this.pages[n]);
+    }
+  }
+
+  private goPage(n: number) {
+    const next = Math.min(Math.max(n, 0), this.pages.length - 1);
+    if (next === this.pageAt) return;
+    this.pageAt = next;
+    this.warmPages(next + 1);
+  }
+
   private close = () => {
     this.active = null;
     this.pages = [];
+  };
+
+  // ── comments ───────────────────────────────────────────────────────────
+  // The conversation an item was posted in. On 4chan the thread *is* the context —
+  // who posted what, what they were replying to, and the running commentary that a
+  // grid of files throws away.
+
+  private async openComments(item: SourceItem) {
+    const thread = item.threadId;
+    if (!thread) return;
+    this.commentsFor = item;
+    this.comments = [];
+    this.commentsError = "";
+    this.commentsLoading = true;
+    try {
+      const { comments } = await api.sourceComments(this.sourceId, thread);
+      if (this.commentsFor?.id !== item.id) return; // superseded
+      this.comments = comments;
+    } catch (e) {
+      if (this.commentsFor?.id !== item.id) return;
+      this.commentsError = e instanceof Error ? e.message : "Couldn't load the thread";
+    } finally {
+      if (this.commentsFor?.id === item.id) this.commentsLoading = false;
+    }
+  }
+
+  private closeComments = () => {
+    this.commentsFor = null;
+    this.comments = [];
+    this.commentsError = "";
   };
 
   /** Saves one item, or — from the thread header — the whole thread as a comic. */
@@ -572,6 +850,11 @@ export class OppaiBrowse extends LitElement {
             <span class="material-symbols-rounded" style="font-size:18px;">arrow_back</span>Back
           </button>
           <span class="t">${item.title}</span>
+          ${item.threadId
+            ? html`<button class="obtn" @click=${() => this.openComments(item)}>
+                <span class="material-symbols-rounded" style="font-size:18px;">forum</span>Comments
+              </button>`
+            : nothing}
           ${item.pageUrl
             ? html`<a href=${item.pageUrl} target="_blank" rel="noopener noreferrer">
                 <button class="obtn">
@@ -595,13 +878,15 @@ export class OppaiBrowse extends LitElement {
               : html`<img src=${api.sourceStreamURL(item.mediaUrl ?? item.thumbUrl)} alt=${item.title} />`}
         </div>
 
+        ${item.kind === "video" ? this.renderUpNext(item) : nothing}
+
         ${isComic && this.pages.length
           ? html`
               <div class="pager">
                 <button
                   class="obtn"
                   ?disabled=${this.pageAt === 0}
-                  @click=${() => { this.pageAt = Math.max(0, this.pageAt - 1); }}
+                  @click=${() => this.goPage(this.pageAt - 1)}
                 >
                   <span class="material-symbols-rounded" style="font-size:18px;">chevron_left</span>
                 </button>
@@ -609,7 +894,7 @@ export class OppaiBrowse extends LitElement {
                 <button
                   class="obtn"
                   ?disabled=${this.pageAt >= this.pages.length - 1}
-                  @click=${() => { this.pageAt = Math.min(this.pages.length - 1, this.pageAt + 1); }}
+                  @click=${() => this.goPage(this.pageAt + 1)}
                 >
                   <span class="material-symbols-rounded" style="font-size:18px;">chevron_right</span>
                 </button>
@@ -617,6 +902,99 @@ export class OppaiBrowse extends LitElement {
             `
           : nothing}
       </div>
+    `;
+  }
+
+  /**
+   * The "up next" carousel under a playing video: the rest of the feed as a strip of
+   * thumbnails you can scrub through and jump from.
+   *
+   * The point is to answer "what's after this?" without leaving the video — the same
+   * question the grid answers, asked from inside the player. Containers are left out:
+   * a thread isn't something the viewer can jump to.
+   */
+  private renderUpNext(current: SourceItem) {
+    const feed = this.items.filter((i) => i.kind !== "thread");
+    if (feed.length < 2) return nothing;
+    const at = feed.findIndex((i) => i.id === current.id);
+    return html`
+      <div class="upnext">
+        <div class="upnext-label">Up next</div>
+        <div class="strip">
+          ${feed.map(
+            (i, n) => html`
+              <button
+                class="strip-item ${i.id === current.id ? "on" : ""}"
+                title=${i.title}
+                aria-current=${i.id === current.id}
+                @click=${() => this.open(i)}
+              >
+                <img src=${api.sourceStreamURL(i.thumbUrl)} loading="lazy" alt=${i.title} />
+                ${i.kind === "video"
+                  ? html`<span class="strip-play material-symbols-rounded">play_circle</span>`
+                  : nothing}
+                ${n === at + 1 ? html`<span class="strip-next">Next</span>` : nothing}
+              </button>
+            `,
+          )}
+        </div>
+      </div>
+    `;
+  }
+
+  /**
+   * A thread's comments, as the site shows them: every post in order, its picture, and
+   * the >>numbers it was replying to. Flat rather than nested — a post can quote
+   * several others, so the conversation is a graph and pretending otherwise would
+   * mean picking an arbitrary parent.
+   */
+  private renderComments(item: SourceItem) {
+    const at = item.postNo;
+    return html`
+      <div
+        class="overlay comments"
+        @click=${(e: Event) => { if (e.target === e.currentTarget) this.closeComments(); }}
+      >
+        <div class="cpanel">
+          <div class="chead">
+            <span class="t">${item.title}</span>
+            <button class="obtn" @click=${this.closeComments}>
+              <span class="material-symbols-rounded" style="font-size:18px;">close</span>Close
+            </button>
+          </div>
+
+          ${this.commentsLoading
+            ? html`<div class="cempty"><md-circular-progress indeterminate></md-circular-progress></div>`
+            : this.commentsError
+              ? html`<div class="cempty">${this.commentsError}</div>`
+              : !this.comments.length
+                ? html`<div class="cempty">No posts in this thread.</div>`
+                : html`<div class="clist">
+                    ${this.comments.map((c) => this.renderComment(c, c.no === at))}
+                  </div>`}
+        </div>
+      </div>
+    `;
+  }
+
+  private renderComment(c: SourceComment, here: boolean) {
+    return html`
+      <article class="cpost ${here ? "here" : ""} ${c.op ? "op" : ""}">
+        <header class="cmeta">
+          ${c.op ? html`<span class="cbadge">OP</span>` : nothing}
+          ${here ? html`<span class="cbadge here-badge">This file</span>` : nothing}
+          <span class="cname">${c.name || "Anonymous"}</span>
+          <span class="cno">No.${c.no}</span>
+          <span class="ctime">${formatPostTime(c.time)}</span>
+        </header>
+        ${c.subject ? html`<div class="csub">${c.subject}</div>` : nothing}
+        ${c.thumbUrl
+          ? html`<a href=${api.sourceStreamURL(c.mediaUrl ?? c.thumbUrl)} target="_blank" rel="noopener noreferrer">
+              <img class="cthumb" src=${api.sourceStreamURL(c.thumbUrl)} loading="lazy" alt="" />
+            </a>`
+          : nothing}
+        ${c.text ? html`<div class="ctext">${renderPostText(c.text)}</div>` : nothing}
+      </article>
     `;
   }
 
@@ -633,6 +1011,12 @@ export class OppaiBrowse extends LitElement {
             <span class="material-symbols-rounded" style="font-size:16px;">arrow_back</span>
             Back to ${this.feed?.label ?? "the board"}
           </button>
+          ${thread.threadId
+            ? html`<button class="chip ghost" @click=${() => this.openComments(thread)}>
+                <span class="material-symbols-rounded" style="font-size:16px;">forum</span>
+                Comments
+              </button>`
+            : nothing}
           <button class="chip ghost" ?disabled=${this.saving} @click=${() => this.save(thread)}>
             <span class="material-symbols-rounded" style="font-size:16px;">download</span>
             ${this.saving ? "Saving…" : "Save whole thread"}
@@ -756,9 +1140,42 @@ export class OppaiBrowse extends LitElement {
                 `}
 
       ${this.active ? this.renderOverlay(this.active) : nothing}
+      ${this.commentsFor ? this.renderComments(this.commentsFor) : nothing}
       ${this.toast ? html`<div class="toast">${this.toast}</div>` : nothing}
     `;
   }
+}
+
+/** How many pages ahead of the one on screen to warm. See `warmPages`. */
+const PAGE_LOOKAHEAD = 3;
+
+/** "12 Mar, 21:04" — enough to place a post in the thread without the year. */
+function formatPostTime(unix: number): string {
+  if (!unix) return "";
+  return new Date(unix * 1000).toLocaleString(undefined, {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+/**
+ * Renders a post's text, keeping the two things that carry its meaning: greentext
+ * (a line starting ">") and quotes (">>12345"). Both are just lines to the browser,
+ * so they're classed here rather than being left as undifferentiated text — strip the
+ * distinction and a quoted line becomes indistinguishable from the reply to it, which
+ * is most of what a 4chan post is doing.
+ *
+ * The text arrives as plain text (the server stripped the markup), so this is styling
+ * a string, not parsing HTML — nothing here can inject markup.
+ */
+function renderPostText(text: string) {
+  return text.split("\n").map((line) => {
+    const quote = /^>>\d+/.test(line);
+    const green = !quote && line.startsWith(">");
+    return html`<div class=${quote ? "cquote" : green ? "cgreen" : ""}>${line}</div>`;
+  });
 }
 
 declare global {

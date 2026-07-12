@@ -24,6 +24,12 @@ import {
 export class OppaiViewer extends LitElement {
   @property({ attribute: false }) media!: Media;
   @property({ type: Boolean }) favorite = false;
+  /**
+   * The run of items the viewer was opened from — the same list the arrow keys page
+   * through. It's what the "up next" carousel under a video is made of; empty (or
+   * one-long) and no carousel is drawn.
+   */
+  @property({ attribute: false }) queue: Media[] = [];
 
   @state() private full: Media | null = null;
   // Id of the tag whose detections are drawn on the video timeline, if any.
@@ -469,6 +475,75 @@ export class OppaiViewer extends LitElement {
         gap: 10px;
         margin-top: 4px;
       }
+      /* "Up next" — the rest of the queue as a scrubbable strip under the player. */
+      .upnext {
+        margin-top: 14px;
+      }
+      .upnext-label {
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+        color: var(--oppai-text-muted);
+        margin-bottom: 8px;
+      }
+      .strip {
+        display: flex;
+        gap: 10px;
+        overflow-x: auto;
+        scroll-snap-type: x proximity;
+        padding-bottom: 6px;
+        scrollbar-width: thin;
+      }
+      .strip-item {
+        position: relative;
+        flex: 0 0 auto;
+        width: 140px;
+        aspect-ratio: 16 / 10;
+        border: 2px solid transparent;
+        border-radius: 12px;
+        overflow: hidden;
+        padding: 0;
+        background: var(--oppai-surface-2);
+        cursor: pointer;
+        scroll-snap-align: start;
+        transition: transform 0.18s var(--oppai-ease-spring), border-color 0.18s ease;
+      }
+      .strip-item:hover {
+        transform: translateY(-2px);
+      }
+      .strip-item.on {
+        border-color: var(--oppai-accent);
+      }
+      .strip-item img,
+      .strip-blank {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+      .strip-play {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        font-size: 30px;
+        color: #fff;
+        text-shadow: 0 0 8px rgba(0, 0, 0, 0.8);
+      }
+      .strip-next {
+        position: absolute;
+        left: 4px;
+        bottom: 4px;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.3px;
+        background: var(--oppai-accent);
+        color: var(--oppai-on-accent);
+        padding: 1px 6px;
+        border-radius: 6px;
+      }
+
       /* Game gallery */
       .shots {
         display: grid;
@@ -905,10 +980,54 @@ export class OppaiViewer extends LitElement {
     return html`
       <div class="wrap">
         ${this.renderStage(m, url)}
+        ${m.kind === "video" ? this.renderUpNext(m) : nothing}
         ${this.renderTimeline(m)}
         ${m.kind === "game" ? nothing : this.renderMeta(m)}
       </div>
     `;
+  }
+
+  /**
+   * The "up next" carousel: the rest of the queue as a strip of posters you can scrub
+   * through and jump from, sat directly under the player.
+   *
+   * It answers "what's after this?" without making you close the video and go back to
+   * the grid to find out — the arrow keys already page through exactly this list, so
+   * this is that list made visible.
+   */
+  private renderUpNext(current: Media) {
+    if (this.queue.length < 2) return nothing;
+    const at = this.queue.findIndex((x) => x.id === current.id);
+    return html`
+      <div class="upnext">
+        <div class="upnext-label">Up next</div>
+        <div class="strip">
+          ${this.queue.map(
+            (x, n) => html`
+              <button
+                class="strip-item ${x.id === current.id ? "on" : ""}"
+                title=${x.title}
+                aria-current=${x.id === current.id}
+                @click=${() => this.jumpTo(x.id)}
+              >
+                ${x.hasThumb
+                  ? html`<img src=${api.thumbURL(x.id)} loading="lazy" alt=${x.title} />`
+                  : html`<span class="strip-blank" style="background:${swatchFor(x)};"></span>`}
+                ${x.kind === "video"
+                  ? html`<span class="strip-play material-symbols-rounded">play_circle</span>`
+                  : nothing}
+                ${n === at + 1 ? html`<span class="strip-next">Next</span>` : nothing}
+              </button>
+            `,
+          )}
+        </div>
+      </div>
+    `;
+  }
+
+  private jumpTo(id: number) {
+    if (id === this.media.id) return;
+    this.dispatchEvent(new CustomEvent("jump", { detail: { id }, bubbles: true, composed: true }));
   }
 
   private renderStage(m: Media, url: string) {

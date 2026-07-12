@@ -183,10 +183,37 @@ export interface SourceItem {
   pageUrl?: string;
   /** The feed to browse when this item is opened. Set only on a container. */
   feedId?: string;
+  /**
+   * The discussion this item belongs to, for sources that have one. A file posted in
+   * a 4chan thread carries its thread's id, which is what the viewer asks for
+   * comments on — so showing the conversation around an image needs nothing else.
+   */
+  threadId?: string;
+  /** This item's own post in that thread, so its comment can be marked. */
+  postNo?: number;
   /** How many files a container holds. */
   count?: number;
   width?: number;
   height?: number;
+}
+
+/**
+ * One post in a source's discussion thread.
+ *
+ * Flat, not a tree: a 4chan post quotes by number and can quote several posts, so the
+ * conversation is a graph. `quotes` carries those numbers and the list renders in post
+ * order, which is how the site itself shows a thread.
+ */
+export interface SourceComment {
+  no: number;
+  time: number;
+  name?: string;
+  subject?: string;
+  text: string;
+  thumbUrl?: string;
+  mediaUrl?: string;
+  quotes?: number[];
+  op?: boolean;
 }
 
 /** `cursor` is opaque; empty means there is nothing after this page. */
@@ -261,11 +288,16 @@ async function request<T>(path: string, opts: RequestInit = {}, timeoutMs = 0): 
 export const api = {
   health: () => request<{ status: string; aiEnabled: boolean; aiTagger: string }>("/api/health"),
 
+  // `client: "web"` is what opts this session into the browser rules: it idles out
+  // after an hour of inactivity and it does not survive a server restart. The Android
+  // app says "android" instead and is exempt from both.
   login: (username: string, password: string) =>
     request<{ token: string; user: User }>("/api/auth/login", {
       method: "POST",
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ username, password, client: "web" }),
     }),
+  // The session probe. Deliberately does NOT count as activity server-side, so polling
+  // it to check whether we're still signed in can't itself keep an idle tab alive.
   me: () => request<User>("/api/auth/me"),
   logout: () => request<void>("/api/auth/logout", { method: "POST" }),
 
@@ -371,6 +403,15 @@ export const api = {
   sourcePages: (id: string, item: string) =>
     request<{ pages: string[]; count: number }>(
       `/api/sources/${encodeURIComponent(id)}/item/${encodeURIComponent(item)}/pages`,
+      {},
+      45_000,
+    ),
+
+  // The conversation an item was posted in. `item` is a SourceItem.threadId; sources
+  // without discussions answer 404, which the caller shows as "no comments here".
+  sourceComments: (id: string, item: string) =>
+    request<{ comments: SourceComment[]; count: number }>(
+      `/api/sources/${encodeURIComponent(id)}/item/${encodeURIComponent(item)}/comments`,
       {},
       45_000,
     ),

@@ -95,7 +95,7 @@ func newTestServer(t *testing.T) (*Server, string) {
 		t.Fatalf("create user: %v", err)
 	}
 	token := "test-token"
-	if err := database.CreateSession(ctx, token, uid, time.Hour); err != nil {
+	if err := database.CreateSession(ctx, token, uid, time.Hour, db.ClientWeb); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 	return s, token

@@ -71,6 +71,16 @@ interface ApiService {
     @GET("api/sources/{id}/item/{item}/pages")
     suspend fun sourcePages(@Path("id") id: String, @Path("item") item: String): SourcePagesResponse
 
+    /**
+     * The conversation an item was posted in — [SourceItem.threadId], not the item's
+     * own id. Sources with no discussions answer 404.
+     */
+    @GET("api/sources/{id}/item/{item}/comments")
+    suspend fun sourceComments(
+        @Path("id") id: String,
+        @Path("item") item: String,
+    ): SourceCommentsResponse
+
     @POST("api/sources/{id}/save")
     suspend fun saveFromSource(@Path("id") id: String, @Body body: SourceSaveRequest): ImportResponse
 

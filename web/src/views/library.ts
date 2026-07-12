@@ -850,6 +850,18 @@ export class OppaiLibrary extends LitElement {
     return this.items.filter((m) => m.kind === kind);
   }
 
+  /**
+   * The run of items the viewer is paging through, as records rather than ids — what
+   * the arrow keys walk and what the viewer's "up next" carousel is made of.
+   *
+   * An id whose item has since been deleted is dropped rather than rendered as a hole.
+   */
+  private get viewerQueue(): Media[] {
+    return this.viewerList
+      .map((id) => this.items.find((m) => m.id === id))
+      .filter((m): m is Media => m != null);
+  }
+
   render() {
     const hasSearch = this.search.trim().length > 0;
     const isViewer = this.selectedId != null;
@@ -888,9 +900,11 @@ export class OppaiLibrary extends LitElement {
           ${isViewer && activeItem
             ? html`<oppai-viewer
                 .media=${activeItem}
+                .queue=${this.viewerQueue}
                 .favorite=${this.favorites.has(activeItem.id)}
                 @toggle-favorite=${() => this.toggleFavorite(activeItem.id)}
                 @navigate=${(e: CustomEvent<{ dir: number }>) => this.stepItem(e.detail.dir)}
+                @jump=${(e: CustomEvent<{ id: number }>) => (this.selectedId = e.detail.id)}
                 @changed=${() => this.refresh()}
                 @deleted=${() => {
                   this.closeItem();

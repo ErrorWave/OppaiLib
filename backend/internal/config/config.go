@@ -41,7 +41,13 @@ type Config struct {
 	APKPath string
 
 	SessionTTL time.Duration
-	Debug      bool
+	// WebIdleTimeout is how long a *browser* session may go unused before it is
+	// rejected. It is separate from SessionTTL (the absolute lifetime) and applies
+	// only to the web UI: the Android app holds a long-lived session on a device you
+	// own, and logging the phone out every hour would make it unusable. Zero disables
+	// the idle check.
+	WebIdleTimeout time.Duration
+	Debug          bool
 }
 
 func Load() *Config {
@@ -62,6 +68,7 @@ func Load() *Config {
 		ScrapeRespectRobots: envBool("OPPAI_SCRAPE_RESPECT_ROBOTS", true),
 		APKPath:         env("OPPAI_APK_PATH", "/app/apk/oppailib.apk"),
 		SessionTTL:      time.Duration(envInt("OPPAI_SESSION_TTL_HOURS", 720)) * time.Hour,
+		WebIdleTimeout:  time.Duration(envInt("OPPAI_WEB_IDLE_MINUTES", 60)) * time.Minute,
 		Debug:           envBool("OPPAI_DEBUG", false),
 	}
 }

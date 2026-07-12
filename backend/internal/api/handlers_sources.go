@@ -69,6 +69,16 @@ func (s *Server) handleBrowseSource(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, listing)
 }
 
+// sourcePages resolves a multi-page item into its page images, through the cache.
+//
+// Every caller goes through here — the reader and the save path both — so a comic
+// that was just read is saved without re-fetching the gallery page it was read from.
+func (s *Server) sourcePages(ctx context.Context, src sources.Source, itemID string) ([]string, error) {
+	return s.pageCache.get(ctx, src.ID()+"/"+itemID, func(ctx context.Context) ([]string, error) {
+		return src.Pages(ctx, itemID)
+	})
+}
+
 // handleSourcePages resolves a multi-page item (a comic) into its page images, so
 // the reader can page through it without importing anything.
 func (s *Server) handleSourcePages(w http.ResponseWriter, r *http.Request) {
@@ -80,7 +90,7 @@ func (s *Server) handleSourcePages(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), scrapeTimeout)
 	defer cancel()
 
-	pages, err := src.Pages(ctx, r.PathValue("item"))
+	pages, err := s.sourcePages(ctx, src, r.PathValue("item"))
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
@@ -89,7 +99,40 @@ func (s *Server) handleSourcePages(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "no pages for that item")
 		return
 	}
+	// The page list of a gallery doesn't change, and the client asks for it every
+	// time the comic is opened. Letting the browser keep it means a reopen doesn't
+	// even reach us.
+	w.Header().Set("Cache-Control", "private, max-age=600")
 	writeJSON(w, http.StatusOK, map[string]any{"pages": pages, "count": len(pages)})
+}
+
+// handleSourceComments returns the discussion an item belongs to — a 4chan thread's
+// posts. Sources that have no discussions (a gallery site) don't implement Commenter,
+// and say so rather than returning an empty thread.
+func (s *Server) handleSourceComments(w http.ResponseWriter, r *http.Request) {
+	src, ok := s.sources.Get(r.PathValue("id"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "unknown source")
+		return
+	}
+	c, ok := src.(sources.Commenter)
+	if !ok {
+		writeErr(w, http.StatusNotFound, "this source has no comments")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), scrapeTimeout)
+	defer cancel()
+
+	item := r.PathValue("item")
+	comments, err := s.commentCache.get(ctx, src.ID()+"/"+item, func(ctx context.Context) ([]sources.Comment, error) {
+		return c.Comments(ctx, item)
+	})
+	if err != nil {
+		s.log.Warn("source comments", "source", src.ID(), "item", item, "err", err)
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"comments": comments, "count": len(comments)})
 }
 
 // handleSourceStream proxies one remote media file, forwarding Range so a video can
@@ -196,7 +239,7 @@ func (s *Server) handleSourceSave(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), scrapeTimeout)
-		pages, err := src.Pages(ctx, req.ItemID)
+		pages, err := s.sourcePages(ctx, src, req.ItemID)
 		cancel()
 		if err != nil {
 			writeErr(w, http.StatusBadGateway, err.Error())

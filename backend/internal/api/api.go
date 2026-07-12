@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/youruser/oppailib/internal/ai"
 	"github.com/youruser/oppailib/internal/buildinfo"
@@ -35,7 +36,19 @@ type Server struct {
 
 	thumbSem  chan struct{} // bounds concurrent ffmpeg thumbnail jobs
 	thumbWarn sync.Once      // warn once if ffmpeg is missing
+
+	// Resolving a remote item costs a throttled round trip to someone else's site,
+	// so the answers are cached. A gallery's page list is immutable, so it keeps for
+	// a while; a thread's comments are not, so they keep only long enough to absorb
+	// a double-tap. See resolveCache.
+	pageCache    *resolveCache[[]string]
+	commentCache *resolveCache[[]sources.Comment]
 }
+
+const (
+	sourcePagesTTL    = 10 * time.Minute
+	sourceCommentsTTL = 30 * time.Second
+)
 
 func NewServer(cfg *config.Config, database *db.DB, store *storage.Store, sc *scraper.Engine, aiMgr *ai.Manager, set *settings.Store, kek []byte, log *slog.Logger) *Server {
 	// Cap thumbnail workers well below core count: ffmpeg is CPU-heavy and this is
@@ -55,6 +68,9 @@ func NewServer(cfg *config.Config, database *db.DB, store *storage.Store, sc *sc
 		kek:      kek,
 		log:      log,
 		thumbSem: make(chan struct{}, workers),
+
+		pageCache:    newResolveCache[[]string](sourcePagesTTL),
+		commentCache: newResolveCache[[]sources.Comment](sourceCommentsTTL),
 	}
 }
 
@@ -83,7 +99,10 @@ func (s *Server) Handler() http.Handler {
 	// Auth (public).
 	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
 	mux.HandleFunc("POST /api/auth/logout", s.requireAuth(s.handleLogout))
-	mux.HandleFunc("GET /api/auth/me", s.requireAuth(s.handleMe))
+	// /me is the session *probe*, so it must not count as activity — the web client
+	// polls it to notice a session that has been invalidated, and a poll that kept
+	// the session alive would mean an idle tab never idles out. See requireSession.
+	mux.HandleFunc("GET /api/auth/me", s.requireSession(s.handleMe, false))
 	mux.HandleFunc("POST /api/auth/password", s.requireAuth(s.handleChangePassword))
 
 	// Settings + library stats (protected; writing settings is admin-only).
@@ -112,6 +131,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sources", s.requireAuth(s.handleListSources))
 	mux.HandleFunc("GET /api/sources/{id}/browse", s.requireAuth(s.handleBrowseSource))
 	mux.HandleFunc("GET /api/sources/{id}/item/{item}/pages", s.requireAuth(s.handleSourcePages))
+	// The conversation an item was posted in — a 4chan thread's comments.
+	mux.HandleFunc("GET /api/sources/{id}/item/{item}/comments", s.requireAuth(s.handleSourceComments))
 	mux.HandleFunc("GET /api/sources/stream", s.requireAuth(s.handleSourceStream))
 	mux.HandleFunc("POST /api/sources/{id}/save", s.requireAuth(s.handleSourceSave))
 
@@ -136,17 +157,44 @@ type ctxKey string
 
 const userKey ctxKey = "user"
 
+// requireAuth gates a handler on a valid session and counts the request as user
+// activity, which is what holds an idle-expiring session open.
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
+	return s.requireSession(next, true)
+}
+
+// requireSession gates a handler on a valid session. activity says whether reaching
+// this handler means the user is *doing* something.
+//
+// The distinction is the whole of the idle rule. A browser session dies after
+// s.cfg.WebIdleTimeout of inactivity (see db.SessionUser), and "inactivity" has to
+// mean "the user isn't using the app" — not "the app isn't making requests". The web
+// client polls /api/auth/me to find out whether its session is still good, and if
+// that poll refreshed the session, a tab left open overnight would keep itself alive
+// forever and the idle timeout would be decorative. So the probe reads the session
+// without touching it, and every endpoint that exists because the user asked for
+// something touches it.
+//
+// The Android app is exempt from idling entirely (it holds a long-lived token by
+// design), so the touch is a no-op for it — see db.TouchSession.
+func (s *Server) requireSession(next http.HandlerFunc, activity bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := bearer(r)
 		if token == "" {
 			writeErr(w, http.StatusUnauthorized, "missing token")
 			return
 		}
-		user, err := s.db.SessionUser(r.Context(), token)
+		user, err := s.db.SessionUser(r.Context(), token, s.cfg.WebIdleTimeout)
 		if err != nil {
 			writeErr(w, http.StatusUnauthorized, "invalid or expired session")
 			return
+		}
+		if activity {
+			// Best-effort: a failed heartbeat write must not fail the request the user
+			// actually made. The worst case is an early idle-out, not a wrong answer.
+			if err := s.db.TouchSession(r.Context(), token, s.cfg.WebIdleTimeout); err != nil {
+				s.log.Debug("touch session", "err", err)
+			}
 		}
 		ctx := context.WithValue(r.Context(), userKey, user)
 		next(w, r.WithContext(ctx))

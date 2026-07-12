@@ -61,6 +61,17 @@ func run(cfg *config.Config, log *slog.Logger) error {
 		return err
 	}
 
+	// A restart signs the web UI out. Browser sessions are meant to be short-lived —
+	// bounded by an idle window and by the life of the server they were issued by —
+	// so a token that survived a restart would be the one thing that outlived both.
+	// The Android app is exempt: it signs in once, on a device you own, and there is
+	// nobody at the keyboard to re-authenticate it.
+	if n, err := database.PurgeBrowserSessions(context.Background()); err != nil {
+		log.Warn("could not purge browser sessions", "err", err)
+	} else if n > 0 {
+		log.Info("signed out web sessions on restart", "sessions", n)
+	}
+
 	// 4. Encrypted blob store.
 	store, err := storage.New(cfg.MediaDir, ks.KEK())
 	if err != nil {

@@ -14,6 +14,10 @@ import (
 type loginReq struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
+	// Client says who is signing in: "android" for the app, anything else (including
+	// nothing) is treated as a browser. Only the app is exempt from the idle timeout
+	// and the restart purge — see db.ClientAndroid.
+	Client string `json:"client"`
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -40,7 +44,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "server error")
 		return
 	}
-	if err := s.db.CreateSession(r.Context(), token, user.ID, s.cfg.SessionTTL); err != nil {
+	// Anything that doesn't say it's the app is a browser, and gets browser rules.
+	client := db.ClientWeb
+	if req.Client == db.ClientAndroid {
+		client = db.ClientAndroid
+	}
+	if err := s.db.CreateSession(r.Context(), token, user.ID, s.cfg.SessionTTL, client); err != nil {
 		writeErr(w, http.StatusInternalServerError, "server error")
 		return
 	}

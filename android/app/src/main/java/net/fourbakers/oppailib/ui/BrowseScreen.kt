@@ -25,6 +25,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Comment
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Forum
@@ -48,6 +49,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -117,6 +119,13 @@ fun BrowseScreen(repo: Repository, openAt: PinnedFeed? = null, onBack: () -> Uni
     var pinned by remember { mutableStateOf(repo.prefs.pinnedFeeds) }
     var savingThread by remember { mutableStateOf(false) }
 
+    // The thread whose comments are open, if any.
+    var commentsFor by remember { mutableStateOf<SourceItem?>(null) }
+
+    // Stamps each browse request so a late reply from a board we've left can't land in
+    // the grid of the board we're on. See load().
+    var req by remember { mutableIntStateOf(0) }
+
     val grid = rememberLazyGridState()
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
@@ -154,13 +163,26 @@ fun BrowseScreen(repo: Repository, openAt: PinnedFeed? = null, onBack: () -> Uni
     /** Loads a page of the current feed. [reset] starts the feed over. */
     fun load(reset: Boolean) {
         val src = source ?: return
-        if (loading) return
-        if (!reset && cursor.isEmpty() && items.isNotEmpty()) return // at the end
+        // Paging is one-at-a-time and stops at the end. A *reset* is never refused: it
+        // means the user picked another board, and that has to win over whatever is
+        // already in flight — see `mine` below.
+        if (!reset && (loading || cursor.isEmpty())) return
         // A search feed with no term would 400 upstream; wait for one instead.
         if (isSearch && query.isBlank()) return
+
+        // Every request is stamped, and only the newest is allowed to land.
+        //
+        // This is what stopped one board's threads showing up under another's. Picking a
+        // new board fires a fresh request while the old board's is still in the air, and
+        // the request that *returned* last used to win — so /h/'s reply would repopulate
+        // the grid the user had just pointed at /gif/. Worse, the old request was still
+        // holding `loading`, so the new board's own load was refused outright and the
+        // tiles you were left looking at were the previous board's, entire.
+        req += 1
+        val mine = req
         loading = true
         scope.launch {
-            runCatching {
+            val result = runCatching {
                 repo.api.browseSource(
                     id = src.id,
                     feed = feed,
@@ -171,6 +193,12 @@ fun BrowseScreen(repo: Repository, openAt: PinnedFeed? = null, onBack: () -> Uni
                     sort = if (container == null) sort.ifBlank { null } else null,
                 )
             }
+            // Superseded: these tiles belong to a feed we have already left. Dropping
+            // them on the floor — and leaving `loading` to whoever now owns it — is the
+            // whole fix.
+            if (mine != req) return@launch
+
+            result
                 .onSuccess { page ->
                     items = if (reset) page.items else items + page.items
                     cursor = page.cursor
@@ -258,6 +286,13 @@ fun BrowseScreen(repo: Repository, openAt: PinnedFeed? = null, onBack: () -> Uni
                     }
                 },
                 actions = {
+                    // Inside a thread, the conversation is a tap away — the files are
+                    // only half of what a thread is.
+                    container?.takeIf { it.hasComments }?.let { thread ->
+                        IconButton(onClick = { commentsFor = thread }) {
+                            Icon(Icons.AutoMirrored.Filled.Comment, contentDescription = "Read the comments")
+                        }
+                    }
                     // A whole thread saves as one comic: its images, in post order.
                     container?.let { thread ->
                         IconButton(
@@ -321,6 +356,15 @@ fun BrowseScreen(repo: Repository, openAt: PinnedFeed? = null, onBack: () -> Uni
         },
         snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
+        commentsFor?.let { thread ->
+            CommentsSheet(
+                repo = repo,
+                sourceId = source?.id.orEmpty(),
+                item = thread,
+                onDismiss = { commentsFor = null },
+            )
+        }
+
         Column(Modifier.padding(padding).fillMaxSize()) {
             // Inside a thread the pickers would be lying about what's on screen, so the
             // thread's own header replaces them.

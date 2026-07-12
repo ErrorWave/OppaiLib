@@ -29,7 +29,14 @@ CREATE TABLE IF NOT EXISTS sessions (
     token      TEXT PRIMARY KEY,             -- opaque random
     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     created_at INTEGER NOT NULL,
-    expires_at INTEGER NOT NULL
+    expires_at INTEGER NOT NULL,
+    -- Which client holds this session: 'android' or 'web'. Only the Android app is
+    -- exempt from the idle timeout and the restart purge (see db.ClientAndroid), so
+    -- an unset value defaults to browser rules — the safe direction.
+    client     TEXT NOT NULL DEFAULT '',
+    -- Unix seconds of the last request that counted as user activity. Feeds the
+    -- browser idle timeout; the phone's session ignores it.
+    last_seen  INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 

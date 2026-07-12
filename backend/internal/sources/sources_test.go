@@ -24,11 +24,12 @@ const fourChanIndexJSON = `{"threads":[
 ]}`
 
 // One thread: a video post, an image post, and a text-only post that must be skipped
-// because it has no upload.
+// when browsing *files* — but which is still a post, so it is part of the conversation.
+// The last post carries what a real one carries: greentext, a <br>, and a quotelink.
 const fourChanThreadJSON = `{"posts":[
-  {"no":1001,"tim":1600000000001,"ext":".webm","filename":"clip","w":1280,"h":720,"sub":"Cool thread"},
-  {"no":1002,"tim":1600000000002,"ext":".jpg","filename":"pic","w":800,"h":600},
-  {"no":1003,"com":"just a reply, no file"}
+  {"no":1001,"tim":1600000000001,"ext":".webm","filename":"clip","w":1280,"h":720,"sub":"Cool thread","name":"Anonymous","time":1600000000},
+  {"no":1002,"tim":1600000000002,"ext":".jpg","filename":"pic","w":800,"h":600,"name":"Anonymous","time":1600000100},
+  {"no":1003,"name":"Anonymous","time":1600000200,"com":"<span class=\"quote\">&gt;be me</span><br><a href=\"#p1001\" class=\"quotelink\">&gt;&gt;1001</a> nice clip"}
 ]}`
 
 func newFourChanStub(t *testing.T) (*FourChan, *httptest.Server) {
@@ -134,6 +135,89 @@ func TestFourChanBrowseThread(t *testing.T) {
 	}
 	if got.Items[1].Kind != "image" {
 		t.Errorf("jpg kind = %q, want image", got.Items[1].Kind)
+	}
+}
+
+// Every file in a thread carries the thread it came from, which is what lets the
+// viewer pull up the conversation around the image that's on screen.
+func TestFourChanFilesCarryTheirThread(t *testing.T) {
+	f, srv := newFourChanStub(t)
+	defer srv.Close()
+
+	got, err := f.Browse(context.Background(), BrowseParams{Feed: "gif:t1001"})
+	if err != nil {
+		t.Fatalf("Browse: %v", err)
+	}
+	for _, item := range got.Items {
+		if item.ThreadID != "gif:t1001" {
+			t.Errorf("item %q threadId = %q, want gif:t1001", item.ID, item.ThreadID)
+		}
+	}
+	if got.Items[0].PostNo != 1001 {
+		t.Errorf("postNo = %d, want 1001 — the comment list marks the post on screen", got.Items[0].PostNo)
+	}
+
+	// A board's thread tiles are their own thread, so the grid can offer comments too.
+	board, err := f.Browse(context.Background(), BrowseParams{Feed: "gif"})
+	if err != nil {
+		t.Fatalf("Browse board: %v", err)
+	}
+	if board.Items[0].ThreadID != "gif:t1001" {
+		t.Errorf("thread tile threadId = %q, want gif:t1001", board.Items[0].ThreadID)
+	}
+}
+
+// A thread's comments are the conversation: every post, in order, text or not.
+func TestFourChanComments(t *testing.T) {
+	f, srv := newFourChanStub(t)
+	defer srv.Close()
+
+	got, err := f.Comments(context.Background(), "gif:t1001")
+	if err != nil {
+		t.Fatalf("Comments: %v", err)
+	}
+	// Three posts — including the image-only one. Dropping a post with no text would
+	// leave the >>quotes pointing at posts that aren't in the list.
+	if len(got) != 3 {
+		t.Fatalf("comments = %d, want 3 (every post, text or not)", len(got))
+	}
+	if !got[0].OP {
+		t.Error("first post should be marked as the OP")
+	}
+	if got[1].OP {
+		t.Error("a reply is not the OP")
+	}
+	// A post's own upload comes with it: on 4chan the picture is often the whole point.
+	if got[0].MediaURL != "https://i.4cdn.org/gif/1600000000001.webm" {
+		t.Errorf("OP media url = %q", got[0].MediaURL)
+	}
+	if got[1].ThumbURL != "https://i.4cdn.org/gif/1600000000002s.jpg" {
+		t.Errorf("reply thumb url = %q", got[1].ThumbURL)
+	}
+
+	// Line breaks and greentext survive; markup does not.
+	want := ">be me\n>>1001 nice clip"
+	if got[2].Text != want {
+		t.Errorf("text = %q, want %q", got[2].Text, want)
+	}
+	if len(got[2].Quotes) != 1 || got[2].Quotes[0] != 1001 {
+		t.Errorf("quotes = %v, want [1001]", got[2].Quotes)
+	}
+	if got[2].Name != "Anonymous" {
+		t.Errorf("name = %q, want Anonymous", got[2].Name)
+	}
+}
+
+// Comments are a thread's, so asking a file (or nonsense) for them is an error rather
+// than an empty conversation.
+func TestFourChanCommentsRejectNonThreads(t *testing.T) {
+	f, srv := newFourChanStub(t)
+	defer srv.Close()
+
+	for _, id := range []string{"gif:f1600000000001", "", "nope:t1"} {
+		if _, err := f.Comments(context.Background(), id); err == nil {
+			t.Errorf("Comments(%q) should fail — that isn't a thread", id)
+		}
 	}
 }
 

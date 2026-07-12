@@ -68,8 +68,20 @@ data class ComicInfo(
 @Serializable
 data class User(val id: Long, val username: String, val isAdmin: Boolean = false)
 
+/**
+ * [client] identifies this as the phone app rather than a browser.
+ *
+ * It is load-bearing, not decoration: the server idles browser sessions out after an
+ * hour and drops them when it restarts. A phone is a device you own and signed in on
+ * once — there is nobody at the keyboard to re-authenticate it — so the app says who
+ * it is and the server exempts it from both rules.
+ */
 @Serializable
-data class LoginRequest(val username: String, val password: String)
+data class LoginRequest(
+    val username: String,
+    val password: String,
+    val client: String = "android",
+)
 
 @Serializable
 data class LoginResponse(val token: String, val user: User)
@@ -177,12 +189,23 @@ data class SourceItem(
      * OP's image in the viewer.
      */
     val feedId: String = "",
+    /**
+     * The discussion this item was posted in, for sources that have one. A file from a
+     * 4chan thread carries its thread's id, which is all the viewer needs to pull up
+     * the conversation around the image on screen.
+     */
+    val threadId: String = "",
+    /** This item's own post in that thread, so its comment can be marked in the list. */
+    val postNo: Long = 0,
     /** How many files a container holds. Zero on anything else. */
     val count: Int = 0,
     val width: Int = 0,
     val height: Int = 0,
 ) {
     val isContainer: Boolean get() = feedId.isNotEmpty()
+
+    /** Whether there is a conversation to show for this item. */
+    val hasComments: Boolean get() = threadId.isNotEmpty()
 }
 
 /** [cursor] is opaque; empty means there is nothing after this page. */
@@ -194,6 +217,32 @@ data class SourceListing(
 
 @Serializable
 data class SourcePagesResponse(val pages: List<String> = emptyList(), val count: Int = 0)
+
+/**
+ * One post in a source's discussion thread.
+ *
+ * Flat rather than nested: a 4chan post quotes by number and can quote several posts
+ * at once, so the conversation is a graph. [quotes] carries those numbers and the list
+ * renders in post order — which is how the site itself shows a thread.
+ */
+@Serializable
+data class SourceComment(
+    val no: Long = 0,
+    val time: Long = 0,
+    val name: String = "",
+    val subject: String = "",
+    val text: String = "",
+    val thumbUrl: String = "",
+    val mediaUrl: String = "",
+    val quotes: List<Long> = emptyList(),
+    val op: Boolean = false,
+)
+
+@Serializable
+data class SourceCommentsResponse(
+    val comments: List<SourceComment> = emptyList(),
+    val count: Int = 0,
+)
 
 @Serializable
 data class SourceSaveRequest(

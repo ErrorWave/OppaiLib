@@ -80,10 +80,51 @@ type Item struct {
 	// the set, not open the OP's image. The client browses this feed id; nothing else
 	// about it is meaningful to the client.
 	FeedID string `json:"feedId,omitempty"`
+	// ThreadID names the discussion this item belongs to, for sources that have one.
+	// It is what the client asks for comments on — a file posted in a thread carries
+	// its thread's id, so the viewer can show the conversation around the image
+	// without the client having to know how a thread id is spelled.
+	ThreadID string `json:"threadId,omitempty"`
+	// PostNo is this item's own post within that thread, so the comment list can
+	// mark which post the open file came from.
+	PostNo int64 `json:"postNo,omitempty"`
 	// Count is how many files a container holds, for the tile's caption.
 	Count  int `json:"count,omitempty"`
 	Width  int `json:"width,omitempty"`
 	Height int `json:"height,omitempty"`
+}
+
+// Comment is one post in a source's discussion thread.
+//
+// This is deliberately flat rather than a tree: 4chan replies quote by post
+// number (">>12345") and a post can quote several others, so the conversation is
+// a graph, not a hierarchy. Carrying the quoted numbers and letting the client
+// render the run in post order is honest about that, and it's how the site itself
+// displays a thread.
+type Comment struct {
+	// No is the post number — unique within its thread, and what >>quotes name.
+	No   int64  `json:"no"`
+	Time int64  `json:"time"` // unix seconds
+	Name string `json:"name,omitempty"`
+	Sub  string `json:"subject,omitempty"`
+	// Text is the post body as plain text: newlines survive, markup does not.
+	Text string `json:"text"`
+	// ThumbURL/MediaURL are the post's own upload, if it had one. A comment with an
+	// image is extremely common on 4chan and the picture is often the point of it.
+	ThumbURL string `json:"thumbUrl,omitempty"`
+	MediaURL string `json:"mediaUrl,omitempty"`
+	// Quotes are the post numbers this post replies to.
+	Quotes []int64 `json:"quotes,omitempty"`
+	// OP marks the post that opened the thread.
+	OP bool `json:"op,omitempty"`
+}
+
+// Commenter is an optional interface: a source that has discussions implements it.
+// Sources without a comment section (a gallery site) simply don't, and the API
+// answers "this source has no comments" rather than inventing an empty thread.
+type Commenter interface {
+	// Comments returns the posts of the thread named by itemID, in post order.
+	Comments(ctx context.Context, itemID string) ([]Comment, error)
 }
 
 // Listing is one page of a feed. Cursor is opaque to the client; an empty cursor

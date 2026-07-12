@@ -200,6 +200,7 @@ fun ViewerScreen(
         }
 
         val current = items.getOrNull(feed.currentPage)
+        val scope = rememberCoroutineScope()
         AnimatedVisibility(visible = chrome && current != null, enter = fadeIn(), exit = fadeOut()) {
             if (current != null) {
                 Chrome(
@@ -212,6 +213,27 @@ fun ViewerScreen(
                     onDetail = { details[it.id] = it },
                     onSearchTag = onSearchTag,
                     onDelete = onDelete,
+                    upNext = {
+                        // Tapping the video raises the chrome; the chrome says what's next.
+                        // Only for video: a comic's bottom bar is already a page scrubber,
+                        // and stacking a second strip under it would be two scrubbers.
+                        if (current.kind == "video") {
+                            UpNextStrip(
+                                repo = repo,
+                                items = items.map {
+                                    StripItem(
+                                        key = it.id.toString(),
+                                        title = it.title.ifEmpty { it.kind },
+                                        thumbUrl = repo.thumbUrl(it.id),
+                                        isVideo = it.kind == "video",
+                                    )
+                                },
+                                current = feed.currentPage,
+                                onPick = { scope.launch { feed.scrollToPage(it) } },
+                                modifier = Modifier.padding(top = 8.dp),
+                            )
+                        }
+                    },
                 ) {
                     // Per-kind controls, sat directly above the metadata bar.
                     when {
@@ -887,6 +909,8 @@ private fun Chrome(
     onDetail: (Media) -> Unit,
     onSearchTag: (String) -> Unit,
     onDelete: (Media) -> Unit,
+    /** The "up next" carousel, drawn above the controls. Empty for kinds that get none. */
+    upNext: @Composable () -> Unit,
     controls: @Composable () -> Unit,
 ) {
     var tagging by remember { mutableStateOf(false) }
@@ -938,6 +962,7 @@ private fun Chrome(
             Modifier.fillMaxWidth().background(Color(0x99000000)).then(swallowTaps)
                 .windowInsetsPadding(WindowInsets.navigationBars),
         ) {
+            upNext()
             controls()
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),

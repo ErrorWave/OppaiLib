@@ -35,4 +35,5 @@
   <Config Name="AI Auto-tagging" Target="OPPAI_AI_ENABLED" Default="true" Mode="" Description="Enable local AI auto-tagging" Type="Variable" Display="advanced" Required="false" Mask="false">true</Config>
   <Config Name="AI Device" Target="OPPAI_AI_DEVICE" Default="cpu" Mode="" Description="cpu or cuda (cuda needs GPU passthrough and a CUDA build of libonnxruntime; falls back to cpu with a warning)" Type="Variable" Display="advanced" Required="false" Mask="false">cpu</Config>
   <Config Name="Scrape Delay (ms)" Target="OPPAI_SCRAPE_DELAY_MS" Default="1500" Mode="" Description="Politeness delay between scraper requests" Type="Variable" Display="advanced" Required="false" Mask="false">1500</Config>
+  <Config Name="Web Idle Timeout (minutes)" Target="OPPAI_WEB_IDLE_MINUTES" Default="60" Mode="" Description="How long a browser session may sit unused before it is signed out. Browser sessions are also signed out whenever the container restarts. The Android app is exempt from both — it stays signed in. Set to 0 to disable the idle timeout." Type="Variable" Display="advanced" Required="false" Mask="false">60</Config>
 </Container>

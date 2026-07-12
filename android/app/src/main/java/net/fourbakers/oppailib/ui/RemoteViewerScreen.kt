@@ -18,6 +18,7 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Comment
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material3.CircularProgressIndicator
@@ -92,6 +93,18 @@ fun RemoteViewerScreen(
     val saving = remember { mutableStateMapOf<String, Boolean>() }
     val saved = remember { mutableStateMapOf<String, Boolean>() }
 
+    // The thread whose comments are open over the viewer, if any.
+    var commentsFor by remember { mutableStateOf<SourceItem?>(null) }
+
+    commentsFor?.let { item ->
+        CommentsSheet(
+            repo = repo,
+            sourceId = sourceId,
+            item = item,
+            onDismiss = { commentsFor = null },
+        )
+    }
+
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         VerticalPager(
             state = feed,
@@ -127,6 +140,16 @@ fun RemoteViewerScreen(
                         style = MaterialTheme.typography.labelSmall,
                         modifier = Modifier.padding(end = 8.dp),
                     )
+                    // On 4chan the picture is half the post; the thread is the other half.
+                    if (settled.hasComments) {
+                        IconButton(onClick = { commentsFor = settled }) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.Comment,
+                                contentDescription = "Read the comments",
+                                tint = Color.White,
+                            )
+                        }
+                    }
                     IconButton(
                         enabled = saving[settled.id] != true && saved[settled.id] != true,
                         onClick = {
@@ -174,13 +197,35 @@ fun RemoteViewerScreen(
 
                 Box(Modifier.weight(1f))
 
-                Text(
-                    settled.kind + (if (settled.width > 0) " · ${settled.width}×${settled.height}" else ""),
-                    color = Color.White,
-                    style = MaterialTheme.typography.labelSmall,
-                    modifier = Modifier.fillMaxWidth().background(Color(0x99000000))
-                        .windowInsetsPadding(WindowInsets.navigationBars).padding(12.dp),
-                )
+                Column(
+                    Modifier.fillMaxWidth().background(Color(0x99000000))
+                        .pointerInput(Unit) { detectTapGestures { } }
+                        .windowInsetsPadding(WindowInsets.navigationBars),
+                ) {
+                    // Tapping the video brings the chrome up; the chrome says what's next.
+                    if (settled.kind == "video") {
+                        UpNextStrip(
+                            repo = repo,
+                            items = items.map {
+                                StripItem(
+                                    key = it.id,
+                                    title = it.title,
+                                    thumbUrl = repo.sourceStreamUrl(it.thumbUrl),
+                                    isVideo = it.kind == "video",
+                                )
+                            },
+                            current = feed.settledPage,
+                            onPick = { scope.launch { feed.scrollToPage(it) } },
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
+                    }
+                    Text(
+                        settled.kind + (if (settled.width > 0) " · ${settled.width}×${settled.height}" else ""),
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(12.dp),
+                    )
+                }
             }
         }
     }
@@ -254,7 +299,12 @@ private fun RemoteComic(repo: Repository, sourceId: String, item: SourceItem, on
                 HorizontalPager(
                     state = pager,
                     modifier = Modifier.fillMaxSize(),
-                    beyondViewportPageCount = 1,
+                    // Keep two pages either side warm rather than one. A remote page is a
+                    // round trip to the origin through our proxy, so a reader that only
+                    // holds the neighbour stalls on every *other* turn once you get going;
+                    // two is enough to stay ahead of steady reading without pulling a whole
+                    // gallery down for someone who opened it by accident.
+                    beyondViewportPageCount = 2,
                 ) { page ->
                     ZoomableRemoteImage(
                         repo = repo,
