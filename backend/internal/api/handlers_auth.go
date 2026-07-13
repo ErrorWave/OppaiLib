@@ -21,13 +21,28 @@ type loginReq struct {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	// Reject over-frequent attempts before touching the DB or the (deliberately
+	// expensive) hash — this is the brute-force and DoS bound in one.
+	if !s.login.allow(clientIP(r)) {
+		writeErr(w, http.StatusTooManyRequests, "too many attempts, slow down")
+		return
+	}
 	var req loginReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
+
+	// One hash slot per attempt, so concurrent guesses can't stack 64 MiB Argon2
+	// jobs without bound.
+	s.login.acquireHash()
+	defer s.login.releaseHash()
+
 	user, err := s.db.UserByName(r.Context(), req.Username)
 	if errors.Is(err, sql.ErrNoRows) {
+		// Spend the same work a real verification would, so a missing username can't
+		// be distinguished from a wrong password by timing.
+		auth.WasteVerify(req.Password)
 		writeErr(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	} else if err != nil {
@@ -58,6 +73,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   isHTTPS(r), // set over TLS so the token can't leak on plaintext
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(s.cfg.SessionTTL.Seconds()),
 	})
@@ -71,7 +87,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if token := bearer(r); token != "" {
 		_ = s.db.DeleteSession(r.Context(), token)
 	}
-	http.SetCookie(w, &http.Cookie{Name: "oppai_session", Value: "", Path: "/", MaxAge: -1})
+	http.SetCookie(w, &http.Cookie{Name: "oppai_session", Value: "", Path: "/", HttpOnly: true, Secure: isHTTPS(r), SameSite: http.SameSiteLaxMode, MaxAge: -1})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

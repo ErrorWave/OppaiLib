@@ -63,8 +63,19 @@ func comicSite(t *testing.T) *httptest.Server {
 }
 
 // newTestServer wires a real Server over temp storage + sqlite, and returns it
-// with an authenticated bearer token.
+// with an authenticated bearer token. Its scraper allows private/loopback hosts so
+// tests can point it at httptest servers on 127.0.0.1.
 func newTestServer(t *testing.T) (*Server, string) {
+	return newTestServerWith(t, true)
+}
+
+// newTestServerGuarded builds a server with the production SSRF dial guard active
+// (private/loopback targets refused), for tests that assert the guard fires.
+func newTestServerGuarded(t *testing.T) (*Server, string) {
+	return newTestServerWith(t, false)
+}
+
+func newTestServerWith(t *testing.T, allowPrivateHosts bool) (*Server, string) {
 	t.Helper()
 	dir := t.TempDir()
 	kek := bytes.Repeat([]byte{7}, 32)
@@ -81,7 +92,7 @@ func newTestServer(t *testing.T) (*Server, string) {
 	}
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	sc := scraper.New(scraper.Options{UserAgent: "test", Delay: 0, RespectRobots: false})
+	sc := scraper.New(scraper.Options{UserAgent: "test", Delay: 0, RespectRobots: false, AllowPrivateHosts: allowPrivateHosts})
 	aiMgr := ai.NewManager(ai.Config{Enabled: false}, store, database, log)
 	cfg := &config.Config{}
 

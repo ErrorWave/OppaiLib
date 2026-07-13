@@ -343,7 +343,11 @@ func (s *Server) handleStreamMedia(w http.ResponseWriter, r *http.Request) {
 		// type implied by the stored kind so the browser still plays it inline.
 		ct = contentTypeForKind(row.Kind)
 	}
-	w.Header().Set("Content-Type", ct)
+	// The title is user-controlled, so its extension can drive Content-Type to
+	// text/html (an item titled "x.html"); serving that inline would execute script
+	// on our origin. Restrict to safe media types. ServeContent honors the header we
+	// set here rather than sniffing, and the global nosniff header covers the rest.
+	w.Header().Set("Content-Type", safeInlineContentType(ct))
 
 	rs, err := s.store.OpenSeeker(row.BlobPath, row.Size)
 	if err != nil {

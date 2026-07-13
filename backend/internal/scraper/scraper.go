@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
@@ -61,24 +62,39 @@ type Engine struct {
 }
 
 type Options struct {
-	UserAgent      string
-	Delay          time.Duration
-	RespectRobots  bool
-	SiteParsers    []Parser
+	UserAgent     string
+	Delay         time.Duration
+	RespectRobots bool
+	SiteParsers   []Parser
+	// AllowPrivateHosts disables the SSRF dial guard that refuses connections to
+	// loopback/private/link-local addresses. It exists only so tests can point the
+	// engine at an httptest server on 127.0.0.1; production must leave it false.
+	AllowPrivateHosts bool
 }
 
 func New(opts Options) *Engine {
+	// SSRF guard. Every scrape/import/proxy target is a user-supplied URL, and this
+	// client will also follow redirects; without a check the server would happily
+	// fetch the cloud metadata service, a sibling container, or the router admin page
+	// — none of which the client can reach directly. Control runs after DNS
+	// resolution, on the concrete IP about to be dialed, so it closes the hole for
+	// redirects and DNS-rebinding alike (a hostname that passes an allowlist but
+	// resolves to a private address is blocked here).
+	dialer := &net.Dialer{
+		Timeout:   10 * time.Second, // TCP connect (incl. DNS)
+		KeepAlive: 30 * time.Second,
+	}
+	if !opts.AllowPrivateHosts {
+		dialer.Control = guardDial
+	}
 	// An explicitly-bounded transport. The bare http.Client{Timeout} used before
 	// only capped the *whole* exchange, so a container that couldn't reach a host
 	// (a common Unraid egress/DNS misconfig) could sit at the connect stage for a
 	// long time and the UI just spun on "Fetching…". These per-phase deadlines make
 	// an unreachable host fail in a few seconds with a clear error instead.
 	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment, // honor HTTP(S)_PROXY if the box uses one
-		DialContext: (&net.Dialer{
-			Timeout:   10 * time.Second, // TCP connect (incl. DNS)
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
+		Proxy:                 http.ProxyFromEnvironment, // honor HTTP(S)_PROXY if the box uses one
+		DialContext:           dialer.DialContext,
 		ForceAttemptHTTP2:     true,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 15 * time.Second,
@@ -86,7 +102,18 @@ func New(opts Options) *Engine {
 		MaxIdleConns:          64,
 		IdleConnTimeout:       90 * time.Second,
 	}
-	client := &http.Client{Timeout: 30 * time.Second, Transport: transport}
+	client := &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: transport,
+		// A redirect is just another dial, so guardDial already vets each hop's IP;
+		// this only caps a redirect loop from spinning until the overall timeout.
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("stopped after 10 redirects")
+			}
+			return nil
+		},
+	}
 	e := &Engine{
 		client:   client,
 		site:     opts.SiteParsers,
@@ -273,6 +300,46 @@ func (e *Engine) throttle(ctx context.Context, host string) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// guardDial is a net.Dialer Control hook: it refuses to connect to any address
+// that isn't a routable public IP. It runs on the resolved ip:port, which is why
+// it defeats DNS rebinding — the check sees the same address the kernel is about
+// to connect to, not the hostname the URL claimed.
+//
+// Note: when HTTP(S)_PROXY is set, dials go to the proxy's address, so an operator
+// running a proxy on a private address must not point this client through it — the
+// self-hosted default (no proxy) is unaffected.
+func guardDial(network, address string, _ syscall.RawConn) error {
+	if network != "tcp" && network != "tcp4" && network != "tcp6" {
+		return fmt.Errorf("scrape: blocked network %q", network)
+	}
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("scrape: bad dial address %q", address)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		// Control receives an already-resolved address; a non-IP here is unexpected,
+		// so fail closed rather than guess.
+		return fmt.Errorf("scrape: unresolved dial address %q", host)
+	}
+	if isBlockedIP(ip) {
+		return fmt.Errorf("scrape: refusing to connect to non-public address %s", ip)
+	}
+	return nil
+}
+
+// isBlockedIP reports whether ip is anything other than a routable public address:
+// loopback, RFC1918 / ULA private, link-local (incl. the 169.254.169.254 metadata
+// endpoint), multicast, and the unspecified address are all refused.
+func isBlockedIP(ip net.IP) bool {
+	return ip.IsLoopback() ||
+		ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsMulticast() ||
+		ip.IsUnspecified()
 }
 
 // resolveAll turns possibly-relative media URLs into absolute ones.

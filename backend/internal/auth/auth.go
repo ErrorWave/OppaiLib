@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -60,6 +61,30 @@ func VerifyPassword(encoded, password string) (bool, error) {
 	}
 	got := argon2.IDKey([]byte(password), salt, t, mem, p, uint32(len(want)))
 	return subtle.ConstantTimeCompare(got, want) == 1, nil
+}
+
+// dummyHash is a valid Argon2id hash of a random, unknowable password, computed
+// once. It exists so a login for a non-existent user can still pay the full
+// verification cost (see WasteVerify) and not be distinguishable by timing.
+var dummyHash = sync.OnceValue(func() string {
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		// Fall back to a fixed value: worse entropy, but WasteVerify only needs the
+		// hash to be well-formed and expensive, never to be secret.
+		secret = []byte("oppailib-dummy-verify-placeholder")
+	}
+	h, err := HashPassword(string(secret))
+	if err != nil {
+		return "$argon2id$v=19$m=65536,t=3,p=4$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	}
+	return h
+})
+
+// WasteVerify performs a full Argon2id verification against a throwaway hash and
+// discards the result. Call it on the "user not found" path so an attacker can't
+// tell a missing username (cheap) from a present one (expensive) by response time.
+func WasteVerify(password string) {
+	_, _ = VerifyPassword(dummyHash(), password)
 }
 
 // NewToken returns a URL-safe random session token.

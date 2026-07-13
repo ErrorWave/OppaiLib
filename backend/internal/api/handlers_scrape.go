@@ -152,11 +152,11 @@ func (s *Server) handleScrapeProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer dl.Body.Close()
-	ct := dl.ContentType
-	if ct == "" {
-		ct = "application/octet-stream"
-	}
-	w.Header().Set("Content-Type", ct)
+	// The proxied body is attacker-influenced (it comes from whatever host the URL
+	// named), so it must never be served as an active document on our origin — a
+	// text/html response here would run script with the user's session. Constrain it
+	// to safe media types; the global nosniff header stops content sniffing.
+	w.Header().Set("Content-Type", safeInlineContentType(dl.ContentType))
 	w.Header().Set("Cache-Control", "private, max-age=300")
 	_, _ = io.Copy(w, io.LimitReader(dl.Body, proxyMaxBytes))
 }

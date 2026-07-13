@@ -37,6 +37,8 @@ type Server struct {
 	thumbSem  chan struct{} // bounds concurrent ffmpeg thumbnail jobs
 	thumbWarn sync.Once      // warn once if ffmpeg is missing
 
+	login *loginGuard // rate-limits + bounds the cost of the login endpoint
+
 	// Resolving a remote item costs a throttled round trip to someone else's site,
 	// so the answers are cached. A gallery's page list is immutable, so it keeps for
 	// a while; a thread's comments are not, so they keep only long enough to absorb
@@ -68,6 +70,7 @@ func NewServer(cfg *config.Config, database *db.DB, store *storage.Store, sc *sc
 		kek:      kek,
 		log:      log,
 		thumbSem: make(chan struct{}, workers),
+		login:    newLoginGuard(),
 
 		pageCache:    newResolveCache[[]string](sourcePagesTTL),
 		commentCache: newResolveCache[[]sources.Comment](sourceCommentsTTL),
@@ -148,7 +151,7 @@ func (s *Server) Handler() http.Handler {
 	// Static web UI (SPA) for everything else.
 	mux.Handle("/", oweb.Handler())
 
-	return logging(s.log, mux)
+	return securityHeaders(logging(s.log, mux))
 }
 
 // ── middleware ─────────────────────────────────────────────────────────

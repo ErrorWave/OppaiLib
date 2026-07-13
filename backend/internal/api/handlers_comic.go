@@ -85,7 +85,9 @@ func (s *Server) handleComicPage(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rc.Close()
 
-	w.Header().Set("Content-Type", ct)
+	// ct is derived from the entry name inside the archive, which an imported CBZ
+	// controls; a page named ".html" must not render as a document on our origin.
+	w.Header().Set("Content-Type", safeInlineContentType(ct))
 	// Pages are immutable for a given media id (the blob is content-addressed), so
 	// the reader can cache them and page back and forth for free.
 	w.Header().Set("Cache-Control", "private, max-age=86400")
