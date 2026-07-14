@@ -47,7 +47,7 @@ func (s *Server) readOnly() readOnlyInfo {
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, settingsResponse{
-		Settings: s.settings.Get(),
+		Settings: s.settings.Get().Redacted(),
 		ReadOnly: s.readOnly(),
 	})
 }
@@ -56,10 +56,17 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 // incoming JSON is decoded over the current values, so a partial body only
 // changes what it names.
 func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
-	next := s.settings.Get()
+	current := s.settings.Get()
+	next := current
 	if err := json.NewDecoder(r.Body).Decode(&next); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body")
 		return
+	}
+	// The password is write-only, so a GET hands the UI back an empty one — which it
+	// then submits verbatim. Treat empty as "leave it as it was"; to clear the login,
+	// clear the username. A non-empty value is a deliberate change and replaces it.
+	if next.F95Password == "" {
+		next.F95Password = current.F95Password
 	}
 	next.Clamp()
 	if err := s.db.PutSettings(r.Context(), next.Map()); err != nil {
@@ -69,8 +76,9 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	s.ApplySettings(next)
 	s.log.Info("settings: updated", "ai_enabled", next.AIEnabled, "ai_auto_tag", next.AIAutoTag,
-		"scrape_delay_ms", next.ScrapeDelayMs, "respect_robots", next.ScrapeRespectRobots)
-	writeJSON(w, http.StatusOK, settingsResponse{Settings: next, ReadOnly: s.readOnly()})
+		"scrape_delay_ms", next.ScrapeDelayMs, "respect_robots", next.ScrapeRespectRobots,
+		"f95_login", next.F95Username != "")
+	writeJSON(w, http.StatusOK, settingsResponse{Settings: next.Redacted(), ReadOnly: s.readOnly()})
 }
 
 // ApplySettings pushes settings into the live subsystems. Called at startup with
@@ -85,6 +93,7 @@ func (s *Server) ApplySettings(cur settings.Settings) {
 		MaxTags:  cur.AIMaxTags,
 	})
 	s.scraper.SetOptions(cur.ScrapeUserAgent, cur.ScrapeDelay(), cur.ScrapeRespectRobots)
+	s.scraper.SetF95Credentials(cur.F95Username, cur.F95Password)
 }
 
 // handleStats summarizes the library for the Settings screen.

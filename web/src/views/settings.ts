@@ -693,6 +693,38 @@ export class OppaiSettings extends LitElement {
                   />
                 </div>
               </div>
+
+              <div class="field stack">
+                <div class="field-text">
+                  <div class="field-label">F95zone login</div>
+                  <div class="field-help">
+                    Most f95zone.to game threads are members-only. Sign in with your F95 account and
+                    OppaiLib can fetch those when you scrape a thread URL. Leave blank to scrape only
+                    public threads. Stored on your server; the password is never sent back to this page.
+                  </div>
+                </div>
+                <div class="field-control">
+                  <input
+                    type="text"
+                    autocomplete="off"
+                    placeholder="F95 username"
+                    .value=${s.f95Username}
+                    ?disabled=${!this.canEdit}
+                    @change=${(e: Event) =>
+                      this.edit({ f95Username: (e.target as HTMLInputElement).value })}
+                  />
+                </div>
+                <div class="field-control">
+                  <input
+                    type="password"
+                    autocomplete="new-password"
+                    placeholder=${s.f95PasswordSet ? "•••••••• (unchanged)" : "F95 password"}
+                    ?disabled=${!this.canEdit}
+                    @change=${(e: Event) =>
+                      this.edit({ f95Password: (e.target as HTMLInputElement).value })}
+                  />
+                </div>
+              </div>
             `}
       </section>
     `;

@@ -1,6 +1,7 @@
 package net.fourbakers.oppailib.ui
 
 import android.content.Context
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -81,6 +82,9 @@ fun SettingsScreen(repo: Repository, onBack: () -> Unit, onLogout: () -> Unit) {
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) { stats = runCatching { repo.api.stats() }.getOrNull() }
+
+    // Android back returns to the library, matching the top bar's arrow.
+    BackHandler { onBack() }
 
     if (changingPassword) {
         ChangePasswordDialog(repo = repo, onDismiss = { changingPassword = false })

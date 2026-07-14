@@ -91,6 +91,12 @@ export interface Settings {
   scrapeDelayMs: number;
   scrapeUserAgent: string;
   scrapeRespectRobots: boolean;
+  // F95 login for members-only game threads. The password is write-only: a GET
+  // returns it blank and reports f95PasswordSet instead; sending a new value sets
+  // it, sending blank leaves it unchanged.
+  f95Username: string;
+  f95Password: string;
+  f95PasswordSet: boolean;
 }
 
 // Environment/build facts the Settings screen shows but can't change — these come

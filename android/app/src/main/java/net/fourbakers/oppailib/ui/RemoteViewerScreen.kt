@@ -1,6 +1,7 @@
 package net.fourbakers.oppailib.ui
 
 import android.app.Activity
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
@@ -32,6 +34,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -103,14 +106,26 @@ fun RemoteViewerScreen(
     val saved = remember { mutableStateMapOf<String, Boolean>() }
 
     val player = rememberRemotePlayer(repo, settled)
+    // Hoisted like the player, and for the same reason: its page scrubber lives in the
+    // chrome, which is drawn over the feed and so can't reach into a page's own state.
+    val comic = rememberRemoteComicReader(repo, sourceId, settled)
 
     // The chrome takes itself away over a playing video; touching it puts the wait back.
     var poke by remember { mutableIntStateOf(0) }
+    // True while the up-next strip is being scrubbed; the chrome must not auto-hide then.
+    var browsingUpNext by remember { mutableStateOf(false) }
     val playing = playingState(player)
-    ChromeAutoHide(active = chrome && playing, poke = poke) { chrome = false }
+    ChromeAutoHide(active = chrome && playing && !browsingUpNext, poke = poke) { chrome = false }
 
     // The thread whose comments are open over the viewer, if any.
     var commentsFor by remember { mutableStateOf<SourceItem?>(null) }
+
+    // Android back leaves the viewer, matching the chrome's X. If a comments sheet is
+    // open over it, back closes that first — one step at a time, rather than dropping
+    // straight out of the browse.
+    BackHandler {
+        if (commentsFor != null) commentsFor = null else onClose()
+    }
 
     commentsFor?.let { item ->
         CommentsSheet(
@@ -140,10 +155,10 @@ fun RemoteViewerScreen(
         ) { page ->
             RemotePage(
                 repo = repo,
-                sourceId = sourceId,
                 item = items[page],
                 active = feed.settledPage == page,
                 player = player,
+                comic = comic,
                 onToggleChrome = { chrome = !chrome },
             )
         }
@@ -244,12 +259,25 @@ fun RemoteViewerScreen(
                             },
                             current = feed.settledPage,
                             onPick = { poke++; scope.launch { feed.scrollToPage(it) } },
+                            onBrowsing = { browsingUpNext = it; if (!it) poke++ },
                         )
                     }
                     // The same transport the library's viewer has, and the only one on
                     // screen: the player itself draws no controller (see RemoteVideo).
                     if (settled.kind == "video" && player != null) {
                         VideoControls(player) { poke++ }
+                    }
+                    // A comic gets the same page scrubber the library reader has, so a
+                    // browsed gallery can be jumped through instead of swiped one page at
+                    // a time.
+                    if (settled.kind == "comic" && comic != null && comic.readable) {
+                        ComicScrubber(
+                            pages = comic.pager,
+                            pageCount = comic.pageCount,
+                            rtl = comic.rtl,
+                            stateKey = comic.item.id,
+                            onToggleRtl = { comic.setRtl(!comic.rtl) },
+                        )
                     }
                     Text(
                         settled.kind + (if (settled.width > 0) " · ${settled.width}×${settled.height}" else ""),
@@ -266,14 +294,18 @@ fun RemoteViewerScreen(
 @Composable
 private fun RemotePage(
     repo: Repository,
-    sourceId: String,
     item: SourceItem,
     active: Boolean,
     player: ExoPlayer?,
+    comic: RemoteComicReader?,
     onToggleChrome: () -> Unit,
 ) {
     when {
-        item.kind == "comic" -> RemoteComic(repo, sourceId, item, onToggleChrome)
+        // Only the settled comic gets the hoisted reader (its pager is what the chrome's
+        // scrubber drives); a neighbour the pager keeps warm shows its cover instead.
+        item.kind == "comic" && active && comic != null && comic.item.id == item.id ->
+            RemoteComicPages(repo, comic, onToggleChrome)
+        item.kind == "comic" -> ZoomableRemoteImage(repo, item.thumbUrl, item.title, onToggleChrome)
         // Only the settled page gets the player; the neighbours the pager keeps warm
         // show their thumbnail, so swiping never leaves a video running behind you.
         item.kind == "video" && active && player != null -> RemoteVideo(player, onToggleChrome)
@@ -283,6 +315,87 @@ private fun RemotePage(
             contentDescription = item.title,
             onTap = onToggleChrome,
         )
+    }
+}
+
+/**
+ * The open remote comic: its resolved page URLs and the pager the chrome's scrubber
+ * drives. Hoisted out of [RemoteComicPages] so the scrubber can reach it, mirroring the
+ * library viewer's ComicReader.
+ */
+private class RemoteComicReader(
+    val item: SourceItem,
+    val pages: List<String>?,
+    val error: String?,
+    val pager: PagerState,
+    val rtl: Boolean,
+    val setRtl: (Boolean) -> Unit,
+) {
+    val readable: Boolean get() = pages?.isNotEmpty() == true
+    val pageCount: Int get() = pages?.size ?: 0
+}
+
+/** Resolves [item]'s pages through the server and holds the reader state. Null for non-comics. */
+@Composable
+private fun rememberRemoteComicReader(repo: Repository, sourceId: String, item: SourceItem?): RemoteComicReader? {
+    if (item == null || item.kind != "comic") return null
+
+    var pages by remember(item.id) { mutableStateOf<List<String>?>(null) }
+    var error by remember(item.id) { mutableStateOf<String?>(null) }
+    var rtl by remember { mutableStateOf(repo.prefs.comicRtl) }
+
+    LaunchedEffect(item.id) {
+        runCatching { repo.api.sourcePages(sourceId, item.id).pages }
+            .onSuccess { pages = it }
+            .onFailure { error = it.message ?: "Couldn't open that gallery" }
+    }
+
+    // The pager has to exist before the pages land (it's what the reader renders into),
+    // so it starts empty and the count fills in underneath it.
+    val pager = key(item.id) { rememberPagerState(initialPage = 0) { pages?.size ?: 0 } }
+
+    return RemoteComicReader(
+        item = item,
+        pages = pages,
+        error = error,
+        pager = pager,
+        rtl = rtl,
+        setRtl = { rtl = it; repo.prefs.comicRtl = it },
+    )
+}
+
+/** A remote comic, read in place: the server resolves its pages, we stream them. */
+@Composable
+private fun RemoteComicPages(repo: Repository, comic: RemoteComicReader, onToggleChrome: () -> Unit) {
+    val loaded = comic.pages
+    when {
+        comic.error != null -> Box(Modifier.fillMaxSize(), Alignment.Center) {
+            Text(comic.error ?: "", color = Color.White)
+        }
+        loaded == null -> Box(Modifier.fillMaxSize(), Alignment.Center) {
+            CircularProgressIndicator(color = Color.White)
+        }
+        else -> androidx.compose.runtime.CompositionLocalProvider(
+            androidx.compose.ui.platform.LocalLayoutDirection provides
+                if (comic.rtl) androidx.compose.ui.unit.LayoutDirection.Rtl
+                else androidx.compose.ui.unit.LayoutDirection.Ltr,
+        ) {
+            HorizontalPager(
+                state = comic.pager,
+                modifier = Modifier.fillMaxSize(),
+                // Keep two pages either side warm rather than one. A remote page is a
+                // round trip to the origin through our proxy, so a reader that only holds
+                // the neighbour stalls on every *other* turn once you get going.
+                beyondViewportPageCount = 2,
+            ) { page ->
+                ZoomableRemoteImage(
+                    repo = repo,
+                    url = loaded[page],
+                    contentDescription = "Page ${page + 1}",
+                    onTap = onToggleChrome,
+                )
+            }
+        }
     }
 }
 
@@ -300,56 +413,6 @@ private fun ZoomableRemoteImage(repo: Repository, url: String, contentDescriptio
             contentScale = androidx.compose.ui.layout.ContentScale.Fit,
             modifier = Modifier.fillMaxSize(),
         )
-    }
-}
-
-/** A remote comic, read in place: the server resolves its pages, we stream them. */
-@Composable
-private fun RemoteComic(repo: Repository, sourceId: String, item: SourceItem, onToggleChrome: () -> Unit) {
-    var pages by remember(item.id) { mutableStateOf<List<String>?>(null) }
-    var error by remember(item.id) { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(item.id) {
-        runCatching { repo.api.sourcePages(sourceId, item.id).pages }
-            .onSuccess { pages = it }
-            .onFailure { error = it.message ?: "Couldn't open that gallery" }
-    }
-
-    val loaded = pages
-    when {
-        error != null -> Box(Modifier.fillMaxSize(), Alignment.Center) {
-            Text(error ?: "", color = Color.White)
-        }
-        loaded == null -> Box(Modifier.fillMaxSize(), Alignment.Center) {
-            CircularProgressIndicator(color = Color.White)
-        }
-        else -> {
-            val rtl = repo.prefs.comicRtl
-            val pager = rememberPagerState(initialPage = 0) { loaded.size }
-            androidx.compose.runtime.CompositionLocalProvider(
-                androidx.compose.ui.platform.LocalLayoutDirection provides
-                    if (rtl) androidx.compose.ui.unit.LayoutDirection.Rtl
-                    else androidx.compose.ui.unit.LayoutDirection.Ltr,
-            ) {
-                HorizontalPager(
-                    state = pager,
-                    modifier = Modifier.fillMaxSize(),
-                    // Keep two pages either side warm rather than one. A remote page is a
-                    // round trip to the origin through our proxy, so a reader that only
-                    // holds the neighbour stalls on every *other* turn once you get going;
-                    // two is enough to stay ahead of steady reading without pulling a whole
-                    // gallery down for someone who opened it by accident.
-                    beyondViewportPageCount = 2,
-                ) { page ->
-                    ZoomableRemoteImage(
-                        repo = repo,
-                        url = loaded[page],
-                        contentDescription = "Page ${page + 1}",
-                        onTap = onToggleChrome,
-                    )
-                }
-            }
-        }
     }
 }
 

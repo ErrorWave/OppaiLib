@@ -243,8 +243,9 @@ fun BrowseScreen(repo: Repository, openAt: PinnedFeed? = null, onBack: () -> Uni
         snapshotFlow { nearEnd }.collect { if (it && cursor.isNotEmpty()) load(reset = false) }
     }
 
-    /** Leaving a thread goes back to its board, not out of the browser. */
-    BackHandler(enabled = container != null) { container = null }
+    // Android back steps out one level at a time, matching the top bar's arrow: out of
+    // a thread back to its board first, then out of the browser back to the library.
+    BackHandler { if (container != null) container = null else onBack() }
 
     // Containers aren't viewable, so the viewer's feed is the files only — and every
     // index handed to it has to be into *this* list, not into `items`.

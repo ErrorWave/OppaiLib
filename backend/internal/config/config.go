@@ -34,6 +34,13 @@ type Config struct {
 	ScrapeUserAgent     string
 	ScrapeRespectRobots bool
 
+	// F95 login. Most f95zone.to game threads are members-only, so the scraper
+	// signs in with these to fetch them. Empty leaves F95 as a public-only scrape
+	// (and threads that need an account return an actionable error). The Settings
+	// screen can set them at runtime; these env vars are just the startup default.
+	F95Username string
+	F95Password string
+
 	// APKPath is the Android app the server offers for download. CI bakes the
 	// built APK into the image here; pointing this at /config lets an operator drop
 	// in their own build instead (a self-signed one, say, so updates install over
@@ -66,6 +73,8 @@ func Load() *Config {
 		ScrapeDelay:         time.Duration(envInt("OPPAI_SCRAPE_DELAY_MS", 1500)) * time.Millisecond,
 		ScrapeUserAgent:     env("OPPAI_SCRAPE_USER_AGENT", DefaultScrapeUserAgent),
 		ScrapeRespectRobots: envBool("OPPAI_SCRAPE_RESPECT_ROBOTS", true),
+		F95Username:         env("OPPAI_F95_USERNAME", ""),
+		F95Password:         env("OPPAI_F95_PASSWORD", ""),
 		APKPath:         env("OPPAI_APK_PATH", "/app/apk/oppailib.apk"),
 		SessionTTL:      time.Duration(envInt("OPPAI_SESSION_TTL_HOURS", 720)) * time.Hour,
 		WebIdleTimeout:  time.Duration(envInt("OPPAI_WEB_IDLE_MINUTES", 60)) * time.Minute,

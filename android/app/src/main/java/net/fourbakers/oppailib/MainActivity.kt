@@ -17,16 +17,21 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import net.fourbakers.oppailib.data.Repository
 import net.fourbakers.oppailib.ui.LibraryScreen
 import net.fourbakers.oppailib.ui.LoginScreen
@@ -63,12 +68,26 @@ class MainActivity : FragmentActivity() {
         if (!granted) askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 
-    /** Shows the system biometric prompt; invokes [onSuccess] when unlocked. */
-    private fun promptBiometric(onSuccess: () -> Unit, onFail: () -> Unit) {
-        val canAuth = BiometricManager.from(this)
-            .canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_WEAK)
+    /**
+     * Shows the system unlock prompt and reports the outcome.
+     *
+     * The prompt accepts the device PIN/pattern as well as a biometric ([DEVICE_CREDENTIAL]
+     * alongside [BIOMETRIC_WEAK]): a fingerprint sensor that's briefly unavailable — busy
+     * right after the phone itself was unlocked, say — used to dead-end the lock screen with
+     * "something went wrong", and the PIN is the way through that. It also means no negative
+     * "Cancel" button (the framework forbids pairing one with a device-credential fallback);
+     * the way out is to authenticate or to leave the app.
+     *
+     * [onError] carries the message to show; an empty string means the user simply
+     * dismissed it (nothing worth flagging). Crucially, nothing here ever touches the
+     * session — a failed unlock leaves you locked, not logged out.
+     */
+    private fun promptBiometric(onSuccess: () -> Unit, onError: (String) -> Unit) {
+        val authenticators = BiometricManager.Authenticators.BIOMETRIC_WEAK or
+            BiometricManager.Authenticators.DEVICE_CREDENTIAL
+        val canAuth = BiometricManager.from(this).canAuthenticate(authenticators)
         if (canAuth != BiometricManager.BIOMETRIC_SUCCESS) {
-            onSuccess() // no biometric hardware/enrollment → don't lock the user out
+            onSuccess() // no biometric and no device lock → don't lock the user out
             return
         }
         val prompt = BiometricPrompt(
@@ -76,30 +95,86 @@ class MainActivity : FragmentActivity() {
             ContextCompat.getMainExecutor(this),
             object : BiometricPrompt.AuthenticationCallback() {
                 override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) = onSuccess()
-                override fun onAuthenticationError(code: Int, msg: CharSequence) = onFail()
+
+                override fun onAuthenticationError(code: Int, msg: CharSequence) {
+                    // A deliberate dismissal isn't a fault to surface; anything else is.
+                    val dismissed = code == BiometricPrompt.ERROR_USER_CANCELED ||
+                        code == BiometricPrompt.ERROR_CANCELED ||
+                        code == BiometricPrompt.ERROR_NEGATIVE_BUTTON
+                    onError(if (dismissed) "" else msg.toString())
+                }
+                // onAuthenticationFailed (a finger that didn't match) leaves the prompt up
+                // for another try, so it's not terminal and needs no handling here.
             },
         )
-        prompt.authenticate(
-            BiometricPrompt.PromptInfo.Builder()
-                .setTitle("Unlock OppaiLib")
-                .setSubtitle("Authenticate to view your library")
-                .setNegativeButtonText("Cancel")
-                .build(),
-        )
+        val info = BiometricPrompt.PromptInfo.Builder()
+            .setTitle("Unlock OppaiLib")
+            .setSubtitle("Authenticate to view your library")
+            .setAllowedAuthenticators(authenticators)
+            .build()
+        // Launching a prompt at a bad moment (a torn-down window) throws rather than
+        // calling back; catch it so it surfaces as a retryable error, not a crash.
+        runCatching { prompt.authenticate(info) }
+            .onFailure { onError(it.message ?: "Couldn't start authentication") }
     }
 }
 
 @Composable
 private fun AppRoot(
     repo: Repository,
-    biometric: (onSuccess: () -> Unit, onFail: () -> Unit) -> Unit,
+    biometric: (onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit,
 ) {
     var authed by remember { mutableStateOf(repo.hasSession) }
     var locked by remember { mutableStateOf(repo.hasSession && repo.prefs.biometricLock) }
+    // Guards the lock re-arm against the biometric prompt's own lifecycle: on some devices
+    // the system prompt drives the activity through ON_STOP, which would otherwise re-lock
+    // (harmless) and, worse, race the success callback. While a prompt is in flight this
+    // stays true, so background handling leaves it alone.
+    var authInProgress by remember { mutableStateOf(false) }
+    var lockError by remember { mutableStateOf<String?>(null) }
+
+    fun unlock() {
+        if (authInProgress) return
+        authInProgress = true
+        lockError = null
+        biometric(
+            { authInProgress = false; locked = false },
+            { msg -> authInProgress = false; lockError = msg },
+        )
+    }
+
+    // The lock re-arms when the app leaves the foreground (so returning to it needs an
+    // unlock), and the prompt is (re)raised when it comes back — which also covers the
+    // cold-start case, since registering an observer replays up to the current state.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_STOP ->
+                    if (authed && repo.prefs.biometricLock && !authInProgress) locked = true
+                Lifecycle.Event.ON_RESUME ->
+                    if (authed && locked && !authInProgress) unlock()
+                else -> {}
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     when {
         !authed -> LoginScreen(repo, onAuthed = { authed = true; locked = false })
-        locked -> LockScreen(onUnlock = { biometric({ locked = false }, { }) })
+        locked -> LockScreen(
+            error = lockError,
+            onUnlock = { unlock() },
+            // The escape hatch, so a phone whose sensor won't cooperate is never a
+            // dead end: sign out cleanly rather than the user having to clear app data.
+            onSignOut = {
+                repo.clearSession()
+                authed = false
+                locked = false
+                lockError = null
+            },
+        )
         else -> LibraryScreen(
             repo = repo,
             onLogout = { repo.clearSession(); authed = false },
@@ -108,13 +183,22 @@ private fun AppRoot(
 }
 
 @Composable
-private fun LockScreen(onUnlock: () -> Unit) {
+private fun LockScreen(error: String?, onUnlock: () -> Unit, onSignOut: () -> Unit) {
     Column(
         modifier = Modifier.fillMaxSize().padding(24.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text("OppaiLib is locked", style = MaterialTheme.typography.headlineSmall)
+        if (!error.isNullOrBlank()) {
+            Text(
+                error,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(top = 12.dp),
+            )
+        }
         Button(onClick = onUnlock, modifier = Modifier.padding(top = 16.dp)) { Text("Unlock") }
+        TextButton(onClick = onSignOut, modifier = Modifier.padding(top = 4.dp)) { Text("Sign out") }
     }
 }

@@ -84,9 +84,11 @@ func run(cfg *config.Config, log *slog.Logger) error {
 		log.Warn("loading site parsers", "err", err)
 	}
 	// Built-in parsers that need real code (not just CSS selectors): the X/Twitter
-	// API bypass and the itch.io game extractor. User YAML parsers still take
-	// priority for any host they match (they're earlier in the slice).
-	parsers = append(parsers, &scraper.TwitterParser{}, &scraper.ItchParser{})
+	// API bypass, the itch.io game extractor, and the F95 game extractor (which also
+	// signs in for members-only threads). User YAML parsers still take priority for
+	// any host they match (they're earlier in the slice). The F95 login is pushed in
+	// by ApplySettings below, so nothing here needs the credentials yet.
+	parsers = append(parsers, &scraper.TwitterParser{}, &scraper.ItchParser{}, &scraper.F95Parser{})
 	log.Info("scraper ready", "site_parsers", len(parsers))
 	sc := scraper.New(scraper.Options{
 		UserAgent:     cfg.ScrapeUserAgent,

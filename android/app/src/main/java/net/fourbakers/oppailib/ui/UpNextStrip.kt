@@ -69,11 +69,20 @@ fun UpNextStrip(
     items: List<StripItem>,
     current: Int,
     onPick: (Int) -> Unit,
+    /**
+     * Called with true while the user is actively scrubbing the strip and false once it
+     * settles. The chrome's idle timer watches this so the carousel doesn't vanish out
+     * from under a thumb that's still browsing it.
+     */
+    onBrowsing: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier.padding(top = 8.dp, bottom = 16.dp),
 ) {
     if (items.size < 2) return
     val context = LocalContext.current
     val row = rememberLazyListState()
+
+    // Report scrolling so the chrome holds still while the strip is being browsed.
+    LaunchedEffect(row.isScrollInProgress) { onBrowsing(row.isScrollInProgress) }
 
     // Keep the strip pointed at where the feed actually is. Landing the current tile one
     // in from the left leaves the *next* one visible, which is the whole point of it.

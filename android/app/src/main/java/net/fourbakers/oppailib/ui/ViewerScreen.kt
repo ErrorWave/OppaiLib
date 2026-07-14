@@ -1,6 +1,7 @@
 package net.fourbakers.oppailib.ui
 
 import android.app.Activity
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -149,6 +150,10 @@ fun ViewerScreen(
 ) {
     if (items.isEmpty()) { onClose(); return }
 
+    // The Android back button/gesture leaves the viewer, the same as the chrome's X —
+    // without this it would pop the activity and drop the user out of the app instead.
+    BackHandler { onClose() }
+
     val feed = rememberPagerState(initialPage = startIndex.coerceIn(0, items.lastIndex)) { items.size }
     var chrome by remember { mutableStateOf(true) }
     // A zoomed page owns the drag gesture; the feed must not steal it out from under.
@@ -191,8 +196,10 @@ fun ViewerScreen(
     // The chrome takes itself away over a playing video. Every touch of it pokes the
     // timer, so it only goes while you're actually just watching.
     var poke by remember { mutableIntStateOf(0) }
+    // True while the up-next strip is being scrubbed; the chrome must not auto-hide then.
+    var browsingUpNext by remember { mutableStateOf(false) }
     val playing = playingState(player)
-    ChromeAutoHide(active = chrome && playing, poke = poke) { chrome = false }
+    ChromeAutoHide(active = chrome && playing && !browsingUpNext, poke = poke) { chrome = false }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         VerticalPager(
@@ -244,6 +251,9 @@ fun ViewerScreen(
                                 },
                                 current = feed.currentPage,
                                 onPick = { poke++; scope.launch { feed.scrollToPage(it) } },
+                                // Browsing the strip holds the chrome open; when the scrub
+                                // settles, poke restarts the idle wait fresh from there.
+                                onBrowsing = { browsingUpNext = it; if (!it) poke++ },
                             )
                         }
                     },
@@ -658,23 +668,48 @@ private fun ComicPages(
 @Composable
 private fun ComicControls(comic: ComicReader) {
     if (!comic.readable) return
+    ComicScrubber(
+        pages = comic.pages,
+        pageCount = comic.pageCount,
+        rtl = comic.rtl,
+        stateKey = comic.media.id,
+        onToggleRtl = { comic.setRtl(!comic.rtl) },
+    )
+}
+
+/**
+ * The book as a bar: current page, a slider that maps onto the whole run of pages, and
+ * (when [onToggleRtl] is given) the reading-direction switch. Drives [pages] directly,
+ * so it is the one place the page scrubber lives — the library reader and the remote
+ * browse reader both hand it their pager. [stateKey] resets the in-flight drag when the
+ * open book changes underneath it.
+ */
+@Composable
+internal fun ComicScrubber(
+    pages: PagerState,
+    pageCount: Int,
+    rtl: Boolean,
+    stateKey: Any,
+    onToggleRtl: (() -> Unit)? = null,
+) {
+    if (pageCount <= 0) return
     val scope = rememberCoroutineScope()
-    var scrub by remember(comic.media.id) { mutableStateOf<Float?>(null) }
-    val page = scrub ?: comic.pages.currentPage.toFloat()
+    var scrub by remember(stateKey) { mutableStateOf<Float?>(null) }
+    val page = scrub ?: pages.currentPage.toFloat()
 
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            "${page.toInt() + 1} / ${comic.pageCount}",
+            "${page.toInt() + 1} / $pageCount",
             color = Color.White,
             style = MaterialTheme.typography.labelMedium,
         )
         // The slider is a spatial map of the book, so it has to run the same way the
         // pages do — otherwise dragging right would walk you backwards.
         CompositionLocalProvider(
-            LocalLayoutDirection provides if (comic.rtl) LayoutDirection.Rtl else LayoutDirection.Ltr,
+            LocalLayoutDirection provides if (rtl) LayoutDirection.Rtl else LayoutDirection.Ltr,
         ) {
             // Continuous, not stepped: a long book would otherwise draw a tick per page.
             Slider(
@@ -682,21 +717,23 @@ private fun ComicControls(comic: ComicReader) {
                 onValueChange = { scrub = it },
                 onValueChangeFinished = {
                     scrub?.let { target ->
-                        scope.launch { comic.pages.scrollToPage(target.toInt().coerceIn(0, comic.pageCount - 1)) }
+                        scope.launch { pages.scrollToPage(target.toInt().coerceIn(0, pageCount - 1)) }
                     }
                     scrub = null
                 },
-                valueRange = 0f..(comic.pageCount - 1).coerceAtLeast(1).toFloat(),
+                valueRange = 0f..(pageCount - 1).coerceAtLeast(1).toFloat(),
                 colors = whiteSlider(),
                 modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
             )
         }
-        IconButton(onClick = { comic.setRtl(!comic.rtl) }) {
-            Icon(
-                Icons.Filled.SwapHoriz,
-                contentDescription = if (comic.rtl) "Read left-to-right" else "Read right-to-left",
-                tint = if (comic.rtl) MaterialTheme.colorScheme.primary else Color.White,
-            )
+        onToggleRtl?.let { toggle ->
+            IconButton(onClick = toggle) {
+                Icon(
+                    Icons.Filled.SwapHoriz,
+                    contentDescription = if (rtl) "Read left-to-right" else "Read right-to-left",
+                    tint = if (rtl) MaterialTheme.colorScheme.primary else Color.White,
+                )
+            }
         }
     }
 }

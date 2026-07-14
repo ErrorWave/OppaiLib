@@ -27,6 +27,13 @@ type Settings struct {
 	ScrapeDelayMs       int    `json:"scrapeDelayMs"` // politeness delay per host
 	ScrapeUserAgent     string `json:"scrapeUserAgent"`
 	ScrapeRespectRobots bool   `json:"scrapeRespectRobots"`
+
+	// F95 login, used to fetch members-only f95zone.to game threads. The password
+	// is write-only over the API: it is stored and used, but never sent back in a
+	// GET (see Redacted). F95PasswordSet lets the UI show whether one is on file.
+	F95Username    string `json:"f95Username"`
+	F95Password    string `json:"f95Password"`
+	F95PasswordSet bool   `json:"f95PasswordSet"`
 }
 
 // Setting keys as stored in the settings table.
@@ -38,6 +45,8 @@ const (
 	keyScrapeDelayMs       = "scrape.delay_ms"
 	keyScrapeUserAgent     = "scrape.user_agent"
 	keyScrapeRespectRobots = "scrape.respect_robots"
+	keyF95Username         = "f95.username"
+	keyF95Password         = "f95.password"
 )
 
 // Defaults derives the baseline from environment config.
@@ -50,6 +59,8 @@ func Defaults(cfg *config.Config) Settings {
 		ScrapeDelayMs:       int(cfg.ScrapeDelay / time.Millisecond),
 		ScrapeUserAgent:     cfg.ScrapeUserAgent,
 		ScrapeRespectRobots: cfg.ScrapeRespectRobots,
+		F95Username:         cfg.F95Username,
+		F95Password:         cfg.F95Password,
 	}
 }
 
@@ -79,6 +90,14 @@ func Merge(base Settings, stored map[string]string) Settings {
 	if v, ok := parseBool(stored[keyScrapeRespectRobots]); ok {
 		s.ScrapeRespectRobots = v
 	}
+	// Presence, not emptiness, decides these: an empty stored value is a real choice
+	// ("no F95 login"), so a saved row always wins over the config default.
+	if v, ok := stored[keyF95Username]; ok {
+		s.F95Username = v
+	}
+	if v, ok := stored[keyF95Password]; ok {
+		s.F95Password = v
+	}
 	s.Clamp()
 	return s
 }
@@ -93,7 +112,18 @@ func (s Settings) Map() map[string]string {
 		keyScrapeDelayMs:       strconv.Itoa(s.ScrapeDelayMs),
 		keyScrapeUserAgent:     s.ScrapeUserAgent,
 		keyScrapeRespectRobots: strconv.FormatBool(s.ScrapeRespectRobots),
+		keyF95Username:         s.F95Username,
+		keyF95Password:         s.F95Password,
 	}
+}
+
+// Redacted returns a copy safe to hand back over the API: the F95 password is
+// stripped and reduced to the F95PasswordSet flag, so a GET never echoes the
+// stored credential.
+func (s Settings) Redacted() Settings {
+	s.F95PasswordSet = s.F95Password != ""
+	s.F95Password = ""
+	return s
 }
 
 // Clamp forces every field into a sane range. Called on load and before every
