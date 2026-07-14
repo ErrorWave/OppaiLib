@@ -1,5 +1,6 @@
 package net.fourbakers.oppailib.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -26,11 +27,15 @@ import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Collections
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Explore
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Gif
+import androidx.compose.material.icons.filled.HeartBroken
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Menu
@@ -38,9 +43,11 @@ import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material.icons.filled.Upload
+import androidx.compose.material.icons.outlined.Circle
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
@@ -82,15 +89,20 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import kotlinx.coroutines.launch
+import net.fourbakers.oppailib.data.BulkRequest
 import net.fourbakers.oppailib.data.Media
+import net.fourbakers.oppailib.data.MediaPatch
 import net.fourbakers.oppailib.data.PinnedFeed
 import net.fourbakers.oppailib.data.Repository
 import net.fourbakers.oppailib.data.SortMode
 import net.fourbakers.oppailib.util.copyUriToCache
 import net.fourbakers.oppailib.util.mimeOf
+import net.fourbakers.oppailib.work.ImportWorker
 
 /** Sidebar sections. The empty kind is the unfiltered "everything" view. */
 private data class Section(val kind: String, val label: String, val icon: ImageVector)
@@ -165,6 +177,12 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
     var sort by remember { mutableStateOf(repo.prefs.sortMode) }
     var sortMenu by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf<Media?>(null) }
+    // Favorites is a filter, not a kind: it cuts across all of them, and the server
+    // has no endpoint for it — the list already carries the flag.
+    var favoritesOnly by remember { mutableStateOf(false) }
+    // Non-empty means the grid is in selection mode: tiles toggle instead of opening.
+    var selected by remember { mutableStateOf(emptySet<Long>()) }
+    var confirmBulkDelete by remember { mutableStateOf(false) }
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -185,15 +203,62 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
         }
     }
 
+    /**
+     * The selection, favorited or unfavorited in one request.
+     *
+     * The grid is updated from the ids the server says it applied, not from the ids we
+     * sent: a bulk action can partly fail, and a tile that claims to be favorited when
+     * the server disagrees is worse than one that never changed.
+     */
+    fun favoriteSelection(favorite: Boolean) {
+        val ids = selected.toList()
+        scope.launch {
+            runCatching { repo.api.bulkMedia(BulkRequest("update", ids, MediaPatch(favorite = favorite))) }
+                .onSuccess { result ->
+                    val applied = result.ok.toSet()
+                    items = items.map { if (it.id in applied) it.copy(favorite = favorite) else it }
+                }
+            selected = emptySet()
+        }
+    }
+
+    fun deleteSelection() {
+        val ids = selected.toList()
+        scope.launch {
+            runCatching { repo.api.bulkMedia(BulkRequest("delete", ids)) }
+                .onSuccess { result ->
+                    val gone = result.ok.toSet()
+                    items = items.filterNot { it.id in gone }
+                }
+            selected = emptySet()
+        }
+    }
+
     val terms = remember(query) { query.trim().lowercase().split(' ').filter { it.isNotEmpty() } }
-    val shown = remember(items, terms, sort) {
-        val filtered = if (terms.isEmpty()) items else items.filter { matches(it, terms) }
+    val shown = remember(items, terms, sort, favoritesOnly) {
+        var filtered = if (terms.isEmpty()) items else items.filter { matches(it, terms) }
+        if (favoritesOnly) filtered = filtered.filter { it.favorite }
         sorted(filtered, sort)
     }
 
     LaunchedEffect(Unit) {
         refresh()
         runCatching { repo.api.health() }.getOrNull()?.let { aiTagger = if (it.aiEnabled) it.aiTagger else "off" }
+    }
+
+    // An import that finished while we were sitting here has put something in the
+    // library that the grid doesn't know about. Watching the worker is how the grid
+    // finds out — the alternative is a user staring at a stale screen after a
+    // notification told them their thread had landed.
+    LaunchedEffect(Unit) {
+        var known: Set<java.util.UUID>? = null
+        WorkManager.getInstance(context).getWorkInfosByTagFlow(ImportWorker.TAG).collect { infos ->
+            val done = infos.filter { it.state == WorkInfo.State.SUCCEEDED }.map { it.id }.toSet()
+            // The first emission is history — imports from previous runs of the app.
+            // Only a *newly* finished one is worth a reload.
+            if (known != null && (done - known!!).isNotEmpty()) refresh()
+            known = done
+        }
     }
 
     val uploadLauncher = rememberLauncherForActivityResult(
@@ -232,6 +297,32 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
             },
         )
         return
+    }
+
+    // Selection is a mode, and back is how you leave a mode — otherwise the only way
+    // out is the X, and back would drop you out of the library entirely.
+    BackHandler(enabled = selected.isNotEmpty()) { selected = emptySet() }
+
+    if (confirmBulkDelete) {
+        val n = selected.size
+        AlertDialog(
+            onDismissRequest = { confirmBulkDelete = false },
+            title = { Text(if (n == 1) "Delete this?" else "Delete $n items?") },
+            text = {
+                Text(
+                    "They'll be removed from the library and their files deleted. " +
+                        "This can't be undone.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { confirmBulkDelete = false; deleteSelection() }) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmBulkDelete = false }) { Text("Cancel") }
+            },
+        )
     }
 
     confirmDelete?.let { target ->
@@ -300,19 +391,44 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
                     NavigationDrawerItem(
                         icon = { Icon(section.icon, contentDescription = null) },
                         label = { Text(section.label) },
-                        selected = kind == section.kind,
+                        selected = kind == section.kind && !favoritesOnly,
                         onClick = {
                             scope.launch { drawer.close() }
+                            val wasFiltered = favoritesOnly
+                            favoritesOnly = false
                             if (kind != section.kind) {
                                 kind = section.kind
                                 query = ""
                                 searching = false
                                 refresh()
+                            } else if (wasFiltered) {
+                                query = ""
+                                searching = false
                             }
                         },
                         modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
                     )
                 }
+                // A filter rather than a kind — but it reads as a place you go, so it goes
+                // to the whole library and filters that. "Favorites" showing only favorite
+                // *videos*, because that's what you happened to be looking at, would be a
+                // section that means something different every time you open it.
+                NavigationDrawerItem(
+                    icon = { Icon(Icons.Filled.Favorite, contentDescription = null) },
+                    label = { Text("Favorites") },
+                    selected = favoritesOnly,
+                    onClick = {
+                        scope.launch { drawer.close() }
+                        favoritesOnly = true
+                        query = ""
+                        searching = false
+                        if (kind.isNotEmpty()) {
+                            kind = ""
+                            refresh()
+                        }
+                    },
+                    modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
+                )
                 HorizontalDivider(Modifier.padding(vertical = 8.dp))
                 NavigationDrawerItem(
                     icon = { Icon(Icons.Filled.Explore, contentDescription = null) },
@@ -380,6 +496,19 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
 
         Scaffold(
             topBar = {
+                if (selected.isNotEmpty()) {
+                    SelectionBar(
+                        count = selected.size,
+                        // Everything selected is already favorited → the heart's job is to
+                        // take it away. Anything else and it adds. One button, and it always
+                        // does the thing the selection isn't already.
+                        allFavorite = shown.filter { it.id in selected }.all { it.favorite },
+                        onClear = { selected = emptySet() },
+                        onSelectAll = { selected = shown.map { it.id }.toSet() },
+                        onFavorite = { favoriteSelection(it) },
+                        onDelete = { confirmBulkDelete = true },
+                    )
+                } else {
                 TopAppBar(
                     title = {
                         if (searching) {
@@ -398,7 +527,9 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
                                 modifier = Modifier.fillMaxWidth().focusRequester(focus),
                             )
                         } else {
-                            Text(SECTIONS.first { it.kind == kind }.label)
+                            Text(
+                                if (favoritesOnly) "Favorites" else SECTIONS.first { it.kind == kind }.label,
+                            )
                         }
                     },
                     navigationIcon = {
@@ -440,6 +571,7 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
                         }
                     },
                 )
+                }
             },
             floatingActionButton = {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -452,7 +584,13 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
                 when {
                     loading -> Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
                     shown.isEmpty() -> Box(Modifier.fillMaxSize(), Alignment.Center) {
-                        Text(if (terms.isEmpty()) "Nothing here yet." else "No matches for “$query”.")
+                        Text(
+                            when {
+                                terms.isNotEmpty() -> "No matches for “$query”."
+                                favoritesOnly -> "No favorites yet. Tap the heart on anything worth keeping."
+                                else -> "Nothing here yet."
+                            },
+                        )
                     }
                     else -> LazyVerticalGrid(
                         columns = GridCells.Adaptive(minSize = 150.dp),
@@ -464,8 +602,23 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
                             MediaTile(
                                 repo = repo,
                                 m = m,
-                                onClick = { viewerAt = index },
-                                onLongClick = { confirmDelete = m },
+                                selected = m.id in selected,
+                                selecting = selected.isNotEmpty(),
+                                // In selection mode a tap picks rather than opens: once
+                                // you're choosing several, opening one is not what a tap
+                                // on a tile can plausibly mean.
+                                onClick = {
+                                    if (selected.isEmpty()) {
+                                        viewerAt = index
+                                    } else {
+                                        selected = if (m.id in selected) selected - m.id else selected + m.id
+                                    }
+                                },
+                                // Long-press used to go straight to a delete dialog. It now
+                                // starts a selection, and delete is one of the things you can
+                                // then do to it — a press-and-hold is how a grid begins
+                                // choosing, not how it destroys something.
+                                onLongClick = { selected = selected + m.id },
                             )
                         }
                     }
@@ -475,9 +628,55 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
     }
 }
 
+/** The selection-mode app bar. Replaces the library's own while anything is picked. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SelectionBar(
+    count: Int,
+    allFavorite: Boolean,
+    onClear: () -> Unit,
+    onSelectAll: () -> Unit,
+    onFavorite: (Boolean) -> Unit,
+    onDelete: () -> Unit,
+) {
+    TopAppBar(
+        title = { Text("$count selected") },
+        navigationIcon = {
+            IconButton(onClick = onClear) {
+                Icon(Icons.Filled.Close, contentDescription = "Leave selection")
+            }
+        },
+        actions = {
+            IconButton(onClick = onSelectAll) {
+                Icon(Icons.Filled.SelectAll, contentDescription = "Select everything shown")
+            }
+            IconButton(onClick = { onFavorite(!allFavorite) }) {
+                Icon(
+                    if (allFavorite) Icons.Filled.HeartBroken else Icons.Filled.Favorite,
+                    contentDescription = if (allFavorite) "Remove from favorites" else "Add to favorites",
+                )
+            }
+            IconButton(onClick = onDelete) {
+                Icon(
+                    Icons.Filled.Delete,
+                    contentDescription = "Delete the selection",
+                    tint = MaterialTheme.colorScheme.error,
+                )
+            }
+        },
+    )
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MediaTile(repo: Repository, m: Media, onClick: () -> Unit, onLongClick: () -> Unit) {
+private fun MediaTile(
+    repo: Repository,
+    m: Media,
+    selected: Boolean,
+    selecting: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
     val context = LocalContext.current
     Box(
         Modifier.aspectRatio(0.75f).clip(RoundedCornerShape(16.dp))
@@ -541,5 +740,29 @@ private fun MediaTile(repo: Repository, m: Media, onClick: () -> Unit, onLongCli
             modifier = Modifier.align(Alignment.BottomStart)
                 .background(Color(0x99000000)).fillMaxWidth().padding(6.dp),
         )
+        // The heart marks a favorite from the grid, and gets out of the way while
+        // selecting — where the corner it lives in is the checkmark's.
+        if (m.favorite && !selecting) {
+            Icon(
+                Icons.Filled.Favorite,
+                contentDescription = "Favorite",
+                tint = Color(0xFFE91E63),
+                modifier = Modifier.align(Alignment.TopEnd).padding(6.dp).size(18.dp),
+            )
+        }
+        if (selecting) {
+            // A scrim, so a picked tile reads as picked at a glance across a full grid
+            // rather than by hunting for a small tick.
+            if (selected) {
+                Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)))
+            }
+            Icon(
+                if (selected) Icons.Filled.CheckCircle else Icons.Outlined.Circle,
+                contentDescription = if (selected) "Selected" else "Not selected",
+                tint = if (selected) MaterialTheme.colorScheme.primary else Color.White,
+                modifier = Modifier.align(Alignment.TopEnd).padding(6.dp).size(22.dp)
+                    .background(Color(0x66000000), CircleShape),
+            )
+        }
     }
 }

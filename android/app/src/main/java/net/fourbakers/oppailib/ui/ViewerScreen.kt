@@ -46,12 +46,18 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.LocalOffer
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay10
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -117,6 +123,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import net.fourbakers.oppailib.data.ComicInfo
 import net.fourbakers.oppailib.data.Media
+import net.fourbakers.oppailib.data.MediaPatch
 import net.fourbakers.oppailib.data.Repository
 import net.fourbakers.oppailib.data.VideoFit
 import java.net.URI
@@ -973,12 +980,36 @@ private fun Chrome(
     controls: @Composable () -> Unit,
 ) {
     var tagging by remember { mutableStateOf(false) }
+    var menu by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+
+    /**
+     * Sends an edit and adopts what comes back. The response is the row as it now
+     * stands — tags included — so it's the item, not a guess at it: no local
+     * reconstruction to drift out of step with the server.
+     */
+    fun patch(change: MediaPatch) {
+        scope.launch {
+            runCatching { repo.api.patchMedia(media.id, change) }.onSuccess {
+                onDetail(it)
+                onChanged(it)
+            }
+        }
+    }
 
     // The bars sit over the media, and a bar is not the media: swallow taps that land
     // on one. Without this they'd fall through to the page beneath — which for a comic
     // means brushing the metadata line would turn the page.
     val swallowTaps = Modifier.pointerInput(Unit) { detectTapGestures { } }
+
+    if (editing) {
+        EditMediaDialog(
+            media = media,
+            onDismiss = { editing = false },
+            onSave = { change -> editing = false; patch(change) },
+        )
+    }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -998,6 +1029,13 @@ private fun Chrome(
                 style = MaterialTheme.typography.labelSmall,
                 modifier = Modifier.padding(end = 8.dp),
             )
+            IconButton(onClick = { patch(MediaPatch(favorite = !media.favorite)) }) {
+                Icon(
+                    if (media.favorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                    contentDescription = if (media.favorite) "Remove from favorites" else "Add to favorites",
+                    tint = if (media.favorite) Color(0xFFE91E63) else Color.White,
+                )
+            }
             IconButton(onClick = {
                 tagging = true
                 scope.launch {
@@ -1009,8 +1047,31 @@ private fun Chrome(
                     tagging = false
                 }
             }) { Icon(Icons.Filled.AutoAwesome, "Auto-tag", tint = Color.White) }
-            IconButton(onClick = { onDelete(media) }) {
-                Icon(Icons.Filled.Delete, "Delete", tint = Color.White)
+            // Edit and delete moved behind an overflow: the top bar had run out of room
+            // once favouriting earned a place on it, and of the three, deleting is the
+            // one that should take an extra tap.
+            Box {
+                IconButton(onClick = { menu = true }) {
+                    Icon(Icons.Filled.MoreVert, "More", tint = Color.White)
+                }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Edit details") },
+                        leadingIcon = { Icon(Icons.Filled.Edit, contentDescription = null) },
+                        onClick = { menu = false; editing = true },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Filled.Delete,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.error,
+                            )
+                        },
+                        onClick = { menu = false; onDelete(media) },
+                    )
+                }
             }
             IconButton(onClick = onClose) { Icon(Icons.Filled.Close, "Close", tint = Color.White) }
         }
@@ -1027,19 +1088,42 @@ private fun Chrome(
                 Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                // Tapping the star you're already on clears the rating — otherwise a
+                // one-star item could never go back to being unrated.
+                StarRating(media.rating) { stars ->
+                    patch(MediaPatch(rating = if (stars == media.rating) 0 else stars))
+                }
+                Spacer(Modifier.weight(1f))
+                TagsDropdown(media, tagging, onSearchTag)
+            }
+            Row(
+                Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 val meta = buildString {
                     append(media.kind)
                     append(" · ${"%.1f".format(media.size / 1_000_000.0)} MB")
                     if (media.width != null) append(" · ${media.width}×${media.height}")
                     if (media.pageCount != null) append(" · ${media.pageCount} pages")
                 }
-                Text(
-                    meta,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color.White,
-                    modifier = Modifier.weight(1f),
+                Text(meta, style = MaterialTheme.typography.labelSmall, color = Color.White)
+            }
+        }
+    }
+}
+
+/** Five stars, tappable. Zero is unrated, which is what a fresh import always is. */
+@Composable
+private fun StarRating(rating: Int, onRate: (Int) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        (1..5).forEach { star ->
+            IconButton(onClick = { onRate(star) }, modifier = Modifier.size(32.dp)) {
+                Icon(
+                    if (star <= rating) Icons.Filled.Star else Icons.Filled.StarBorder,
+                    contentDescription = "Rate $star",
+                    tint = if (star <= rating) Color(0xFFFFC107) else Color(0x99FFFFFF),
+                    modifier = Modifier.size(20.dp),
                 )
-                TagsDropdown(media, tagging, onSearchTag)
             }
         }
     }

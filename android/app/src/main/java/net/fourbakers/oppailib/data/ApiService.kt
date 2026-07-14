@@ -2,14 +2,17 @@ package net.fourbakers.oppailib.data
 
 import okhttp3.MultipartBody
 import okhttp3.RequestBody
+import okhttp3.ResponseBody
 import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
 import retrofit2.http.Multipart
+import retrofit2.http.PATCH
 import retrofit2.http.POST
 import retrofit2.http.Part
 import retrofit2.http.Path
 import retrofit2.http.Query
+import retrofit2.http.Streaming
 
 interface ApiService {
     @GET("api/health")
@@ -33,6 +36,20 @@ interface ApiService {
 
     @GET("api/media/{id}")
     suspend fun getMedia(@Path("id") id: Long): Media
+
+    /** Returns the item as it now stands, tags included — no need to re-fetch it. */
+    @PATCH("api/media/{id}")
+    suspend fun patchMedia(@Path("id") id: Long, @Body body: MediaPatch): Media
+
+    /** One action over many ids. Capped at 500 by the server. */
+    @POST("api/media/bulk")
+    suspend fun bulkMedia(@Body body: BulkRequest): BulkResponse
+
+    @GET("api/stats")
+    suspend fun stats(): Stats
+
+    @POST("api/auth/password")
+    suspend fun changePassword(@Body body: PasswordRequest)
 
     @Multipart
     @POST("api/media")
@@ -89,4 +106,17 @@ interface ApiService {
 
     @POST("api/scrape/import")
     suspend fun scrapeImport(@Body body: ScrapeImportRequest): ImportResponse
+
+    // ── the app updating itself ──────────────────────────────────────────
+
+    @GET("api/apk/info")
+    suspend fun apkInfo(): ApkInfo
+
+    /**
+     * The APK itself — tens of megabytes, so @Streaming: the body is handed over as
+     * an open stream to write to disk, rather than being built up in memory first.
+     */
+    @Streaming
+    @GET("api/apk")
+    suspend fun downloadApk(): ResponseBody
 }

@@ -184,6 +184,8 @@ type MediaPatch struct {
 	Kind        string
 	SetRating   bool
 	Rating      int
+	SetFavorite bool
+	Favorite    bool
 	SetDownload bool
 	DownloadEnc []byte
 	SetGallery  bool
@@ -210,6 +212,10 @@ func (d *DB) UpdateMedia(ctx context.Context, id int64, p MediaPatch) error {
 	if p.SetRating {
 		sets = append(sets, "rating = ?")
 		args = append(args, p.Rating)
+	}
+	if p.SetFavorite {
+		sets = append(sets, "favorite = ?")
+		args = append(args, boolToInt(p.Favorite))
 	}
 	if p.SetDownload {
 		sets = append(sets, "download_enc = ?")

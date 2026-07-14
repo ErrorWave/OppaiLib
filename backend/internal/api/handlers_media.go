@@ -154,6 +154,7 @@ type mediaPatchReq struct {
 	Notes      *string  `json:"notes"`
 	Kind       *string  `json:"kind"`
 	Rating     *int     `json:"rating"`
+	Favorite   *bool    `json:"favorite"`
 	AddTags    []string `json:"addTags"`
 	RemoveTags []string `json:"removeTags"`
 }
@@ -184,7 +185,12 @@ func (s *Server) updateMediaByID(r *http.Request, id int64, p mediaPatchReq) err
 		patch.SetKind, patch.Kind = true, *p.Kind
 	}
 	if p.Rating != nil {
-		patch.SetRating, patch.Rating = true, *p.Rating
+		// Stars, not a free-form score: anything outside 0–5 is a client bug, and
+		// storing it would put a row in the table no UI can render or clear.
+		patch.SetRating, patch.Rating = true, min(max(*p.Rating, 0), 5)
+	}
+	if p.Favorite != nil {
+		patch.SetFavorite, patch.Favorite = true, *p.Favorite
 	}
 	if err := s.db.UpdateMedia(ctx, id, patch); err != nil {
 		return err

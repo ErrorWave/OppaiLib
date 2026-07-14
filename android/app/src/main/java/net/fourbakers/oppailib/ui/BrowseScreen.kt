@@ -75,6 +75,7 @@ import net.fourbakers.oppailib.data.Repository
 import net.fourbakers.oppailib.data.SourceFeed
 import net.fourbakers.oppailib.data.SourceItem
 import net.fourbakers.oppailib.data.SourceSaveRequest
+import net.fourbakers.oppailib.work.ImportWorker
 
 /**
  * Browses a remote catalogue — a 4chan board, a doujin listing — without importing
@@ -117,7 +118,7 @@ fun BrowseScreen(repo: Repository, openAt: PinnedFeed? = null, onBack: () -> Uni
     var error by remember { mutableStateOf<String?>(null) }
     var viewerAt by remember { mutableStateOf<Int?>(null) }
     var pinned by remember { mutableStateOf(repo.prefs.pinnedFeeds) }
-    var savingThread by remember { mutableStateOf(false) }
+    val context = LocalContext.current
 
     // The thread whose comments are open, if any.
     var commentsFor by remember { mutableStateOf<SourceItem?>(null) }
@@ -317,34 +318,32 @@ fun BrowseScreen(repo: Repository, openAt: PinnedFeed? = null, onBack: () -> Uni
                         }
                     }
                     // A whole thread saves as one comic: its images, in post order.
+                    //
+                    // Handed to a worker rather than run here: the server pulls every
+                    // image with a delay between them and answers only when it's done,
+                    // which for a long thread is minutes. Backing out of this screen used
+                    // to abandon that halfway through. Now the notification owns it, and
+                    // this screen is free to leave.
                     container?.let { thread ->
                         IconButton(
-                            enabled = !savingThread,
                             onClick = {
-                                savingThread = true
+                                ImportWorker.saveFromSource(
+                                    context,
+                                    sourceId = source?.id.orEmpty(),
+                                    req = SourceSaveRequest(
+                                        itemId = thread.id,
+                                        pageUrl = thread.pageUrl.ifEmpty { null },
+                                        title = thread.title.ifEmpty { null },
+                                        kind = "comic",
+                                    ),
+                                    label = thread.title.ifEmpty { "Thread" },
+                                )
                                 scope.launch {
-                                    runCatching {
-                                        repo.api.saveFromSource(
-                                            source?.id.orEmpty(),
-                                            SourceSaveRequest(
-                                                itemId = thread.id,
-                                                pageUrl = thread.pageUrl.ifEmpty { null },
-                                                title = thread.title.ifEmpty { null },
-                                                kind = "comic",
-                                            ),
-                                        )
-                                    }
-                                        .onSuccess { snackbar.showSnackbar("Saved the thread to your library") }
-                                        .onFailure { snackbar.showSnackbar(it.message ?: "Couldn't save that thread") }
-                                    savingThread = false
+                                    snackbar.showSnackbar("Saving the thread in the background")
                                 }
                             },
                         ) {
-                            if (savingThread) {
-                                CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(20.dp))
-                            } else {
-                                Icon(Icons.Filled.Download, contentDescription = "Save this whole thread")
-                            }
+                            Icon(Icons.Filled.Download, contentDescription = "Save this whole thread")
                         }
                     }
                     if (pin != null) {

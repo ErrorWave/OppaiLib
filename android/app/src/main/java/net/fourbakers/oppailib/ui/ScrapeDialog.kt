@@ -31,6 +31,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import kotlinx.coroutines.launch
@@ -38,6 +39,7 @@ import net.fourbakers.oppailib.data.Repository
 import net.fourbakers.oppailib.data.ScrapeImportRequest
 import net.fourbakers.oppailib.data.ScrapeResult
 import net.fourbakers.oppailib.data.UrlRequest
+import net.fourbakers.oppailib.work.ImportWorker
 
 @Composable
 fun ScrapeDialog(repo: Repository, onDismiss: () -> Unit, onImported: () -> Unit) {
@@ -47,6 +49,7 @@ fun ScrapeDialog(repo: Repository, onDismiss: () -> Unit, onImported: () -> Unit
     var error by remember { mutableStateOf<String?>(null) }
     val chosen = remember { mutableStateMapOf<String, Boolean>() }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -108,21 +111,22 @@ fun ScrapeDialog(repo: Repository, onDismiss: () -> Unit, onImported: () -> Unit
                 enabled = !busy && (result?.mediaUrls?.any { chosen[it] == true } == true),
                 onClick = {
                     val r = result ?: return@Button
-                    busy = true
-                    scope.launch {
-                        try {
-                            repo.api.scrapeImport(
-                                ScrapeImportRequest(
-                                    url = url,
-                                    mediaUrls = r.mediaUrls.filter { chosen[it] == true },
-                                    title = r.title,
-                                    tags = r.tags,
-                                    categorizedTags = r.categorizedTags,
-                                ),
-                            )
-                            onImported()
-                        } catch (e: Exception) { error = e.message } finally { busy = false }
-                    }
+                    // The server fetches each chosen image itself, politely — a gallery of
+                    // fifty takes minutes and says nothing until it's done. So the import
+                    // is handed to a worker and the dialog closes: it finishes whether or
+                    // not the app is still on screen, and the notification reports it.
+                    ImportWorker.scrapeImport(
+                        context,
+                        req = ScrapeImportRequest(
+                            url = url,
+                            mediaUrls = r.mediaUrls.filter { chosen[it] == true },
+                            title = r.title,
+                            tags = r.tags,
+                            categorizedTags = r.categorizedTags,
+                        ),
+                        label = r.title.ifBlank { "Import" },
+                    )
+                    onImported()
                 },
             ) { Text("Import") }
         },

@@ -1,8 +1,12 @@
 package net.fourbakers.oppailib
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.compose.foundation.layout.Arrangement
@@ -29,9 +33,14 @@ import net.fourbakers.oppailib.ui.LoginScreen
 import net.fourbakers.oppailib.ui.theme.OppaiTheme
 
 class MainActivity : FragmentActivity() {
+
+    private val askNotifications =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* declined is fine */ }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        requestNotificationsIfNeeded()
         val repo = OppaiApp.from(this).repository
         setContent {
             OppaiTheme {
@@ -40,6 +49,18 @@ class MainActivity : FragmentActivity() {
                 }
             }
         }
+    }
+
+    /**
+     * Asks for notifications on the versions that gate them (13+). Only imports post
+     * any, and a refusal costs nothing more than a silent one — so it's asked for once
+     * on launch and never insisted on.
+     */
+    private fun requestNotificationsIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+        if (!granted) askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 
     /** Shows the system biometric prompt; invokes [onSuccess] when unlocked. */

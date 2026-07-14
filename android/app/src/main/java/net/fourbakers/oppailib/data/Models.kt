@@ -65,6 +65,77 @@ data class ComicInfo(
     val reason: String? = null,
 )
 
+/**
+ * An edit to one item. Every field is nullable and defaults to null, and the Json
+ * encoder omits defaults — so a patch carries only what the user actually touched,
+ * and the server leaves the rest of the row alone. Sending `favorite = false` still
+ * writes, because false differs from the null default.
+ */
+@Serializable
+data class MediaPatch(
+    val title: String? = null,
+    val notes: String? = null,
+    /** Stars, 0–5. Zero means unrated; the server clamps anything out of range. */
+    val rating: Int? = null,
+    val favorite: Boolean? = null,
+    val addTags: List<String> = emptyList(),
+    val removeTags: List<String> = emptyList(),
+)
+
+/** [action] is "delete" or "update"; [patch] is ignored for a delete. */
+@Serializable
+data class BulkRequest(
+    val action: String,
+    val ids: List<Long>,
+    val patch: MediaPatch = MediaPatch(),
+)
+
+/**
+ * Which ids the server actually applied the action to. One bad id doesn't sink the
+ * batch, so the two lists are how the caller learns a partial result happened.
+ */
+@Serializable
+data class BulkResponse(
+    val ok: List<Long> = emptyList(),
+    val failed: List<Long> = emptyList(),
+)
+
+@Serializable
+data class KindStat(val kind: String, val count: Long = 0, val bytes: Long = 0)
+
+@Serializable
+data class Stats(
+    val kinds: List<KindStat> = emptyList(),
+    val items: Long = 0,
+    val bytes: Long = 0,
+    val tags: Long = 0,
+)
+
+@Serializable
+data class PasswordRequest(
+    val current: String,
+    @SerialName("new") val newPassword: String,
+)
+
+/**
+ * The APK this server is offering. [available] is false when the image was built
+ * without one.
+ *
+ * There is no version number here, and that's deliberate: the server holds a file,
+ * not a release manifest, and an operator can drop their own build into /config. So
+ * the app decides whether an update is on offer by comparing [sha256] against the
+ * hash of the APK it is itself running — a build that differs is a build worth
+ * offering, and after installing it the two hashes agree and the offer goes away.
+ */
+@Serializable
+data class ApkInfo(
+    val available: Boolean = false,
+    val size: Long = 0,
+    val sha256: String = "",
+    val modified: Long = 0,
+    val filename: String = "oppailib.apk",
+)
+
 @Serializable
 data class User(val id: Long, val username: String, val isAdmin: Boolean = false)
 
