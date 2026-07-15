@@ -3,6 +3,7 @@ import { customElement, state, query } from "lit/decorators.js";
 import { api, type ScrapeResult } from "../api.js";
 import { motionStyles } from "../theme.js";
 import { KIND_ORDER, KIND_META } from "../media-meta.js";
+import { runDownload } from "../downloads.js";
 
 // Paste one or more URLs (one per line) → preview extracted metadata + media →
 // import selected assets. A single URL and a bulk paste share the same flow.
@@ -194,23 +195,21 @@ export class OppaiScrapeDialog extends LitElement {
     this.chosen = next;
   }
 
-  // The type a given result imports as: the user's explicit pick if they made
-  // one, else whatever the scraper detected for that result on its own.
-  private kindFor(r: ScrapeResult): string {
-    return this.kindTouched ? this.kind : r.kind || this.kind;
-  }
-
-  private async import() {
+  private import() {
     if (this.busy) return;
     if (!this.isGame && this.chosen.size === 0) return;
     if (this.isGame && this.results.length === 0) return;
-    this.busy = true;
-    this.phase = "importing";
     this.error = "";
-    let imported = 0;
-    try {
-      for (const r of this.results) {
-        const kind = this.kindFor(r);
+    const results = [...this.results];
+    const chosen = new Set(this.chosen);
+    const kindTouched = this.kindTouched;
+    const selectedKind = this.kind;
+    const label = results.length === 1 ? results[0].title || "Import" : `${results.length} imports`;
+    runDownload(label, async (report) => {
+      let imported = 0;
+      let finished = 0;
+      for (const r of results) {
+        const kind = kindTouched ? selectedKind : r.kind || selectedKind;
         if (kind === "game") {
           // One enriched game entry per page (cover, description, screenshots,
           // download link) — the server re-scrapes and builds the row.
@@ -222,10 +221,14 @@ export class OppaiScrapeDialog extends LitElement {
             kind: "game",
           });
           imported += res.count;
+          report(++finished / results.length);
           continue;
         }
-        const picked = r.mediaUrls.filter((u) => this.chosen.has(u));
-        if (picked.length === 0) continue;
+        const picked = r.mediaUrls.filter((u) => chosen.has(u));
+        if (picked.length === 0) {
+          report(++finished / results.length);
+          continue;
+        }
         // A comic's pages are bundled server-side into one CBZ entry; every other
         // kind imports one row per selected asset.
         const res = await api.scrapeImport({
@@ -237,17 +240,13 @@ export class OppaiScrapeDialog extends LitElement {
           kind,
         });
         imported += res.count;
+        report(++finished / results.length);
       }
       this.dispatchEvent(
         new CustomEvent("imported", { detail: { count: imported }, bubbles: true, composed: true }),
       );
-      this.dialog.close();
-    } catch (e) {
-      this.error = (e as Error).message;
-    } finally {
-      this.busy = false;
-      this.phase = "";
-    }
+    });
+    this.dialog.close();
   }
 
   private renderGroup(r: ScrapeResult) {

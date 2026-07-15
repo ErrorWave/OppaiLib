@@ -3,6 +3,7 @@ import { customElement, property, state } from "lit/decorators.js";
 import { api, type Media, type User } from "../api.js";
 import { iconStyles, motionStyles } from "../theme.js";
 import { logoSVG } from "../logo.js";
+import { dismissDownload, downloadTasks, type DownloadTask } from "../downloads.js";
 import {
   KIND_META,
   KIND_ORDER,
@@ -78,6 +79,7 @@ export class OppaiLibrary extends LitElement {
   @state() private selectMode = false;
   @state() private selected = new Set<number>();
   @state() private busy = false;
+  @state() private downloads: DownloadTask[] = downloadTasks();
 
   static styles = [
     iconStyles,
@@ -623,6 +625,29 @@ export class OppaiLibrary extends LitElement {
         opacity: 0.5;
         cursor: default;
       }
+      .download-area {
+        position: absolute; right: 22px; bottom: 86px; z-index: 24;
+        width: min(360px, calc(100vw - 44px)); padding: 12px;
+        border: 1px solid var(--oppai-border); border-radius: 18px;
+        background: color-mix(in srgb, var(--oppai-surface-2) 94%, transparent);
+        box-shadow: 0 14px 44px rgba(0, 0, 0, .48); backdrop-filter: blur(16px);
+        animation: oppai-scale-in .24s var(--oppai-ease-spring) both;
+      }
+      .download-heading { font-size: 12px; font-weight: 700; opacity: .72; padding: 0 4px 7px; }
+      .download-row { display: flex; align-items: center; gap: 11px; min-height: 48px; padding: 5px 4px; }
+      .download-row + .download-row { border-top: 1px solid var(--oppai-border); }
+      .download-ring {
+        width: 36px; height: 36px; flex: 0 0 36px; border-radius: 50%;
+        display: grid; place-items: center; color: var(--oppai-primary-bright);
+        background: conic-gradient(var(--oppai-primary) calc(var(--p) * 1turn), var(--oppai-border) 0);
+        transition: background .8s linear; position: relative;
+      }
+      .download-ring::before { content: ""; position: absolute; inset: 3px; border-radius: 50%; background: var(--oppai-surface-2); }
+      .download-ring span { position: relative; z-index: 1; font-size: 19px; }
+      .download-copy { min-width: 0; flex: 1; }
+      .download-title { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .download-status { font-size: 11px; opacity: .68; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .download-dismiss { border: 0; background: none; color: inherit; opacity: .66; cursor: pointer; padding: 5px; }
       .header-toggle.on {
         background: var(--oppai-primary-container);
         color: var(--oppai-primary-bright);
@@ -639,11 +664,21 @@ export class OppaiLibrary extends LitElement {
     super.connectedCallback();
     this.refresh();
     window.addEventListener("keydown", this.onKey);
+    window.addEventListener("oppai-downloads", this.onDownloads as EventListener);
+    window.addEventListener("oppai-download-complete", this.onDownloadComplete);
   }
   disconnectedCallback() {
     super.disconnectedCallback();
     window.removeEventListener("keydown", this.onKey);
+    window.removeEventListener("oppai-downloads", this.onDownloads as EventListener);
+    window.removeEventListener("oppai-download-complete", this.onDownloadComplete);
   }
+
+  private onDownloads = (event: CustomEvent<DownloadTask[]>) => {
+    this.downloads = event.detail;
+  };
+
+  private onDownloadComplete = () => this.refresh();
 
   // In the viewer, Left/Right page between items and Escape closes it. Guarded so
   // it never fires while typing in the search box or with the upload dialog open.
@@ -940,9 +975,32 @@ export class OppaiLibrary extends LitElement {
       </div>
       ${this.renderUpload()}
       ${this.renderBulkBar()}
+      ${this.renderDownloads()}
       <oppai-scrape-dialog @imported=${() => this.refresh()}></oppai-scrape-dialog>
       <input id="file" type="file" multiple @change=${this.onFileInput} />
     `;
+  }
+
+  private renderDownloads() {
+    if (this.downloads.length === 0) return nothing;
+    return html`<aside class="download-area" aria-label="Downloads">
+      <div class="download-heading">Downloads</div>
+      ${this.downloads.slice(0, 5).map((task) => html`
+        <div class="download-row">
+          <div class="download-ring" style=${`--p:${task.progress}`}>
+            <span class="material-symbols-rounded">${task.state === "done" ? "check" : task.state === "error" ? "error" : "download"}</span>
+          </div>
+          <div class="download-copy">
+            <div class="download-title">${task.label}</div>
+            <div class="download-status">${task.state === "running"
+              ? `${Math.round(task.progress * 100)}% · running in background`
+              : task.state === "done" ? "Complete" : task.error || "Failed"}</div>
+          </div>
+          ${task.state !== "running" ? html`<button class="download-dismiss" title="Dismiss" @click=${() => dismissDownload(task.id)}>
+            <span class="material-symbols-rounded">close</span>
+          </button>` : nothing}
+        </div>`)}
+    </aside>`;
   }
 
   private renderBulkBar() {

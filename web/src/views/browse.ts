@@ -8,6 +8,7 @@ import {
   type SourceFeed,
   type SourceItem,
 } from "../api.js";
+import { runDownload } from "../downloads.js";
 
 /**
  * Browses a remote catalogue — a 4chan board, a doujin listing — without importing
@@ -878,28 +879,29 @@ export class OppaiBrowse extends LitElement {
   };
 
   /** Saves one item, or — from the thread header — the whole thread as a comic. */
-  private async save(item: SourceItem | null) {
+  private save(item: SourceItem | null) {
     if (!item || this.saving) return;
     // A thread's payload is its run of images, which only the server can resolve; it
     // lands in the library as a comic. So does a gallery. Everything else is one file.
     const multiPage = item.kind === "comic" || item.kind === "thread";
     this.saving = true;
-    try {
-      await api.saveFromSource(this.sourceId, {
-        itemId: multiPage ? item.id : undefined,
-        mediaUrl: multiPage ? undefined : item.mediaUrl,
-        pageUrl: item.pageUrl,
-        title: item.title,
-        kind: multiPage ? "comic" : item.kind,
-      });
-      this.showToast(item.kind === "thread" ? "Saved the thread to your library" : "Saved to library");
-      // The library behind this view is now stale.
-      this.dispatchEvent(new CustomEvent("imported", { bubbles: true, composed: true }));
-    } catch (e) {
-      this.showToast(e instanceof Error ? e.message : "Save failed");
-    } finally {
-      this.saving = false;
-    }
+    runDownload(item.title || "Source download", async (report) => {
+      try {
+        report(0.08);
+        await api.saveFromSource(this.sourceId, {
+          itemId: multiPage ? item.id : undefined,
+          mediaUrl: multiPage ? undefined : item.mediaUrl,
+          pageUrl: item.pageUrl,
+          title: item.title,
+          kind: multiPage ? "comic" : item.kind,
+        });
+        report(1);
+        this.dispatchEvent(new CustomEvent("imported", { bubbles: true, composed: true }));
+      } finally {
+        this.saving = false;
+      }
+    });
+    this.showToast(item.kind === "thread" ? "Downloading thread in background" : "Downloading in background");
   }
 
   private showToast(msg: string) {

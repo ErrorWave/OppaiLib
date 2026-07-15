@@ -72,10 +72,13 @@ Then build:
 # → app/build/outputs/apk/debug/app-debug.apk
 ```
 
-A local `assembleRelease` is minified but **unsigned** unless you export the
-same `ANDROID_KEYSTORE_FILE` / `ANDROID_KEYSTORE_PASSWORD` / `ANDROID_KEY_ALIAS`
-/ `ANDROID_KEY_PASSWORD` environment variables that CI uses. An unsigned APK
-will not install — sign it with `apksigner`, or just let CI build it.
+A local `assembleRelease` is minified and signed with your machine's stable debug
+key unless you export the same `ANDROID_KEYSTORE_FILE` /
+`ANDROID_KEYSTORE_PASSWORD` / `ANDROID_KEY_ALIAS` / `ANDROID_KEY_PASSWORD`
+environment variables that CI uses. That makes local release APKs installable and
+able to replace other builds from the same machine. Public updates still require the
+one persistent release key configured in CI; Android will not replace an app signed
+by a different key.
 
 ## Sideload
 
