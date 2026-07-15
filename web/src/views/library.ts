@@ -680,11 +680,18 @@ export class OppaiLibrary extends LitElement {
   private async refresh() {
     this.loading = true;
     try {
-      // No search/favorite endpoints server-side; fetch the library once and
-      // filter client-side, matching the design's model. The list carries each
-      // item's tags, which is what makes tag search and the filter chips work.
-      const res = await api.listMedia("", 500, 0);
-      this.items = res.items ?? [];
+      // Search/favorites are client-side, so the web client needs the whole library.
+      // The API caps a page at 200; asking for 500 fell back to its 50-item default,
+      // which made older images disappear from the desktop UI.
+      const pageSize = 200;
+      const all: Media[] = [];
+      for (let offset = 0; ; offset += pageSize) {
+        const res = await api.listMedia("", pageSize, offset);
+        const page = res.items ?? [];
+        all.push(...page);
+        if (page.length < pageSize) break;
+      }
+      this.items = all;
     } finally {
       this.loading = false;
     }

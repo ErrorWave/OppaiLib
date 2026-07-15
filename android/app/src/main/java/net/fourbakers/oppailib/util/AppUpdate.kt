@@ -2,7 +2,10 @@ package net.fourbakers.oppailib.util
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageInfo
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.provider.Settings
 import androidx.core.content.FileProvider
 import java.io.File
@@ -91,10 +94,34 @@ object AppUpdate {
      */
     fun install(context: Context, apk: File) {
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.updates", apk)
-        val intent = Intent(Intent.ACTION_VIEW)
-            .setDataAndType(uri, "application/vnd.android.package-archive")
+        val intent = Intent(Intent.ACTION_INSTALL_PACKAGE)
+            .setData(uri)
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         context.startActivity(intent)
+    }
+
+    /**
+     * Checks the failures Android's package installer otherwise collapses into the
+     * unhelpful “App not installed” message.
+     */
+    fun validateInstall(context: Context, apk: File): Result<Unit> = runCatching {
+        val pm = context.packageManager
+        val archive = packageArchive(pm, apk.absolutePath)
+            ?: error("The downloaded file is not a valid APK.")
+        val installed = installedPackage(pm, context.packageName)
+
+        if (archive.packageName != context.packageName) {
+            error("This APK is for ${archive.packageName}, not ${context.packageName}.")
+        }
+        if (versionCode(archive) < versionCode(installed)) {
+            error("The server APK is older than the installed app.")
+        }
+        if (signerDigests(archive) != signerDigests(installed)) {
+            error(
+                "This update was signed with a different key. Uninstall OppaiLib once, " +
+                    "install the server copy, and future consistently signed updates will work.",
+            )
+        }
     }
 
     /**
@@ -121,5 +148,41 @@ object AppUpdate {
             }
         }
         return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun packageArchive(pm: PackageManager, path: String): PackageInfo? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            pm.getPackageArchiveInfo(path, PackageManager.GET_SIGNING_CERTIFICATES)
+        } else {
+            pm.getPackageArchiveInfo(path, PackageManager.GET_SIGNATURES)
+        }
+
+    @Suppress("DEPRECATION")
+    private fun installedPackage(pm: PackageManager, name: String): PackageInfo =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            pm.getPackageInfo(name, PackageManager.PackageInfoFlags.of(PackageManager.GET_SIGNING_CERTIFICATES.toLong()))
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            pm.getPackageInfo(name, PackageManager.GET_SIGNING_CERTIFICATES)
+        } else {
+            pm.getPackageInfo(name, PackageManager.GET_SIGNATURES)
+        }
+
+    @Suppress("DEPRECATION")
+    private fun versionCode(info: PackageInfo): Long =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) info.longVersionCode else info.versionCode.toLong()
+
+    @Suppress("DEPRECATION")
+    private fun signerDigests(info: PackageInfo): Set<String> {
+        val signatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val signing = info.signingInfo ?: return emptySet()
+            if (signing.hasMultipleSigners()) signing.apkContentsSigners else signing.signingCertificateHistory
+        } else {
+            info.signatures
+        }
+        return signatures.orEmpty().map { signature ->
+            MessageDigest.getInstance("SHA-256").digest(signature.toByteArray())
+                .joinToString("") { "%02x".format(it) }
+        }.toSet()
     }
 }

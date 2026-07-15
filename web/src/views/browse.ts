@@ -58,6 +58,9 @@ export class OppaiBrowse extends LitElement {
   @state() private comments: SourceComment[] = [];
   @state() private commentsLoading = false;
   @state() private commentsError = "";
+  @state() private commentQuery = "";
+  @state() private threadQuery = "";
+  @state() private threadDraft = "";
 
   /**
    * Stamps each browse request so a late reply from a board we've left can't land in
@@ -142,6 +145,26 @@ export class OppaiBrowse extends LitElement {
         color: var(--oppai-primary-bright);
         border-color: var(--oppai-border-strong);
       }
+      .feed-select {
+        min-width: 190px;
+        height: 40px;
+        padding: 0 38px 0 14px;
+        border-radius: 12px;
+        border: 1px solid var(--oppai-border-strong);
+        background: var(--oppai-surface-2);
+        color: var(--oppai-text);
+        font: inherit;
+        cursor: pointer;
+      }
+      .thread-tools {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        margin: 14px 0 22px;
+        flex-wrap: wrap;
+      }
+      .thread-tools .searchbox { max-width: 420px; }
+      .add-thread { margin-left: auto; margin-top: 0; margin-bottom: 0; }
 
       /* Search */
       .searchbar {
@@ -572,6 +595,17 @@ export class OppaiBrowse extends LitElement {
       .cquote {
         color: var(--oppai-primary-bright);
       }
+      button.cquote {
+        border: 0;
+        padding: 0;
+        background: none;
+        font: inherit;
+        cursor: pointer;
+        text-decoration: underline;
+        text-underline-offset: 2px;
+      }
+      .comment-search { padding: 10px 12px 2px; }
+      .comment-search .searchbox { max-width: none; height: 40px; }
 
       .toast {
         position: fixed;
@@ -585,6 +619,14 @@ export class OppaiBrowse extends LitElement {
         z-index: 60;
         box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
         animation: oppai-fade-in-up 0.28s var(--oppai-ease-emphasized) both;
+      }
+      @media (max-width: 600px) {
+        .head { align-items: flex-start; flex-wrap: wrap; }
+        .head-actions { width: 100%; margin-left: 0; flex-wrap: wrap; }
+        .cthumb { width: min(240px, 72vw); max-width: 100%; }
+        .thread-tools { align-items: stretch; }
+        .thread-tools .searchbox { max-width: none; width: 100%; }
+        .add-thread { margin-left: 0; width: 100%; }
       }
     `,
   ];
@@ -607,6 +649,9 @@ export class OppaiBrowse extends LitElement {
   /** The feed actually being fetched: the thread if we're in one, else the chip. */
   private get activeFeed(): string {
     return this.container?.feedId ?? this.feedId;
+  }
+  private get isFourChan(): boolean {
+    return this.sourceId === "4chan";
   }
 
   private async loadSources() {
@@ -697,6 +742,30 @@ export class OppaiBrowse extends LitElement {
     this.reset();
   }
 
+  private addThread(e: Event) {
+    e.preventDefault();
+    const raw = this.threadDraft.trim();
+    const match = raw.match(/(?:boards\.4chan\.org\/)?([a-z0-9]+)\/(?:thread\/)?(\d+)/i)
+      ?? raw.match(/^\/?([a-z0-9]+):t?(\d+)$/i);
+    if (!match) {
+      this.showToast("Enter a 4chan thread URL or board:thread number");
+      return;
+    }
+    const board = match[1].toLowerCase();
+    const no = match[2];
+    const threadId = `${board}:t${no}`;
+    if (this.source?.feeds.some((f) => f.id === board)) this.feedId = board;
+    this.threadDraft = "";
+    this.openContainer({
+      id: threadId,
+      title: `/${board}/ thread No.${no}`,
+      kind: "thread",
+      thumbUrl: "",
+      feedId: threadId,
+      threadId,
+    });
+  }
+
   private pickSort(id: string) {
     if (id === this.sort) return;
     this.sort = id;
@@ -706,6 +775,7 @@ export class OppaiBrowse extends LitElement {
   /** Opens a container — a thread — as a feed of its own. */
   private openContainer(item: SourceItem) {
     this.container = item;
+    this.threadQuery = "";
     this.reset();
   }
 
@@ -781,6 +851,7 @@ export class OppaiBrowse extends LitElement {
     this.commentsFor = item;
     this.comments = [];
     this.commentsError = "";
+    this.commentQuery = "";
     this.commentsLoading = true;
     try {
       const { comments } = await api.sourceComments(this.sourceId, thread);
@@ -991,6 +1062,12 @@ export class OppaiBrowse extends LitElement {
    */
   private renderComments(item: SourceItem) {
     const at = item.postNo;
+    const needle = this.commentQuery.trim().toLowerCase();
+    const comments = needle
+      ? this.comments.filter((c) =>
+          [String(c.no), c.name, c.subject, c.text].some((v) => (v ?? "").toLowerCase().includes(needle)),
+        )
+      : this.comments;
     return html`
       <div
         class="overlay comments"
@@ -1004,14 +1081,26 @@ export class OppaiBrowse extends LitElement {
             </button>
           </div>
 
+          <div class="comment-search">
+            <label class="searchbox">
+              <span class="material-symbols-rounded" style="font-size:19px; color:var(--oppai-text-dim);">search</span>
+              <input
+                type="search"
+                placeholder="Search this thread…"
+                .value=${this.commentQuery}
+                @input=${(e: Event) => (this.commentQuery = (e.target as HTMLInputElement).value)}
+              />
+            </label>
+          </div>
+
           ${this.commentsLoading
             ? html`<div class="cempty"><md-circular-progress indeterminate></md-circular-progress></div>`
             : this.commentsError
               ? html`<div class="cempty">${this.commentsError}</div>`
-              : !this.comments.length
-                ? html`<div class="cempty">No posts in this thread.</div>`
+              : !comments.length
+                ? html`<div class="cempty">${needle ? "No matching posts." : "No posts in this thread."}</div>`
                 : html`<div class="clist">
-                    ${this.comments.map((c) => this.renderComment(c, c.no === at))}
+                    ${comments.map((c) => this.renderComment(c, c.no === at))}
                   </div>`}
         </div>
       </div>
@@ -1020,7 +1109,7 @@ export class OppaiBrowse extends LitElement {
 
   private renderComment(c: SourceComment, here: boolean) {
     return html`
-      <article class="cpost ${here ? "here" : ""} ${c.op ? "op" : ""}">
+      <article id=${`post-${c.no}`} class="cpost ${here ? "here" : ""} ${c.op ? "op" : ""}">
         <header class="cmeta">
           ${c.op ? html`<span class="cbadge">OP</span>` : nothing}
           ${here ? html`<span class="cbadge here-badge">This file</span>` : nothing}
@@ -1030,9 +1119,20 @@ export class OppaiBrowse extends LitElement {
         </header>
         ${c.subject ? html`<div class="csub">${c.subject}</div>` : nothing}
         ${this.renderAttachment(c)}
-        ${c.text ? html`<div class="ctext">${renderPostText(c.text)}</div>` : nothing}
+        ${c.text ? html`<div class="ctext">${renderPostText(c.text, (no) => this.goToPost(no))}</div>` : nothing}
       </article>
     `;
+  }
+
+  private goToPost(no: number) {
+    // Restore a filtered-out target before navigating to it.
+    this.commentQuery = "";
+    void this.updateComplete.then(() => {
+      this.renderRoot.querySelector<HTMLElement>(`#post-${no}`)?.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+    });
   }
 
   /**
@@ -1107,6 +1207,17 @@ export class OppaiBrowse extends LitElement {
           </button>
         </div>
       </div>
+      <div class="thread-tools">
+        <label class="searchbox">
+          <span class="material-symbols-rounded" style="font-size:20px; color:var(--oppai-text-dim);">search</span>
+          <input
+            type="search"
+            placeholder="Search files in this thread…"
+            .value=${this.threadQuery}
+            @input=${(e: Event) => (this.threadQuery = (e.target as HTMLInputElement).value)}
+          />
+        </label>
+      </div>
     `;
   }
 
@@ -1120,6 +1231,12 @@ export class OppaiBrowse extends LitElement {
 
     const sorts = this.feed?.sorts ?? [];
     const thread = this.container;
+    const needle = this.threadQuery.trim().toLowerCase();
+    const visibleItems = thread && needle
+      ? this.items.filter((i) =>
+          [i.title, String(i.postNo ?? ""), i.kind].some((v) => v.toLowerCase().includes(needle)),
+        )
+      : this.items;
 
     return html`
       ${thread
@@ -1142,15 +1259,38 @@ export class OppaiBrowse extends LitElement {
                 </div>`
               : nothing}
 
-            <div class="chips ${this.isSearch ? "tight" : ""}">
-              ${(this.source?.feeds ?? []).map(
-                (f) => html`<button
-                  class="chip"
-                  aria-pressed=${f.id === this.feedId}
-                  @click=${() => this.pickFeed(f.id)}
-                >${f.label}</button>`,
-              )}
-            </div>
+            ${this.isFourChan
+              ? html`<div class="thread-tools">
+                  <select
+                    class="feed-select"
+                    aria-label="4chan board"
+                    @change=${(e: Event) => this.pickFeed((e.target as HTMLSelectElement).value)}
+                  >
+                    ${(this.source?.feeds ?? []).map(
+                      (f) => html`<option value=${f.id} ?selected=${f.id === this.feedId}>${f.label}</option>`,
+                    )}
+                  </select>
+                  <form class="thread-tools add-thread" @submit=${this.addThread}>
+                    <label class="searchbox">
+                      <span class="material-symbols-rounded" style="font-size:20px; color:var(--oppai-text-dim);">add_link</span>
+                      <input
+                        placeholder="Paste thread URL or /board/thread/number"
+                        .value=${this.threadDraft}
+                        @input=${(e: Event) => (this.threadDraft = (e.target as HTMLInputElement).value)}
+                      />
+                    </label>
+                    <button class="chip" type="submit">Add thread</button>
+                  </form>
+                </div>`
+              : html`<div class="chips ${this.isSearch ? "tight" : ""}">
+                  ${(this.source?.feeds ?? []).map(
+                    (f) => html`<button
+                      class="chip"
+                      aria-pressed=${f.id === this.feedId}
+                      @click=${() => this.pickFeed(f.id)}
+                    >${f.label}</button>`,
+                  )}
+                </div>`}
 
             ${this.isSearch
               ? html`
@@ -1199,21 +1339,23 @@ export class OppaiBrowse extends LitElement {
             </div>`
           : this.loading && !this.items.length
             ? html`<div class="empty"><md-circular-progress indeterminate></md-circular-progress></div>`
-            : !this.items.length
+            : !visibleItems.length
               ? html`<div class="empty">
                   <span class="material-symbols-rounded" style="font-size:40px; display:block; margin-bottom:12px;"
                     >search_off</span
                   >
                   <div style="font-size:14px;">
                     ${thread
-                      ? "Nothing left in this thread — it may have 404'd."
+                      ? needle
+                        ? html`Nothing in this thread matched “${this.threadQuery.trim()}”.`
+                        : "Nothing left in this thread — it may have 404'd."
                       : this.query
                         ? html`Nothing matched “${this.query}”.`
                         : "Nothing on this feed."}
                   </div>
                 </div>`
               : html`
-                  <div class="grid">${this.items.map((i, n) => this.renderTile(i, n))}</div>
+                  <div class="grid">${visibleItems.map((i, n) => this.renderTile(i, n))}</div>
                   ${this.cursor
                     ? html`<div class="more">
                         <button class="chip" ?disabled=${this.loading} @click=${() => this.load(false)}>
@@ -1254,11 +1396,16 @@ function formatPostTime(unix: number): string {
  * The text arrives as plain text (the server stripped the markup), so this is styling
  * a string, not parsing HTML — nothing here can inject markup.
  */
-function renderPostText(text: string) {
+function renderPostText(text: string, onQuote: (no: number) => void) {
   return text.split("\n").map((line) => {
-    const quote = /^>>\d+/.test(line);
-    const green = !quote && line.startsWith(">");
-    return html`<div class=${quote ? "cquote" : green ? "cgreen" : ""}>${line}</div>`;
+    const green = !/^>>\d+/.test(line) && line.startsWith(">");
+    const parts = line.split(/(>>\d+)/g);
+    return html`<div class=${green ? "cgreen" : ""}>${parts.map((part) => {
+      const match = part.match(/^>>(\d+)$/);
+      return match
+        ? html`<button class="cquote" @click=${() => onQuote(Number(match[1]))}>${part}</button>`
+        : part;
+    })}</div>`;
   });
 }
 

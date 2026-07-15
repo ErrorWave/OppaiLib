@@ -1,6 +1,6 @@
 import { LitElement, html, css } from "lit";
 import { customElement, state, query } from "lit/decorators.js";
-import { api, setToken, type User } from "../api.js";
+import { api, mascotSay, setToken, type User } from "../api.js";
 import { motionStyles } from "../theme.js";
 import { logoSVG } from "../logo.js";
 
@@ -123,11 +123,13 @@ export class OppaiLogin extends LitElement {
     try {
       const res = await api.login(u, p);
       setToken(res.token);
+      mascotSay(`Welcome back, ${res.user.username}!`, "success");
       this.dispatchEvent(
         new CustomEvent<User>("logged-in", { detail: res.user, bubbles: true, composed: true }),
       );
     } catch (err) {
       this.error = (err as Error).message || "login failed";
+      mascotSay(this.error === "unauthorized" ? "That login didn't work. Check your username and password." : this.error);
     } finally {
       this.busy = false;
     }

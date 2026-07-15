@@ -28,7 +28,7 @@ android {
         // Overridable by CI so a tagged build gets a monotonically increasing
         // code — Android rejects an update whose versionCode isn't higher.
         versionCode = (System.getenv("ANDROID_VERSION_CODE") ?: "1").toInt()
-        versionName = System.getenv("ANDROID_VERSION_NAME") ?: "0.2.0"
+        versionName = System.getenv("ANDROID_VERSION_NAME") ?: "0.2.1"
     }
 
     signingConfigs {
@@ -60,6 +60,8 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
+    // Reuse the web mascot directly instead of maintaining a second binary copy.
+    sourceSets.getByName("main").assets.srcDir("../../web/public")
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
     }

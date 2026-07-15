@@ -305,6 +305,10 @@ export function setToken(t: string | null) {
   else localStorage.removeItem(TOKEN_KEY);
 }
 
+export function mascotSay(message: string, tone: "success" | "error" = "error") {
+  window.dispatchEvent(new CustomEvent("oppai-mascot", { detail: { message, tone } }));
+}
+
 async function request<T>(path: string, opts: RequestInit = {}, timeoutMs = 0): Promise<T> {
   const headers = new Headers(opts.headers);
   const token = getToken();
@@ -322,8 +326,11 @@ async function request<T>(path: string, opts: RequestInit = {}, timeoutMs = 0): 
   try {
     const res = await fetch(path, { ...opts, headers, signal: ctl?.signal });
     if (res.status === 401) {
-      setToken(null);
-      window.dispatchEvent(new CustomEvent("oppai-logout"));
+      if (path !== "/api/auth/login") {
+        setToken(null);
+        window.dispatchEvent(new CustomEvent("oppai-logout"));
+        mascotSay("Your session ended. Please sign in again.");
+      }
       throw new Error("unauthorized");
     }
     if (!res.ok) {
@@ -338,7 +345,12 @@ async function request<T>(path: string, opts: RequestInit = {}, timeoutMs = 0): 
     return (await res.json()) as T;
   } catch (e) {
     if (ctl?.signal.aborted) {
-      throw new Error("Timed out — the site was too slow or unreachable.");
+      const error = new Error("Timed out — the site was too slow or unreachable.");
+      if (path !== "/api/auth/login") mascotSay(error.message);
+      throw error;
+    }
+    if (path !== "/api/auth/login" && e instanceof Error && e.message !== "unauthorized") {
+      mascotSay(e.message || "Something went wrong.");
     }
     throw e;
   } finally {

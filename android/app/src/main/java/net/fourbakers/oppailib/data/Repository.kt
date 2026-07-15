@@ -3,6 +3,8 @@ package net.fourbakers.oppailib.data
 import android.content.Context
 import coil.ImageLoader
 import kotlinx.serialization.json.Json
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import java.util.concurrent.TimeUnit
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
@@ -22,6 +24,8 @@ import java.net.URLEncoder
 class Repository(private val appContext: Context, val prefs: Prefs) {
 
     private val json = Json { ignoreUnknownKeys = true }
+    private val _errors = MutableSharedFlow<String>(extraBufferCapacity = 8)
+    val errors = _errors.asSharedFlow()
 
     @Volatile private var baseUrl: String = normalize(prefs.serverUrl ?: "http://10.0.2.2:8080/")
     @Volatile lateinit var api: ApiService
@@ -107,7 +111,18 @@ class Repository(private val appContext: Context, val prefs: Prefs) {
             .addInterceptor { chain ->
                 val req = chain.request().newBuilder()
                 prefs.token?.let { req.header("Authorization", "Bearer $it") }
-                chain.proceed(req.build())
+                try {
+                    val response = chain.proceed(req.build())
+                    if (!response.isSuccessful && !response.request.url.encodedPath.endsWith("/api/auth/login")) {
+                        _errors.tryEmit("The server returned ${response.code}. Please try again.")
+                    }
+                    response
+                } catch (e: Exception) {
+                    if (!chain.request().url.encodedPath.endsWith("/api/auth/login")) {
+                        _errors.tryEmit(e.message ?: "Couldn't reach the server.")
+                    }
+                    throw e
+                }
             }
             .build()
 

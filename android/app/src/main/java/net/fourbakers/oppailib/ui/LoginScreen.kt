@@ -32,7 +32,7 @@ import net.fourbakers.oppailib.data.LoginRequest
 import net.fourbakers.oppailib.data.Repository
 
 @Composable
-fun LoginScreen(repo: Repository, onAuthed: () -> Unit) {
+fun LoginScreen(repo: Repository, onAuthed: () -> Unit, onMascot: (String) -> Unit) {
     var server by remember { mutableStateOf(repo.prefs.serverUrl ?: "http://10.0.2.2:8080") }
     var username by remember { mutableStateOf("admin") }
     var password by remember { mutableStateOf("") }
@@ -95,9 +95,12 @@ fun LoginScreen(repo: Repository, onAuthed: () -> Unit) {
                     try {
                         val res = repo.api.login(LoginRequest(username, password))
                         repo.saveSession(res.token)
+                        onMascot("Welcome back, ${res.user.username}!")
                         onAuthed()
                     } catch (e: Exception) {
-                        error = e.message ?: "Login failed"
+                        val message = e.message ?: "Login failed"
+                        error = message
+                        onMascot(if (message.contains("401")) "That login didn't work. Check your details." else message)
                     } finally {
                         busy = false
                     }

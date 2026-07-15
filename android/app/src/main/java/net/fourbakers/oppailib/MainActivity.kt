@@ -10,9 +10,13 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -20,6 +24,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -28,6 +33,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
@@ -132,14 +140,29 @@ private fun AppRoot(
     // stays true, so background handling leaves it alone.
     var authInProgress by remember { mutableStateOf(false) }
     var lockError by remember { mutableStateOf<String?>(null) }
+    var mascotMessage by remember { mutableStateOf("") }
+
+    LaunchedEffect(repo) {
+        repo.errors.collect { mascotMessage = it }
+    }
+    LaunchedEffect(mascotMessage) {
+        if (mascotMessage.isNotBlank()) {
+            delay(5_000)
+            mascotMessage = ""
+        }
+    }
 
     fun unlock() {
         if (authInProgress) return
         authInProgress = true
         lockError = null
         biometric(
-            { authInProgress = false; locked = false },
-            { msg -> authInProgress = false; lockError = msg },
+            { authInProgress = false; locked = false; mascotMessage = "Welcome back!" },
+            { msg ->
+                authInProgress = false
+                lockError = msg
+                if (msg.isNotBlank()) mascotMessage = msg
+            },
         )
     }
 
@@ -161,23 +184,55 @@ private fun AppRoot(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    when {
-        !authed -> LoginScreen(repo, onAuthed = { authed = true; locked = false })
-        locked -> LockScreen(
-            error = lockError,
-            onUnlock = { unlock() },
-            // The escape hatch, so a phone whose sensor won't cooperate is never a
-            // dead end: sign out cleanly rather than the user having to clear app data.
-            onSignOut = {
-                repo.clearSession()
-                authed = false
-                locked = false
-                lockError = null
-            },
-        )
-        else -> LibraryScreen(
-            repo = repo,
-            onLogout = { repo.clearSession(); authed = false },
+    Box(Modifier.fillMaxSize()) {
+        when {
+            !authed -> LoginScreen(
+                repo,
+                onAuthed = { authed = true; locked = false },
+                onMascot = { mascotMessage = it },
+            )
+            locked -> LockScreen(
+                error = lockError,
+                onUnlock = { unlock() },
+                // The escape hatch, so a phone whose sensor won't cooperate is never a
+                // dead end: sign out cleanly rather than the user having to clear app data.
+                onSignOut = {
+                    repo.clearSession()
+                    authed = false
+                    locked = false
+                    lockError = null
+                },
+            )
+            else -> LibraryScreen(
+                repo = repo,
+                onLogout = { repo.clearSession(); authed = false },
+            )
+        }
+        if (mascotMessage.isNotBlank()) {
+            MascotPopup(mascotMessage, Modifier.align(Alignment.BottomEnd))
+        }
+    }
+}
+
+@Composable
+private fun MascotPopup(message: String, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier.padding(end = 8.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.Bottom,
+        horizontalArrangement = Arrangement.End,
+    ) {
+        Surface(
+            shape = MaterialTheme.shapes.large,
+            tonalElevation = 6.dp,
+            shadowElevation = 8.dp,
+            modifier = Modifier.widthIn(max = 240.dp).padding(bottom = 72.dp),
+        ) {
+            Text(message, modifier = Modifier.padding(14.dp), style = MaterialTheme.typography.bodyMedium)
+        }
+        AsyncImage(
+            model = "file:///android_asset/mascot.png",
+            contentDescription = null,
+            modifier = Modifier.size(width = 150.dp, height = 220.dp),
         )
     }
 }

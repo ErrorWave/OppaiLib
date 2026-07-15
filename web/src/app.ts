@@ -19,17 +19,49 @@ const SESSION_PROBE_MS = 60_000;
 export class OppaiApp extends LitElement {
   @state() private user: User | null = null;
   @state() private ready = false;
+  @state() private mascotMessage = "";
+  @state() private mascotTone: "success" | "error" = "success";
 
   private probeTimer?: number;
+  private mascotTimer?: number;
 
   static styles = css`
     :host { display: block; min-height: 100vh; }
     .center { display: grid; place-items: center; height: 100vh; }
+    .mascot-talk {
+      position: fixed;
+      right: 18px;
+      bottom: 0;
+      z-index: 200;
+      display: flex;
+      align-items: flex-end;
+      pointer-events: none;
+      animation: pop-in 0.3s ease-out both;
+    }
+    .mascot-talk img { width: min(210px, 34vw); max-height: 38vh; object-fit: contain; object-position: bottom; }
+    .speech {
+      max-width: min(300px, 58vw);
+      margin: 0 -18px 120px 0;
+      padding: 12px 16px;
+      border-radius: 18px 18px 4px 18px;
+      background: var(--md-sys-color-surface-container-high);
+      color: var(--md-sys-color-on-surface);
+      border: 1px solid var(--md-sys-color-outline-variant);
+      box-shadow: 0 8px 28px rgba(0,0,0,.35);
+      font: 500 14px/1.4 Roboto, system-ui, sans-serif;
+    }
+    .mascot-talk.error .speech { border-color: var(--md-sys-color-error); }
+    @keyframes pop-in { from { opacity: 0; transform: translateY(24px) scale(.94); } }
+    @media (max-width: 600px) {
+      .mascot-talk img { width: 150px; }
+      .speech { margin-bottom: 100px; }
+    }
   `;
 
   connectedCallback() {
     super.connectedCallback();
     window.addEventListener("oppai-logout", this.onLogout);
+    window.addEventListener("oppai-mascot", this.onMascot as EventListener);
     // A tab that was in the background while the session died should find out the
     // moment it's looked at again, rather than on the next tick.
     document.addEventListener("visibilitychange", this.onVisible);
@@ -38,9 +70,18 @@ export class OppaiApp extends LitElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     window.removeEventListener("oppai-logout", this.onLogout);
+    window.removeEventListener("oppai-mascot", this.onMascot as EventListener);
     document.removeEventListener("visibilitychange", this.onVisible);
     this.stopProbe();
+    if (this.mascotTimer) clearTimeout(this.mascotTimer);
   }
+
+  private onMascot = (event: CustomEvent<{ message: string; tone: "success" | "error" }>) => {
+    this.mascotMessage = event.detail.message;
+    this.mascotTone = event.detail.tone;
+    if (this.mascotTimer) clearTimeout(this.mascotTimer);
+    this.mascotTimer = window.setTimeout(() => (this.mascotMessage = ""), 5000);
+  };
 
   private onLogout = () => {
     this.user = null;
@@ -100,16 +141,22 @@ export class OppaiApp extends LitElement {
   }
 
   render() {
+    const mascot = this.mascotMessage
+      ? html`<div class="mascot-talk ${this.mascotTone}">
+          <div class="speech" role=${this.mascotTone === "error" ? "alert" : "status"}>${this.mascotMessage}</div>
+          <img src="/mascot.png" alt="" />
+        </div>`
+      : null;
     if (!this.ready) {
-      return html`<div class="center"><md-circular-progress indeterminate></md-circular-progress></div>`;
+      return html`<div class="center"><md-circular-progress indeterminate></md-circular-progress></div>${mascot}`;
     }
     if (!this.user) {
-      return html`<oppai-login @logged-in=${this.onLoggedIn}></oppai-login>`;
+      return html`<oppai-login @logged-in=${this.onLoggedIn}></oppai-login>${mascot}`;
     }
     return html`<oppai-library
       .user=${this.user}
       @logout=${this.logout}
-    ></oppai-library>`;
+    ></oppai-library>${mascot}`;
   }
 }
 

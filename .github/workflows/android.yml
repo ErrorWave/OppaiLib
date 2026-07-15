@@ -5,10 +5,9 @@ name: Build Android APK
 #   push / manual run  ->  debug APK, uploaded as a workflow artifact
 #   git tag vX.Y.Z     ->  release APK, signed and attached to the GitHub Release
 #
-# The debug APK is the zero-setup path: it needs no secrets and installs on any
-# phone. The release APK is the one to use long-term — it is minified and signed
-# with a key you control, so you can update the app in place instead of
-# uninstalling first (see "Signing" below).
+# Debug APKs remain available as CI artifacts for testing. Tagged releases require
+# the persistent signing key: publishing a runner-signed debug build as a release
+# creates an installation that no future runner can update.
 #
 # ── Signing ────────────────────────────────────────────────────────────────
 # Android will only update an installed app when the new APK is signed with the
@@ -27,8 +26,8 @@ name: Build Android APK
 #
 # Back up oppailib.jks somewhere safe. Losing it means you can never ship an
 # update to an installed app again — only a fresh install after uninstalling.
-# Without these secrets a tagged build still runs; it just publishes the debug
-# APK and says so.
+# Without these secrets ordinary CI still builds a debug test artifact, while a
+# tagged release stops with an actionable error.
 
 on:
   push:
@@ -73,8 +72,9 @@ jobs:
 
       # A tag drives the version so each release is installable over the last:
       # Android rejects an update whose versionCode is not strictly higher.
-      # v1.4.2 -> versionName 1.4.2. versionCode is the run number, which only
-      # ever increases.
+      # v1.4.2 -> versionName 1.4.2. Epoch seconds are shared across this workflow
+      # and the Docker workflow; separate GITHUB_RUN_NUMBER sequences can go backwards
+      # when a user moves between their APKs, which Android rejects as a downgrade.
       - name: Derive version
         id: version
         run: |
@@ -83,8 +83,9 @@ jobs:
             name="0.0.0-${GITHUB_SHA::7}"
           fi
           echo "name=$name" >> "$GITHUB_OUTPUT"
-          echo "code=${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
-          echo "APK version $name (code ${GITHUB_RUN_NUMBER})" >> "$GITHUB_STEP_SUMMARY"
+          code="$(date -u +%s)"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "APK version $name (code $code)" >> "$GITHUB_STEP_SUMMARY"
 
       # Decode the keystore only if it was configured. The output drives whether
       # the release APK below is signed, so a repo with no secrets still builds.
@@ -94,6 +95,10 @@ jobs:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
           if [ -z "$KEYSTORE_B64" ]; then
+            if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+              echo "A tagged APK must be signed with the persistent release key." >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
             echo "present=false" >> "$GITHUB_OUTPUT"
             echo "No ANDROID_KEYSTORE_BASE64 secret — shipping the debug APK only." >> "$GITHUB_STEP_SUMMARY"
             exit 0
@@ -141,8 +146,8 @@ jobs:
       # On a tag, publish the APK as a release asset so it can be downloaded
       # straight onto the phone rather than dug out of a workflow run.
       - name: Attach APK to release
-        if: github.ref_type == 'tag'
+        if: github.ref_type == 'tag' && steps.keystore.outputs.present == 'true'
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            android/app/build/outputs/apk/${{ steps.keystore.outputs.present == 'true' && 'release/app-release.apk' || 'debug/app-debug.apk' }}
+            android/app/build/outputs/apk/release/app-release.apk

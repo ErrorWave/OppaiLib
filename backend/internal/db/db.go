@@ -166,13 +166,21 @@ func (d *DB) SessionUser(ctx context.Context, token string, idle time.Duration) 
 	var admin int
 	var client string
 	var lastSeen int64
+	var expiresAt int64
 	err := d.sql.QueryRowContext(ctx, `
-		SELECT u.id, u.username, u.pw_hash, u.is_admin, s.client, s.last_seen
+		SELECT u.id, u.username, u.pw_hash, u.is_admin, s.client, s.last_seen, s.expires_at
 		FROM sessions s JOIN users u ON u.id = s.user_id
-		WHERE s.token = ? AND s.expires_at > ?`,
-		token, now()).Scan(&u.ID, &u.Username, &u.PwHash, &admin, &client, &lastSeen)
+		WHERE s.token = ?`,
+		token).Scan(&u.ID, &u.Username, &u.PwHash, &admin, &client, &lastSeen, &expiresAt)
 	if err != nil {
 		return nil, err
+	}
+	// The biometric-locked phone stores its token in encrypted device storage and is
+	// expected to remain signed in. Android sessions therefore have no server-side
+	// absolute expiry; browser and legacy sessions retain the configured TTL.
+	if client != ClientAndroid && expiresAt <= now() {
+		_ = d.DeleteSession(ctx, token)
+		return nil, sql.ErrNoRows
 	}
 	if client != ClientAndroid && idle > 0 && lastSeen > 0 && now()-lastSeen > int64(idle.Seconds()) {
 		// Drop it rather than leave a corpse that has to be re-judged on every request.

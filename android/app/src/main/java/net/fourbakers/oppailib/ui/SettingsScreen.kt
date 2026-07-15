@@ -329,7 +329,12 @@ private fun UpdateBlock(repo: Repository, context: Context, scope: CoroutineScop
                 progress = 0f
                 scope.launch {
                     AppUpdate.download(context, repo, apk) { progress = it }
-                        .onSuccess { file -> progress = -1f; AppUpdate.install(context, file) }
+                        .onSuccess { file ->
+                            progress = -1f
+                            AppUpdate.validateInstall(context, file)
+                                .onSuccess { AppUpdate.install(context, file) }
+                                .onFailure { error = it.message ?: "This APK cannot update the installed app." }
+                        }
                         .onFailure { progress = -1f; error = it.message ?: "The download failed." }
                 }
             }) { Text("Update") }

@@ -69,6 +69,32 @@ func TestAndroidSessionDoesNotIdleOut(t *testing.T) {
 	}
 }
 
+func TestAndroidSessionDoesNotExpire(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	uid := newTestUser(t, d)
+
+	if err := d.CreateSession(ctx, "app-token", uid, -time.Hour, ClientAndroid); err != nil {
+		t.Fatalf("create expired session: %v", err)
+	}
+	if _, err := d.SessionUser(ctx, "app-token", idle); err != nil {
+		t.Fatalf("the Android session must remain valid for biometric unlock: %v", err)
+	}
+}
+
+func TestWebSessionStillExpires(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	uid := newTestUser(t, d)
+
+	if err := d.CreateSession(ctx, "web-token", uid, -time.Hour, ClientWeb); err != nil {
+		t.Fatalf("create expired session: %v", err)
+	}
+	if _, err := d.SessionUser(ctx, "web-token", 0); err == nil {
+		t.Fatal("an expired browser session must be rejected")
+	}
+}
+
 // Activity is what holds an idle-expiring session open.
 func TestTouchKeepsAWebSessionAlive(t *testing.T) {
 	d := openTestDB(t)

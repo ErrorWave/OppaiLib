@@ -31,13 +31,16 @@ APK on GitHub's runners. This is the easy path — nothing to install locally.
   the GitHub Release, so you can download it straight onto the phone.
 
 Release signing needs a keystore you create once; the workflow header documents
-the four secrets to add. Until you add them, tagged builds fall back to the
-debug APK and say so in the run summary.
+the four secrets to add. Tagged releases and Docker images stop with an actionable
+error when that key is missing; silently shipping a runner's throwaway debug key
+would make the next in-app update impossible.
 
 > **Debug and release APKs cannot replace each other.** They carry different
 > signatures, and Android refuses an in-place update across a signature change.
-> Pick one and stay on it, or uninstall before switching (which wipes the app's
-> saved server URL and session).
+> Debug keys also differ between hosted runners. Use debug APKs only for testing;
+> uninstall once when moving to the persistently signed server/release build, then
+> future in-app updates can replace it normally. Uninstalling wipes the app's saved
+> server URL and session, but not the server library.
 
 ### Locally
 

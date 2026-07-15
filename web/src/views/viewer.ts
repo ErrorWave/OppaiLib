@@ -42,6 +42,7 @@ export class OppaiViewer extends LitElement {
   @state() private editKind: Media["kind"] = "image";
   @state() private editTags: string[] = [];
   @state() private newTag = "";
+  @state() private screenshot = "";
 
   // Comic reader: null while the archive is being probed, then either a page
   // count to read or readable=false (a .cbr/.pdf we can't open in-app).
@@ -95,6 +96,7 @@ export class OppaiViewer extends LitElement {
         object-fit: contain;
         background: #000;
       }
+      .video-stage { margin-inline: auto; max-height: 76vh; }
       /* Photos and GIFs are laid out around the image rather than inside a fixed
          frame: the picture keeps its own aspect ratio and the container shrinks
          to it, so nothing is letterboxed and no filler bars are drawn. */
@@ -558,12 +560,35 @@ export class OppaiViewer extends LitElement {
         margin-top: 18px;
         max-width: 640px;
       }
+      .shot {
+        border: 0;
+        padding: 0;
+        background: none;
+        cursor: zoom-in;
+      }
       .shots img {
         width: 100%;
         aspect-ratio: 16 / 9;
         object-fit: cover;
         border-radius: 10px;
         background: var(--oppai-surface-2);
+      }
+      .shot-lightbox {
+        position: fixed;
+        inset: 0;
+        z-index: 100;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        border: 0;
+        background: rgba(0, 0, 0, 0.92);
+        cursor: zoom-out;
+      }
+      .shot-lightbox img {
+        display: block;
+        max-width: 100%;
+        max-height: 100%;
+        object-fit: contain;
       }
     `,
   ];
@@ -990,6 +1015,11 @@ export class OppaiViewer extends LitElement {
         ${this.renderTimeline(m)}
         ${m.kind === "game" ? nothing : this.renderMeta(m)}
       </div>
+      ${this.screenshot
+        ? html`<button class="shot-lightbox" aria-label="Close screenshot" @click=${() => (this.screenshot = "")}>
+            <img src=${api.proxyURL(this.screenshot)} alt="Full-size game screenshot" />
+          </button>`
+        : nothing}
     `;
   }
 
@@ -1039,7 +1069,11 @@ export class OppaiViewer extends LitElement {
   private renderStage(m: Media, url: string) {
     switch (m.kind) {
       case "video":
-        return html`<div class="stage" style="aspect-ratio:16/9; background:${swatchFor(m)};">
+        const aspect = m.width && m.height ? m.width / m.height : 16 / 9;
+        return html`<div
+          class="stage video-stage"
+          style="aspect-ratio:${aspect}; width:100%; max-width:${76 * aspect}vh; background:${swatchFor(m)};"
+        >
           <video
             src=${url}
             poster=${m.hasThumb ? api.thumbURL(m.id) : nothing}
@@ -1201,8 +1235,12 @@ export class OppaiViewer extends LitElement {
                   : html`<p class="desc">A title from your library.</p>`}
                 ${this.renderTags(m)}
                 ${m.gallery && m.gallery.length
-                  ? html`<div class="shots">
-                      ${m.gallery.map((u) => html`<img loading="lazy" src=${api.proxyURL(u)} alt="screenshot" />`)}
+                   ? html`<div class="shots">
+                      ${m.gallery.map((u) => html`<button
+                        class="shot"
+                        title="Open full-size screenshot"
+                        @click=${() => (this.screenshot = u)}
+                      ><img loading="lazy" src=${api.proxyURL(u)} alt="screenshot" /></button>`)}
                     </div>`
                   : nothing}
                 ${m.source
