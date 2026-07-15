@@ -107,14 +107,16 @@ jobs:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
           if [ -z "$KEYSTORE_B64" ]; then
-            echo "ANDROID_KEYSTORE_BASE64 is required: publishing a debug APK would break in-app updates." >> "$GITHUB_STEP_SUMMARY"
-            exit 1
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "No persistent Android signing key: publishing the server image without an APK." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
           echo "$KEYSTORE_B64" | base64 -d > "${RUNNER_TEMP}/oppailib.jks"
           echo "present=true" >> "$GITHUB_OUTPUT"
           echo "path=${RUNNER_TEMP}/oppailib.jks" >> "$GITHUB_OUTPUT"
 
       - name: Build APK
+        if: steps.keystore.outputs.present == 'true'
         working-directory: android
         env:
           ANDROID_VERSION_NAME: ${{ steps.version.outputs.name }}
@@ -125,13 +127,23 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           gradle --no-daemon assembleRelease
-          cp app/build/outputs/apk/release/app-release.apk "${RUNNER_TEMP}/oppailib.apk"
+          mkdir -p "${RUNNER_TEMP}/apk"
+          cp app/build/outputs/apk/release/app-release.apk "${RUNNER_TEMP}/apk/oppailib.apk"
+
+      # Keep the image pipeline independent from Android signing. An empty artifact
+      # directory cannot be uploaded, so use a harmless note when no signed APK exists.
+      # The server ignores it and reports APK availability as false.
+      - name: Prepare image payload without APK
+        if: steps.keystore.outputs.present != 'true'
+        run: |
+          mkdir -p "${RUNNER_TEMP}/apk"
+          echo "No signed APK was configured for this build." > "${RUNNER_TEMP}/apk/README.txt"
 
       - name: Upload APK for the image build
         uses: actions/upload-artifact@v4
         with:
           name: oppailib-apk
-          path: ${{ runner.temp }}/oppailib.apk
+          path: ${{ runner.temp }}/apk/
           if-no-files-found: error
 
   docker:
@@ -141,8 +153,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Lands in the build context at docker/apk/oppailib.apk, which the Dockerfile
-      # copies to /app/apk/ and the server serves from Settings → Android app.
+      # Lands in the build context at docker/apk/. A signed oppailib.apk is served
+      # from Settings; without a signing key the image still publishes, with no APK.
       - name: Fetch the APK
         uses: actions/download-artifact@v4
         with:
