@@ -129,6 +129,18 @@ type Comment struct {
 	OP bool `json:"op,omitempty"`
 }
 
+// RequestDecorator is an optional Source capability: it adds host-appropriate
+// headers to an outbound request made on the source's behalf — the source's own
+// API/JSON fetches and the streaming proxy alike.
+//
+// It exists because 4chan's media CDN sits behind Cloudflare hotlink protection that
+// refuses any request without a boards.4chan.org Referer. Rather than teach the
+// generic proxy about one site's headers, the source that owns the host supplies
+// them here, and the proxy just asks whoever owns the URL to decorate the request.
+type RequestDecorator interface {
+	Decorate(req *http.Request)
+}
+
 // Commenter is an optional interface: a source that has discussions implements it.
 // Sources without a comment section (a gallery site) simply don't, and the API
 // answers "this source has no comments" rather than inventing an empty thread.
@@ -289,6 +301,29 @@ func (r *Registry) AllowsHost(host string) bool {
 	return false
 }
 
+// Decorate applies the owning source's request headers to req, if the source that
+// serves req's host implements RequestDecorator. The streaming proxy calls this so a
+// hotlink-guarded CDN sees the Referer a browser on the source's own page would send;
+// for a host whose source needs nothing, it's a no-op.
+func (r *Registry) Decorate(req *http.Request) {
+	host := strings.ToLower(strings.TrimSpace(req.URL.Hostname()))
+	if host == "" {
+		return
+	}
+	for _, s := range r.All() {
+		d, ok := s.(RequestDecorator)
+		if !ok {
+			continue
+		}
+		for _, pat := range s.Hosts() {
+			if hostMatches(strings.ToLower(pat), host) {
+				d.Decorate(req)
+				return
+			}
+		}
+	}
+}
+
 // hostMatches supports a leading "*." wildcard, which must match a *subdomain* —
 // "*.example.com" covers "cdn.example.com" and "example.com", but must never be
 // tricked by "example.com.evil.net".
@@ -333,7 +368,7 @@ func kindForExt(ext string) string {
 // body hid it (the transport had already buffered it, so the decode still worked, and
 // the unit tests passed against httptest); a real board index did not. Reading the body
 // here means the deadline and the body have the same lifetime and can't disagree.
-func httpGet(ctx context.Context, hc *http.Client, url, userAgent string) ([]byte, error) {
+func httpGet(ctx context.Context, hc *http.Client, url, userAgent string, decorate func(*http.Request)) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
@@ -342,6 +377,11 @@ func httpGet(ctx context.Context, hc *http.Client, url, userAgent string) ([]byt
 		return nil, err
 	}
 	req.Header.Set("User-Agent", userAgent)
+	// A source may add host-specific headers (a hotlink Referer, say); its own JSON
+	// fetches deserve the same treatment as the media the proxy streams for it.
+	if decorate != nil {
+		decorate(req)
+	}
 	resp, err := hc.Do(req)
 	if err != nil {
 		return nil, err
@@ -360,5 +400,3 @@ func httpGet(ctx context.Context, hc *http.Client, url, userAgent string) ([]byt
 
 // maxListingBytes caps a listing/index response. Board indexes run to a few hundred KB.
 const maxListingBytes = 16 << 20
-
-const defaultUserAgent = "OppaiLib/1.0 (+https://github.com/youruser/oppailib)"

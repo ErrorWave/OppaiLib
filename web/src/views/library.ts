@@ -19,8 +19,9 @@ import "./viewer.js";
 import "./scrape-dialog.js";
 import "./settings.js";
 import "./browse.js";
+import "./imagegen.js";
 
-type Section = "home" | "favorites" | "browse" | "settings" | Kind;
+type Section = "home" | "favorites" | "browse" | "imagegen" | "settings" | Kind;
 
 interface NavSection {
   id: Section;
@@ -35,6 +36,9 @@ const NAV_SECTIONS: NavSection[] = [
   // Remote catalogues. Not part of the library — nothing here is imported until the
   // user saves it — but it's how things get *into* the library, so it sits with them.
   { id: "browse", label: "Browse", icon: "explore" },
+  // Image generation. Like Browse, nothing is in the library until saved; it's another
+  // way things get *into* it, so it sits alongside.
+  { id: "imagegen", label: "Create", icon: "auto_awesome" },
 ];
 
 // Everything about an item a search query can match: its title, its notes, and
@@ -867,11 +871,12 @@ export class OppaiLibrary extends LitElement {
     const isViewer = this.selectedId != null;
     const isSettings = !isViewer && this.section === "settings" && !hasSearch;
     const isBrowse = !isViewer && this.section === "browse" && !hasSearch;
+    const isImageGen = !isViewer && this.section === "imagegen" && !hasSearch;
     const isFavorites = !isViewer && this.section === "favorites" && !hasSearch;
     const isHome = !isViewer && this.section === "home" && !hasSearch && !isFavorites;
     const isSearch = !isViewer && hasSearch;
     const isGrid =
-      !isViewer && !isHome && !isFavorites && !isSearch && !isSettings && !isBrowse;
+      !isViewer && !isHome && !isFavorites && !isSearch && !isSettings && !isBrowse && !isImageGen;
 
     const activeItem = isViewer ? this.items.find((m) => m.id === this.selectedId) ?? null : null;
 
@@ -880,6 +885,7 @@ export class OppaiLibrary extends LitElement {
     else if (isSearch) headerTitle = "Search results";
     else if (isSettings) headerTitle = "Settings";
     else if (isBrowse) headerTitle = "Browse sources";
+    else if (isImageGen) headerTitle = "Create";
     else if (isFavorites) headerTitle = "Favorites";
     else if (isHome) headerTitle = "Library";
     else headerTitle = KIND_META[this.section as Kind]?.label ?? "Library";
@@ -893,6 +899,9 @@ export class OppaiLibrary extends LitElement {
           ${isSettings ? html`<oppai-settings .user=${this.user}></oppai-settings>` : nothing}
           ${isBrowse
             ? html`<oppai-browse @imported=${() => this.refresh()}></oppai-browse>`
+            : nothing}
+          ${isImageGen
+            ? html`<oppai-imagegen @imported=${() => this.refresh()}></oppai-imagegen>`
             : nothing}
           ${isGrid || isFavorites || isSearch
             ? this.renderGrid(isGrid, isFavorites, isSearch)

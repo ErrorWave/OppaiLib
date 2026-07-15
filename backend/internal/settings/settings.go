@@ -8,6 +8,7 @@ package settings
 
 import (
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,6 +35,12 @@ type Settings struct {
 	F95Username    string `json:"f95Username"`
 	F95Password    string `json:"f95Password"`
 	F95PasswordSet bool   `json:"f95PasswordSet"`
+
+	// Image generation. ImageGenURL points at a local Automatic1111 / SD.Next WebUI;
+	// empty disables the feature. ImageGenEnabled is a derived, read-only convenience
+	// for the UI (true when a URL is set) — it isn't stored separately.
+	ImageGenURL     string `json:"imageGenUrl"`
+	ImageGenEnabled bool   `json:"imageGenEnabled"`
 }
 
 // Setting keys as stored in the settings table.
@@ -47,6 +54,7 @@ const (
 	keyScrapeRespectRobots = "scrape.respect_robots"
 	keyF95Username         = "f95.username"
 	keyF95Password         = "f95.password"
+	keyImageGenURL         = "imagegen.url"
 )
 
 // Defaults derives the baseline from environment config.
@@ -61,6 +69,7 @@ func Defaults(cfg *config.Config) Settings {
 		ScrapeRespectRobots: cfg.ScrapeRespectRobots,
 		F95Username:         cfg.F95Username,
 		F95Password:         cfg.F95Password,
+		ImageGenURL:         cfg.ImageGenURL,
 	}
 }
 
@@ -98,6 +107,11 @@ func Merge(base Settings, stored map[string]string) Settings {
 	if v, ok := stored[keyF95Password]; ok {
 		s.F95Password = v
 	}
+	// Presence wins here too: clearing the URL from the Settings screen is a real
+	// choice (disable image generation), not a fall-back to the env default.
+	if v, ok := stored[keyImageGenURL]; ok {
+		s.ImageGenURL = v
+	}
 	s.Clamp()
 	return s
 }
@@ -114,6 +128,7 @@ func (s Settings) Map() map[string]string {
 		keyScrapeRespectRobots: strconv.FormatBool(s.ScrapeRespectRobots),
 		keyF95Username:         s.F95Username,
 		keyF95Password:         s.F95Password,
+		keyImageGenURL:         s.ImageGenURL,
 	}
 }
 
@@ -151,6 +166,11 @@ func (s *Settings) Clamp() {
 	if s.ScrapeUserAgent == "" {
 		s.ScrapeUserAgent = config.DefaultScrapeUserAgent
 	}
+	// Normalize the image-gen base URL to "scheme://host[:port]" without a trailing
+	// slash, so handlers can append "/sdapi/..." without doubling slashes. The derived
+	// enabled flag simply tracks whether a URL is configured.
+	s.ImageGenURL = strings.TrimRight(strings.TrimSpace(s.ImageGenURL), "/")
+	s.ImageGenEnabled = s.ImageGenURL != ""
 }
 
 // ScrapeDelay is the politeness delay as a Duration.

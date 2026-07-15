@@ -908,7 +908,14 @@ export class OppaiBrowse extends LitElement {
               ? html`<img src=${api.sourceStreamURL(page)} alt="Page ${this.pageAt + 1}" />`
               : html`<md-circular-progress indeterminate></md-circular-progress>`
             : item.kind === "video"
-              ? html`<video src=${api.sourceStreamURL(item.mediaUrl ?? "")} controls autoplay loop></video>`
+              ? html`<video
+                  src=${api.sourceStreamURL(item.mediaUrl ?? "")}
+                  controls
+                  autoplay
+                  loop
+                  playsinline
+                  preload="metadata"
+                ></video>`
               : html`<img src=${api.sourceStreamURL(item.mediaUrl ?? item.thumbUrl)} alt=${item.title} />`}
         </div>
 

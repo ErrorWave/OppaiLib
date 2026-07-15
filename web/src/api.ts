@@ -97,6 +97,10 @@ export interface Settings {
   f95Username: string;
   f95Password: string;
   f95PasswordSet: boolean;
+  // Image generation: the base URL of a local Automatic1111 / SD.Next WebUI. Empty
+  // disables the feature; imageGenEnabled is a derived, read-only mirror of "URL set".
+  imageGenUrl: string;
+  imageGenEnabled: boolean;
 }
 
 // Environment/build facts the Settings screen shows but can't change — these come
@@ -248,6 +252,47 @@ export interface APKInfo {
   sha256?: string;
   modified?: number; // unix seconds
   filename?: string;
+}
+
+// ── image generation ───────────────────────────────────────────────────────────
+
+/** One checkpoint the generator can load. `title` is the selector value the API wants. */
+export interface GenModel {
+  title: string;
+  model_name: string;
+  hash?: string;
+}
+
+/**
+ * Whether image generation is configured and, if so, reachable. `enabled` is false when
+ * no generator URL is set; `reachable` is false when a URL is set but the box didn't
+ * answer (then `error` says why). `models` is the checkpoint list on success.
+ */
+export interface ImageGenStatus {
+  enabled: boolean;
+  reachable?: boolean;
+  error?: string;
+  models?: GenModel[];
+}
+
+/** A just-generated image, held server-side in memory until saved. `id` streams it. */
+export interface GenPreview {
+  id: string;
+  seed: number;
+}
+
+/** One txt2img job. Only `prompt` is required; the server clamps the rest to sane ranges. */
+export interface GenerateParams {
+  prompt: string;
+  negativePrompt?: string;
+  checkpoint?: string;
+  sampler?: string;
+  steps?: number;
+  width?: number;
+  height?: number;
+  cfgScale?: number;
+  seed?: number;
+  count?: number;
 }
 
 const TOKEN_KEY = "oppai_token";
@@ -450,4 +495,43 @@ export const api = {
       // how long we wait to report it.
       15 * 60_000,
     ),
+
+  // ── image generation ───────────────────────────────────────────────────────
+  // Generated images live only in memory on the server until saveGenerated copies one
+  // into the library. Everything here talks to a local generator on the user's network.
+
+  imageGenStatus: () => request<ImageGenStatus>("/api/imagegen/status", {}, 12_000),
+
+  // Turn a scrap of (spoken) natural language into a fuller prompt + negative prompt.
+  optimizePrompt: (text: string) =>
+    request<{ prompt: string; negativePrompt: string }>("/api/imagegen/prompt", {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    }),
+
+  // Generation is slow (tens of seconds on CPU, longer for a batch); give it room.
+  generate: (params: GenerateParams) =>
+    request<{ images: GenPreview[]; prompt: string }>(
+      "/api/imagegen/generate",
+      { method: "POST", body: JSON.stringify(params) },
+      10 * 60_000,
+    ),
+
+  // Streams an in-memory preview as an image; auth rides the session cookie like
+  // every other <img> src.
+  genPreviewURL: (id: string) => `/api/imagegen/preview/${encodeURIComponent(id)}`,
+
+  saveGenerated: (body: { id: string; title?: string; tags?: string[] }) =>
+    request<{ id: number; existed: boolean }>("/api/imagegen/save", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  // A checkpoint's preview image, set from a generated preview or an uploaded data URL.
+  modelThumbURL: (model: string) => `/api/imagegen/model-thumb?model=${encodeURIComponent(model)}`,
+  setModelThumb: (body: { model: string; previewId?: string; imageData?: string }) =>
+    request<{ status: string }>("/api/imagegen/model-thumb", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
 };

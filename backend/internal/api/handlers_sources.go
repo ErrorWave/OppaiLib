@@ -165,6 +165,9 @@ func (s *Server) handleSourceStream(w http.ResponseWriter, r *http.Request) {
 	if rng := r.Header.Get("Range"); rng != "" {
 		req.Header.Set("Range", rng)
 	}
+	// Let the source that owns this host add its own headers — 4chan's CDN refuses a
+	// media request without a boards.4chan.org Referer, and only the source knows that.
+	s.sources.Decorate(req)
 
 	resp, err := s.scraper.HTTPClient().Do(req)
 	if err != nil {

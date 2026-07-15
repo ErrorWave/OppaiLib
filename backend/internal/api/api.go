@@ -16,10 +16,11 @@ import (
 	"github.com/youruser/oppailib/internal/buildinfo"
 	"github.com/youruser/oppailib/internal/config"
 	"github.com/youruser/oppailib/internal/db"
+	"github.com/youruser/oppailib/internal/imagegen"
 	"github.com/youruser/oppailib/internal/scraper"
 	"github.com/youruser/oppailib/internal/settings"
-	"github.com/youruser/oppailib/internal/storage"
 	"github.com/youruser/oppailib/internal/sources"
+	"github.com/youruser/oppailib/internal/storage"
 	oweb "github.com/youruser/oppailib/internal/web"
 )
 
@@ -34,8 +35,16 @@ type Server struct {
 	kek      []byte
 	log      *slog.Logger
 
+	// Image generation. The client is stateless (the A1111 URL is read from settings
+	// per call); genCache holds just-generated images in memory so they can be
+	// previewed and saved without ever touching disk — the "don't save unless asked"
+	// rule. modelThumbDir holds the (encrypted) checkpoint preview images.
+	imagegen      *imagegen.Client
+	genCache      *genCache
+	modelThumbDir string
+
 	thumbSem  chan struct{} // bounds concurrent ffmpeg thumbnail jobs
-	thumbWarn sync.Once      // warn once if ffmpeg is missing
+	thumbWarn sync.Once     // warn once if ffmpeg is missing
 
 	login *loginGuard // rate-limits + bounds the cost of the login endpoint
 
@@ -71,6 +80,10 @@ func NewServer(cfg *config.Config, database *db.DB, store *storage.Store, sc *sc
 		log:      log,
 		thumbSem: make(chan struct{}, workers),
 		login:    newLoginGuard(),
+
+		imagegen:      imagegen.New(),
+		genCache:      newGenCache(),
+		modelThumbDir: filepath.Join(cfg.ConfigDir, "model_thumbs"),
 
 		pageCache:    newResolveCache[[]string](sourcePagesTTL),
 		commentCache: newResolveCache[[]sources.Comment](sourceCommentsTTL),
@@ -142,6 +155,17 @@ func (s *Server) Handler() http.Handler {
 	// The Android app, served from the box that holds the library it talks to.
 	mux.HandleFunc("GET /api/apk/info", s.requireAuth(s.handleAPKInfo))
 	mux.HandleFunc("GET /api/apk", s.requireAuth(s.handleAPKDownload))
+
+	// Image generation (protected). Generated images live only in memory until the
+	// user explicitly saves one — /generate returns preview ids, /save crosses into
+	// the library. The A1111-style backend is on the user's own network.
+	mux.HandleFunc("GET /api/imagegen/status", s.requireAuth(s.handleImageGenStatus))
+	mux.HandleFunc("POST /api/imagegen/prompt", s.requireAuth(s.handleImageGenPrompt))
+	mux.HandleFunc("POST /api/imagegen/generate", s.requireAuth(s.handleImageGenGenerate))
+	mux.HandleFunc("GET /api/imagegen/preview/{id}", s.requireAuth(s.handleImageGenPreview))
+	mux.HandleFunc("POST /api/imagegen/save", s.requireAuth(s.handleImageGenSave))
+	mux.HandleFunc("GET /api/imagegen/model-thumb", s.requireAuth(s.handleGetModelThumb))
+	mux.HandleFunc("PUT /api/imagegen/model-thumb", s.requireAuth(s.handleSetModelThumb))
 
 	mux.HandleFunc("POST /api/scrape", s.requireAuth(s.handleScrape))
 	mux.HandleFunc("POST /api/scrape/bulk", s.requireAuth(s.handleScrapeBulk))

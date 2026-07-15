@@ -637,3 +637,47 @@ func TestAllowsHost(t *testing.T) {
 		}
 	}
 }
+
+// Registry.Decorate must stamp a 4chan CDN request with the boards.4chan.org Referer
+// its hotlink guard demands, and leave a request to some other source's host alone.
+func TestRegistryDecorate4chanReferer(t *testing.T) {
+	r := NewRegistry(&stubFetcher{}, "", discardLogger{})
+
+	req, _ := http.NewRequest(http.MethodGet, "https://i.4cdn.org/gif/123.webm", nil)
+	r.Decorate(req)
+	if got := req.Header.Get("Referer"); got != fourChanReferer {
+		t.Errorf("Referer = %q, want %q — the CDN 429s without it", got, fourChanReferer)
+	}
+
+	// A host owned by a different (YAML) source doesn't get 4chan's headers.
+	other, _ := http.NewRequest(http.MethodGet, "https://3hentai.net/g/1", nil)
+	r.Decorate(other)
+	if got := other.Header.Get("Referer"); got == fourChanReferer {
+		t.Errorf("Referer = %q, want it unset — that Referer belongs to 4chan only", got)
+	}
+}
+
+// The Referer must actually ride the source's own JSON fetches, not just live on the
+// proxy path — a browse request that Cloudflare refuses empties the grid too.
+func TestFourChanBrowseSendsReferer(t *testing.T) {
+	var gotReferer, gotUA string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotReferer = r.Header.Get("Referer")
+		gotUA = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(fourChanIndexJSON))
+	}))
+	defer srv.Close()
+	f := NewFourChan(srv.Client())
+	f.apiHost = srv.URL
+
+	if _, err := f.Browse(context.Background(), BrowseParams{Feed: "gif"}); err != nil {
+		t.Fatalf("Browse: %v", err)
+	}
+	if gotReferer != fourChanReferer {
+		t.Errorf("Referer = %q, want %q", gotReferer, fourChanReferer)
+	}
+	if !strings.Contains(gotUA, "Mozilla") {
+		t.Errorf("User-Agent = %q, want a browser-like UA the CDN accepts", gotUA)
+	}
+}

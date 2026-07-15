@@ -41,6 +41,12 @@ type Config struct {
 	F95Username string
 	F95Password string
 
+	// ImageGenURL is the base URL of a local Automatic1111 / SD.Next-compatible
+	// image-generation WebUI (the one exposing /sdapi/v1/txt2img). Empty disables the
+	// image-generation feature. It stays on the user's own network — nothing here
+	// reaches a cloud service. Settable at runtime from the Settings screen.
+	ImageGenURL string
+
 	// APKPath is the Android app the server offers for download. CI bakes the
 	// built APK into the image here; pointing this at /config lets an operator drop
 	// in their own build instead (a self-signed one, say, so updates install over
@@ -59,26 +65,27 @@ type Config struct {
 
 func Load() *Config {
 	return &Config{
-		HTTPAddr:        env("OPPAI_HTTP_ADDR", ":8080"),
-		MediaDir:        env("OPPAI_MEDIA_DIR", "/media"),
-		ConfigDir:       env("OPPAI_CONFIG_DIR", "/config"),
-		DBPath:          env("OPPAI_DB_PATH", "/db/oppailib.sqlite"),
-		Passphrase:      env("OPPAI_PASSPHRASE", ""),
-		AdminUser:       env("OPPAI_ADMIN_USER", "admin"),
-		AdminPassword:   env("OPPAI_ADMIN_PASSWORD", ""),
-		AIEnabled:       envBool("OPPAI_AI_ENABLED", true),
-		AIModelDir:      env("OPPAI_AI_MODEL_DIR", "/config/models"),
-		AIDevice:        env("OPPAI_AI_DEVICE", "cpu"),
-		AIVideoFrames:   envInt("OPPAI_AI_VIDEO_FRAMES", 0),
+		HTTPAddr:            env("OPPAI_HTTP_ADDR", ":8080"),
+		MediaDir:            env("OPPAI_MEDIA_DIR", "/media"),
+		ConfigDir:           env("OPPAI_CONFIG_DIR", "/config"),
+		DBPath:              env("OPPAI_DB_PATH", "/db/oppailib.sqlite"),
+		Passphrase:          env("OPPAI_PASSPHRASE", ""),
+		AdminUser:           env("OPPAI_ADMIN_USER", "admin"),
+		AdminPassword:       env("OPPAI_ADMIN_PASSWORD", ""),
+		AIEnabled:           envBool("OPPAI_AI_ENABLED", true),
+		AIModelDir:          env("OPPAI_AI_MODEL_DIR", "/config/models"),
+		AIDevice:            env("OPPAI_AI_DEVICE", "cpu"),
+		AIVideoFrames:       envInt("OPPAI_AI_VIDEO_FRAMES", 0),
 		ScrapeDelay:         time.Duration(envInt("OPPAI_SCRAPE_DELAY_MS", 1500)) * time.Millisecond,
 		ScrapeUserAgent:     env("OPPAI_SCRAPE_USER_AGENT", DefaultScrapeUserAgent),
 		ScrapeRespectRobots: envBool("OPPAI_SCRAPE_RESPECT_ROBOTS", true),
 		F95Username:         env("OPPAI_F95_USERNAME", ""),
 		F95Password:         env("OPPAI_F95_PASSWORD", ""),
-		APKPath:         env("OPPAI_APK_PATH", "/app/apk/oppailib.apk"),
-		SessionTTL:      time.Duration(envInt("OPPAI_SESSION_TTL_HOURS", 720)) * time.Hour,
-		WebIdleTimeout:  time.Duration(envInt("OPPAI_WEB_IDLE_MINUTES", 60)) * time.Minute,
-		Debug:           envBool("OPPAI_DEBUG", false),
+		ImageGenURL:         env("OPPAI_IMAGEGEN_URL", ""),
+		APKPath:             env("OPPAI_APK_PATH", "/app/apk/oppailib.apk"),
+		SessionTTL:          time.Duration(envInt("OPPAI_SESSION_TTL_HOURS", 720)) * time.Hour,
+		WebIdleTimeout:      time.Duration(envInt("OPPAI_WEB_IDLE_MINUTES", 60)) * time.Minute,
+		Debug:               envBool("OPPAI_DEBUG", false),
 	}
 }
 

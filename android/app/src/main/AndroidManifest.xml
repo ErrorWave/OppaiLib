@@ -22,9 +22,16 @@
         android:usesCleartextTraffic="true"
         android:theme="@style/Theme.OppaiLib">
 
+        <!-- Compose redraws on a configuration change on its own, so we handle these
+             rather than let Android tear the activity down and recreate it. Recreation
+             was doing real damage: it reset the in-memory navigation state (throwing you
+             out of whatever content was open) and drove the activity through onStop,
+             which re-armed the biometric lock — so simply rotating the phone kicked you
+             back to the library and demanded a re-unlock. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|keyboard|navigation|uiMode|density|fontScale"
             android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.OppaiLib">
             <intent-filter>

@@ -725,6 +725,29 @@ export class OppaiSettings extends LitElement {
                   />
                 </div>
               </div>
+
+              <div class="field stack">
+                <div class="field-text">
+                  <div class="field-label">Image generation</div>
+                  <div class="field-help">
+                    URL of a local Automatic1111 / SD.Next server on your network (the one that
+                    exposes <code>/sdapi/v1</code>), e.g. <code>http://192.168.1.10:7860</code>.
+                    Set it to turn on the <strong>Create</strong> tab; leave blank to keep it off.
+                    Prompts stay on your own hardware — nothing is sent to a cloud service.
+                  </div>
+                </div>
+                <div class="field-control">
+                  <input
+                    type="text"
+                    autocomplete="off"
+                    placeholder="http://host:7860"
+                    .value=${s.imageGenUrl}
+                    ?disabled=${!this.canEdit}
+                    @change=${(e: Event) =>
+                      this.edit({ imageGenUrl: (e.target as HTMLInputElement).value })}
+                  />
+                </div>
+              </div>
             `}
       </section>
     `;

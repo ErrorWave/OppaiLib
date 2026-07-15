@@ -64,6 +64,28 @@ func (f *FourChan) Hosts() []string {
 	return []string{"a.4cdn.org", "i.4cdn.org", "is2.4chan.org"}
 }
 
+// fourChanReferer is the page a browser is on when it loads a board's JSON or pulls a
+// file from the CDN. 4chan's CDN (i.4cdn.org) now sits behind Cloudflare hotlink
+// protection and refuses any request that doesn't carry it — which is what silently
+// emptied the grid's thumbnails and broke video playback while the JSON API (which is
+// laxer) kept working, so browse "stopped working without an error".
+const fourChanReferer = "https://boards.4chan.org/"
+
+// fourChanUserAgent presents as a real browser. The old descriptive UA was fine for
+// the JSON API but is exactly the kind of client Cloudflare's bot management refuses
+// on the CDN, so every 4chan request now looks like a browser on the board page.
+const fourChanUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+
+// Decorate adds the headers a browser loading a 4chan thread would send. Applied to
+// this source's own API fetches (via httpGet) and, through the registry, to every
+// media request the streaming proxy makes for i.4cdn.org — see Registry.Decorate.
+func (f *FourChan) Decorate(req *http.Request) {
+	req.Header.Set("Referer", fourChanReferer)
+	if req.Header.Get("Accept") == "" {
+		req.Header.Set("Accept", "*/*")
+	}
+}
+
 // fourChanIndex is the shape of /{board}/{page}.json, narrowed to what we read. The
 // first post of each thread is its OP.
 type fourChanIndex struct {
@@ -139,7 +161,7 @@ func (f *FourChan) browseBoard(ctx context.Context, p BrowseParams) (*Listing, e
 	}
 
 	url := fmt.Sprintf("%s/%s/%d.json", f.apiHost, feed, page)
-	body, err := httpGet(ctx, f.hc, url, defaultUserAgent)
+	body, err := httpGet(ctx, f.hc, url, fourChanUserAgent, f.Decorate)
 	if err != nil {
 		return nil, err
 	}
@@ -170,7 +192,7 @@ func (f *FourChan) browseBoard(ctx context.Context, p BrowseParams) (*Listing, e
 // served whole.
 func (f *FourChan) browseThread(ctx context.Context, board string, no int64) (*Listing, error) {
 	url := fmt.Sprintf("%s/%s/thread/%d.json", f.apiHost, board, no)
-	body, err := httpGet(ctx, f.hc, url, defaultUserAgent)
+	body, err := httpGet(ctx, f.hc, url, fourChanUserAgent, f.Decorate)
 	if err != nil {
 		return nil, err
 	}
@@ -285,7 +307,7 @@ func (f *FourChan) Comments(ctx context.Context, itemID string) ([]Comment, erro
 		return nil, fmt.Errorf("not a thread: %q", itemID)
 	}
 	url := fmt.Sprintf("%s/%s/thread/%d.json", f.apiHost, board, no)
-	body, err := httpGet(ctx, f.hc, url, defaultUserAgent)
+	body, err := httpGet(ctx, f.hc, url, fourChanUserAgent, f.Decorate)
 	if err != nil {
 		return nil, err
 	}
