@@ -23,6 +23,11 @@ import (
 
 const maxBulkURLs = 50
 
+// Different hosts can be downloaded in parallel while the scraper's per-host limiter
+// still enforces the configured politeness delay. Keeping this small avoids turning a
+// large paste into a disk/DB stampede on modest Unraid boxes.
+const maxImportConcurrency = 4
+
 // scrapeTimeout bounds a single preview fetch (robots + page, including the
 // polite per-host wait). Because every URL in a bulk request is capped here and
 // they run concurrently, the whole batch can't outlast this — a slow or dead
@@ -269,14 +274,29 @@ func (s *Server) handleScrapeImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	imported := make([]int64, 0, len(result.MediaURLs))
-	for _, mu := range result.MediaURLs {
-		id, err := s.importOne(r, mu, result, req.Kind)
-		if err != nil {
-			s.log.Warn("import media failed", "url", mu, "err", err)
-			continue
+	ids := make([]int64, len(result.MediaURLs))
+	sem := make(chan struct{}, maxImportConcurrency)
+	var wg sync.WaitGroup
+	for i, mu := range result.MediaURLs {
+		wg.Add(1)
+		go func(i int, mu string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			id, err := s.importOne(r, mu, result, req.Kind)
+			if err != nil {
+				s.log.Warn("import media failed", "url", mu, "err", err)
+				return
+			}
+			ids[i] = id
+		}(i, mu)
+	}
+	wg.Wait()
+	imported := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if id != 0 {
+			imported = append(imported, id)
 		}
-		imported = append(imported, id)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"imported": imported, "count": len(imported)})
 }

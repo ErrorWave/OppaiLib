@@ -9,8 +9,8 @@ plugins {
 // .github/workflows/android.yml). Android refuses to update a sideloaded app
 // in place unless the new APK carries the same signature as the installed one,
 // so releases must be signed with one persistent key — not the throwaway debug
-// key, which is regenerated per machine. When these are unset (any ordinary
-// local build) the release APK simply comes out unsigned.
+// key, which is regenerated per machine. When these are unset, local release builds
+// use that machine's debug key so the APK remains installable; CI does not publish it.
 //
 // Blank counts as unset: a workflow step that has no keystore secret to offer
 // still exports the variable, just empty. Testing only for null would take the
@@ -29,8 +29,8 @@ android {
         targetSdk = 35
         // Overridable by CI so a tagged build gets a monotonically increasing
         // code — Android rejects an update whose versionCode isn't higher.
-        versionCode = (System.getenv("ANDROID_VERSION_CODE") ?: "1").toInt()
-        versionName = System.getenv("ANDROID_VERSION_NAME") ?: "0.2.3"
+        versionCode = (System.getenv("ANDROID_VERSION_CODE") ?: "2").toInt()
+        versionName = System.getenv("ANDROID_VERSION_NAME") ?: "0.2.4"
     }
 
     signingConfigs {
@@ -48,6 +48,11 @@ android {
         release {
             if (keystoreFile != null) {
                 signingConfig = signingConfigs.getByName("release")
+            } else {
+                // A locally built app-release.apk must still be installable. Using the
+                // machine's stable debug key also lets it update a local/debug install;
+                // CI never publishes this fallback as the hosted server APK.
+                signingConfig = signingConfigs.getByName("debug")
             }
             isMinifyEnabled = true
             proguardFiles(
