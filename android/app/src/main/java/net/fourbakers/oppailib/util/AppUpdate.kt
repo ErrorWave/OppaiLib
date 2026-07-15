@@ -98,10 +98,11 @@ object AppUpdate {
         // A few OEM installers lose a URI grant when an ACTION_INSTALL_PACKAGE intent
         // crosses into their package installer. Supplying both an explicit APK MIME
         // type and ClipData keeps the grant attached through that hand-off.
-        val intent = Intent(Intent.ACTION_VIEW)
-            .setDataAndType(uri, "application/vnd.android.package-archive")
-            .setClipData(ClipData.newRawUri("OppaiLib update", uri))
-            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            clipData = ClipData.newRawUri("OppaiLib update", uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
         context.startActivity(intent)
     }
 
