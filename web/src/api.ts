@@ -263,6 +263,12 @@ export interface GenModel {
   hash?: string;
 }
 
+export interface GenLora {
+  name: string;
+  alias?: string;
+  path?: string;
+}
+
 /**
  * Whether image generation is configured and, if so, reachable. `enabled` is false when
  * no generator URL is set; `reachable` is false when a URL is set but the box didn't
@@ -273,6 +279,8 @@ export interface ImageGenStatus {
   reachable?: boolean;
   error?: string;
   models?: GenModel[];
+  loras?: GenLora[];
+  loraError?: string;
 }
 
 /** A just-generated image, held server-side in memory until saved. `id` streams it. */
@@ -293,6 +301,7 @@ export interface GenerateParams {
   cfgScale?: number;
   seed?: number;
   count?: number;
+  loras?: { name: string; weight: number }[];
 }
 
 const TOKEN_KEY = "oppai_token";
@@ -543,6 +552,12 @@ export const api = {
   modelThumbURL: (model: string) => `/api/imagegen/model-thumb?model=${encodeURIComponent(model)}`,
   setModelThumb: (body: { model: string; previewId?: string; imageData?: string }) =>
     request<{ status: string }>("/api/imagegen/model-thumb", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  loraThumbURL: (name: string) => `/api/imagegen/lora-thumb?name=${encodeURIComponent(name)}`,
+  setLoraThumb: (body: { model: string; previewId?: string; imageData?: string }) =>
+    request<{ status: string }>("/api/imagegen/lora-thumb", {
       method: "PUT",
       body: JSON.stringify(body),
     }),

@@ -40,10 +40,27 @@ type Model struct {
 	Hash  string `json:"hash,omitempty"`
 }
 
+// Lora is one A1111 extra network. Name is the value used in the familiar
+// <lora:name:weight> prompt token; Alias is a friendlier display label when set.
+type Lora struct {
+	Name  string `json:"name"`
+	Alias string `json:"alias,omitempty"`
+	Path  string `json:"path,omitempty"`
+}
+
 // Models lists the checkpoints the generator has available.
 func (c *Client) Models(ctx context.Context, base string) ([]Model, error) {
 	var out []Model
 	if err := c.getJSON(ctx, base+"/sdapi/v1/sd-models", &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// Loras lists the LoRA networks registered with the generator.
+func (c *Client) Loras(ctx context.Context, base string) ([]Lora, error) {
+	var out []Lora
+	if err := c.getJSON(ctx, base+"/sdapi/v1/loras", &out); err != nil {
 		return nil, err
 	}
 	return out, nil

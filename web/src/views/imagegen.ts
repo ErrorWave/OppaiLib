@@ -1,7 +1,7 @@
 import { LitElement, html, css, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { iconStyles, motionStyles } from "../theme.js";
-import { api, type GenModel, type GenPreview, type ImageGenStatus } from "../api.js";
+import { api, type GenLora, type GenModel, type GenPreview, type ImageGenStatus } from "../api.js";
 
 // ── Web Speech typings ─────────────────────────────────────────────────────────
 // The Speech Recognition API isn't in the standard DOM lib, and it's still vendor-
@@ -64,6 +64,7 @@ const SIZES: { id: string; label: string; w: number; h: number }[] = [
 export class OppaiImageGen extends LitElement {
   @state() private status: ImageGenStatus | null = null;
   @state() private checkpoint = "";
+  @state() private selectedLoras: Record<string, number> = {};
 
   @state() private speech = "";
   @state() private listening = false;
@@ -186,6 +187,16 @@ export class OppaiImageGen extends LitElement {
         display: grid;
         place-items: center;
         cursor: pointer;
+      }
+      .lora-weight {
+        width: 100%;
+        box-sizing: border-box;
+        margin-top: 5px;
+        padding: 5px 7px;
+        border: 1px solid var(--oppai-border-strong);
+        border-radius: 8px;
+        background: var(--oppai-surface);
+        color: var(--oppai-text);
       }
 
       /* Prompt block. */
@@ -512,6 +523,7 @@ export class OppaiImageGen extends LitElement {
         cfgScale: this.cfg,
         count: this.count,
         seed: this.seed,
+        loras: Object.entries(this.selectedLoras).map(([name, weight]) => ({ name, weight })),
       });
       // Newest batch first, kept above earlier ones so a session builds a roll.
       this.shots = [...res.images.map((g: GenPreview) => ({ ...g, saved: false })), ...this.shots];
@@ -568,6 +580,31 @@ export class OppaiImageGen extends LitElement {
     reader.readAsDataURL(file);
   }
 
+  private onUploadLoraThumb(name: string, e: Event) {
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        await api.setLoraThumb({ model: name, imageData: String(reader.result) });
+        this.thumbVersion++;
+        this.showToast("LoRA preview updated");
+      } catch (err) {
+        this.showToast((err as Error).message);
+      }
+    };
+    reader.readAsDataURL(file);
+  }
+
+  private toggleLora(name: string) {
+    const next = { ...this.selectedLoras };
+    if (name in next) delete next[name];
+    else next[name] = 1;
+    this.selectedLoras = next;
+  }
+
   private showToast(msg: string) {
     this.toast = msg;
     setTimeout(() => (this.toast = ""), 2600);
@@ -605,6 +642,7 @@ export class OppaiImageGen extends LitElement {
 
     return html`
       ${this.renderModels(st.models ?? [])}
+      ${this.renderLoras(st.loras ?? [], st.loraError)}
       ${this.renderPrompt()}
       ${this.error ? html`<div class="banner">${this.error}</div>` : nothing}
       ${this.renderResults()}
@@ -647,6 +685,45 @@ export class OppaiImageGen extends LitElement {
                   @change=${(e: Event) => this.onUploadThumb(m.title, e)}
                 />
               </label>
+            </div>
+          `;
+        })}
+      </div>
+    `;
+  }
+
+  private renderLoras(loras: GenLora[], loraError?: string) {
+    if (!loras.length) {
+      return loraError
+        ? html`<div class="banner">LoRAs aren't available from this generator: ${loraError}</div>`
+        : nothing;
+    }
+    return html`
+      <div class="section-label">LoRAs</div>
+      <div class="models">
+        ${loras.map((lora) => {
+          const on = lora.name in this.selectedLoras;
+          const thumb = `${api.loraThumbURL(lora.name)}&v=${this.thumbVersion}`;
+          return html`
+            <div class="model-wrap">
+              <button class="model ${on ? "on" : ""}" title=${lora.name} @click=${() => this.toggleLora(lora.name)}>
+                <img class="model-art" src=${thumb} alt=${lora.alias || lora.name}
+                  @error=${(e: Event) => ((e.target as HTMLImageElement).style.visibility = "hidden")} />
+                <div class="model-name">${lora.alias || lora.name}</div>
+              </button>
+              <label class="model-edit" title="Upload a preview for this LoRA">
+                <span class="material-symbols-rounded" style="font-size:15px;">photo_camera</span>
+                <input class="hidden-file" type="file" accept="image/*"
+                  @change=${(e: Event) => this.onUploadLoraThumb(lora.name, e)} />
+              </label>
+              ${on ? html`<input class="lora-weight" type="number" min="-2" max="2" step="0.05"
+                aria-label=${`${lora.alias || lora.name} weight`}
+                .value=${String(this.selectedLoras[lora.name])}
+                @input=${(e: Event) => {
+                  const value = Number((e.target as HTMLInputElement).value);
+                  this.selectedLoras = { ...this.selectedLoras,
+                    [lora.name]: Number.isFinite(value) ? Math.max(-2, Math.min(2, value)) : 1 };
+                }} />` : nothing}
             </div>
           `;
         })}

@@ -166,6 +166,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/imagegen/save", s.requireAuth(s.handleImageGenSave))
 	mux.HandleFunc("GET /api/imagegen/model-thumb", s.requireAuth(s.handleGetModelThumb))
 	mux.HandleFunc("PUT /api/imagegen/model-thumb", s.requireAuth(s.handleSetModelThumb))
+	mux.HandleFunc("GET /api/imagegen/lora-thumb", s.requireAuth(s.handleGetLoraThumb))
+	mux.HandleFunc("PUT /api/imagegen/lora-thumb", s.requireAuth(s.handleSetLoraThumb))
 
 	mux.HandleFunc("POST /api/scrape", s.requireAuth(s.handleScrape))
 	mux.HandleFunc("POST /api/scrape/bulk", s.requireAuth(s.handleScrapeBulk))

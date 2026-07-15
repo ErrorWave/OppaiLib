@@ -21,6 +21,9 @@ func stubA1111(t *testing.T) *httptest.Server {
 		case "/sdapi/v1/sd-models":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`[{"title":"rev.safetensors [abc123]","model_name":"rev","hash":"abc123"}]`))
+		case "/sdapi/v1/loras":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[{"name":"detail-tweaker","alias":"Detail Tweaker"}]`))
 		case "/sdapi/v1/txt2img":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"images":["` + onePixelPNG + `"],"info":"{\"seed\":4242}"}`))
@@ -61,10 +64,13 @@ func TestImageGenGenerateThenSave(t *testing.T) {
 		Models    []struct {
 			Title string `json:"title"`
 		} `json:"models"`
+		Loras []struct {
+			Name string `json:"name"`
+		} `json:"loras"`
 	}
 	_ = json.Unmarshal(rec.Body.Bytes(), &status)
-	if !status.Enabled || !status.Reachable || len(status.Models) != 1 {
-		t.Fatalf("status = %+v, want enabled+reachable with one model", status)
+	if !status.Enabled || !status.Reachable || len(status.Models) != 1 || len(status.Loras) != 1 {
+		t.Fatalf("status = %+v, want enabled+reachable with one model and one LoRA", status)
 	}
 
 	// Generate two images.
@@ -121,6 +127,51 @@ func TestImageGenGenerateThenSave(t *testing.T) {
 	rec = do(t, h, token, "GET", "/api/media", "")
 	if !strings.Contains(rec.Body.String(), `"kind":"image"`) {
 		t.Errorf("saved generated image not in library: %s", rec.Body)
+	}
+}
+
+func TestImageGenAppliesLorasToPrompt(t *testing.T) {
+	var gotPrompt string
+	gen := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sdapi/v1/txt2img":
+			var body struct {
+				Prompt string `json:"prompt"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			gotPrompt = body.Prompt
+			_, _ = w.Write([]byte(`{"images":["` + onePixelPNG + `"],"info":"{\"seed\":1}"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(gen.Close)
+	s, token := newTestServer(t)
+	enableImageGen(t, s, gen.URL)
+	rec := do(t, s.Handler(), token, "POST", "/api/imagegen/generate",
+		`{"prompt":"portrait","loras":[{"name":"detail-tweaker","weight":0.75}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("generate: %d %s", rec.Code, rec.Body)
+	}
+	if gotPrompt != "portrait <lora:detail-tweaker:0.75>" {
+		t.Fatalf("generator prompt = %q", gotPrompt)
+	}
+}
+
+func TestImageGenLoraThumbnail(t *testing.T) {
+	s, token := newTestServer(t)
+	h := s.Handler()
+	rec := do(t, h, token, "PUT", "/api/imagegen/lora-thumb",
+		`{"model":"detail-tweaker","imageData":"`+onePixelPNG+`"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set LoRA thumbnail: %d %s", rec.Code, rec.Body)
+	}
+	rec = do(t, h, token, "GET", "/api/imagegen/lora-thumb?name=detail-tweaker", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get LoRA thumbnail: %d %s", rec.Code, rec.Body)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "image/") {
+		t.Fatalf("LoRA thumbnail Content-Type = %q", ct)
 	}
 }
 

@@ -1,6 +1,7 @@
 package net.fourbakers.oppailib.util
 
 import android.content.Context
+import android.content.ClipData
 import android.content.Intent
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
@@ -94,8 +95,12 @@ object AppUpdate {
      */
     fun install(context: Context, apk: File) {
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.updates", apk)
-        val intent = Intent(Intent.ACTION_INSTALL_PACKAGE)
-            .setData(uri)
+        // A few OEM installers lose a URI grant when an ACTION_INSTALL_PACKAGE intent
+        // crosses into their package installer. Supplying both an explicit APK MIME
+        // type and ClipData keeps the grant attached through that hand-off.
+        val intent = Intent(Intent.ACTION_VIEW)
+            .setDataAndType(uri, "application/vnd.android.package-archive")
+            .setClipData(ClipData.newRawUri("OppaiLib update", uri))
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         context.startActivity(intent)
     }
@@ -128,7 +133,8 @@ object AppUpdate {
      * Whether the user has allowed this app to install packages. Without it the install
      * intent opens on a dead end, so the UI sends them to the toggle first.
      */
-    fun canInstall(context: Context): Boolean = context.packageManager.canRequestPackageInstalls()
+    fun canInstall(context: Context): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.O || context.packageManager.canRequestPackageInstalls()
 
     fun requestInstallPermission(context: Context) {
         context.startActivity(

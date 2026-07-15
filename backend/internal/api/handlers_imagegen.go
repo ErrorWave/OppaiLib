@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -128,7 +129,15 @@ func (s *Server) handleImageGenStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"enabled": true, "reachable": false, "error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"enabled": true, "reachable": true, "models": models})
+	// Some older A1111-compatible implementations do not expose the LoRA endpoint.
+	// Checkpoints still work there, so report that limitation without declaring the
+	// whole generator unreachable.
+	loras, loraErr := s.imagegen.Loras(ctx, set.ImageGenURL)
+	out := map[string]any{"enabled": true, "reachable": true, "models": models, "loras": loras}
+	if loraErr != nil {
+		out["loraError"] = loraErr.Error()
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // ── prompt optimisation ──────────────────────────────────────────────────────
@@ -153,16 +162,22 @@ func (s *Server) handleImageGenPrompt(w http.ResponseWriter, r *http.Request) {
 // ── generate ─────────────────────────────────────────────────────────────────
 
 type generateReq struct {
-	Prompt         string  `json:"prompt"`
-	NegativePrompt string  `json:"negativePrompt"`
-	Checkpoint     string  `json:"checkpoint"`
-	Sampler        string  `json:"sampler"`
-	Steps          int     `json:"steps"`
-	Width          int     `json:"width"`
-	Height         int     `json:"height"`
-	CfgScale       float64 `json:"cfgScale"`
-	Seed           int64   `json:"seed"`
-	Count          int     `json:"count"`
+	Prompt         string    `json:"prompt"`
+	NegativePrompt string    `json:"negativePrompt"`
+	Checkpoint     string    `json:"checkpoint"`
+	Sampler        string    `json:"sampler"`
+	Steps          int       `json:"steps"`
+	Width          int       `json:"width"`
+	Height         int       `json:"height"`
+	CfgScale       float64   `json:"cfgScale"`
+	Seed           int64     `json:"seed"`
+	Count          int       `json:"count"`
+	Loras          []loraReq `json:"loras"`
+}
+
+type loraReq struct {
+	Name   string  `json:"name"`
+	Weight float64 `json:"weight"`
 }
 
 func (s *Server) handleImageGenGenerate(w http.ResponseWriter, r *http.Request) {
@@ -181,9 +196,23 @@ func (s *Server) handleImageGenGenerate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	clampGenerate(&req)
+	prompt := req.Prompt
+	for _, lora := range req.Loras {
+		name := strings.TrimSpace(strings.NewReplacer("<", "", ">", "", ":", "").Replace(lora.Name))
+		if name == "" {
+			continue
+		}
+		weight := lora.Weight
+		if weight < -2 {
+			weight = -2
+		} else if weight > 2 {
+			weight = 2
+		}
+		prompt += fmt.Sprintf(" <lora:%s:%.2g>", name, weight)
+	}
 
 	gen := imagegen.GenerateRequest{
-		Prompt:         req.Prompt,
+		Prompt:         prompt,
 		NegativePrompt: req.NegativePrompt,
 		Checkpoint:     req.Checkpoint,
 		Sampler:        req.Sampler,
@@ -209,14 +238,14 @@ func (s *Server) handleImageGenGenerate(w http.ResponseWriter, r *http.Request) 
 	for _, img := range res.Images {
 		id := s.genCache.put(&genPreview{
 			data:     img,
-			prompt:   req.Prompt,
+			prompt:   prompt,
 			negative: req.NegativePrompt,
 			seed:     res.Seed,
 			model:    req.Checkpoint,
 		})
 		out = append(out, preview{ID: id, Seed: res.Seed})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"images": out, "prompt": req.Prompt})
+	writeJSON(w, http.StatusOK, map[string]any{"images": out, "prompt": prompt})
 }
 
 // clampGenerate forces a request into ranges a generator (and our memory) can survive,
@@ -356,13 +385,22 @@ func (s *Server) handleImageGenSave(w http.ResponseWriter, r *http.Request) {
 // the checkpoint name, under /config/model_thumbs. Not a library item — it's chrome
 // for the picker, so it lives beside the config rather than in the media table.
 
-// modelThumbPath maps a checkpoint name to its on-disk (encrypted) preview file. The
+// pickerThumbPath maps a resource name to its on-disk (encrypted) preview file. The
 // name is hashed so an arbitrary checkpoint title can't escape the directory or
 // collide with a control character.
+func (s *Server) pickerThumbPath(kind, name string) string {
+	sum := sha256.Sum256([]byte(kind + ":" + name))
+	return filepath.Join(s.modelThumbDir, hex.EncodeToString(sum[:])+".enc")
+}
+
 func (s *Server) modelThumbPath(model string) string {
+	// Preserve the original checkpoint hash scheme so existing user thumbnails keep
+	// working after LoRA thumbnails are introduced.
 	sum := sha256.Sum256([]byte(model))
 	return filepath.Join(s.modelThumbDir, hex.EncodeToString(sum[:])+".enc")
 }
+
+func (s *Server) loraThumbPath(name string) string { return s.pickerThumbPath("lora", name) }
 
 func (s *Server) handleGetModelThumb(w http.ResponseWriter, r *http.Request) {
 	model := r.URL.Query().Get("model")
@@ -370,12 +408,25 @@ func (s *Server) handleGetModelThumb(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "model is required")
 		return
 	}
-	blob, err := os.ReadFile(s.modelThumbPath(model))
+	s.servePickerThumb(w, s.modelThumbPath(model), "model-thumb")
+}
+
+func (s *Server) handleGetLoraThumb(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeErr(w, http.StatusBadRequest, "LoRA name is required")
+		return
+	}
+	s.servePickerThumb(w, s.loraThumbPath(name), "lora-thumb")
+}
+
+func (s *Server) servePickerThumb(w http.ResponseWriter, path, aad string) {
+	blob, err := os.ReadFile(path)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "no thumbnail for that model")
 		return
 	}
-	data, err := crypto.OpenBytes(s.kek, blob, []byte("model-thumb"))
+	data, err := crypto.OpenBytes(s.kek, blob, []byte(aad))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "thumbnail unreadable")
 		return
@@ -407,6 +458,23 @@ func (s *Server) handleSetModelThumb(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.setPickerThumb(w, req, s.modelThumbPath(req.Model), "model-thumb")
+}
+
+func (s *Server) handleSetLoraThumb(w http.ResponseWriter, r *http.Request) {
+	var req setModelThumbReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if req.Model == "" {
+		writeErr(w, http.StatusBadRequest, "LoRA name is required")
+		return
+	}
+	s.setPickerThumb(w, req, s.loraThumbPath(req.Model), "lora-thumb")
+}
+
+func (s *Server) setPickerThumb(w http.ResponseWriter, req setModelThumbReq, path, aad string) {
 	var data []byte
 	switch {
 	case req.PreviewID != "":
@@ -432,7 +500,7 @@ func (s *Server) handleSetModelThumb(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	blob, err := crypto.SealBytes(s.kek, data, []byte("model-thumb"))
+	blob, err := crypto.SealBytes(s.kek, data, []byte(aad))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "encrypt failed")
 		return
@@ -441,7 +509,7 @@ func (s *Server) handleSetModelThumb(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "storage error")
 		return
 	}
-	if err := os.WriteFile(s.modelThumbPath(req.Model), blob, 0o600); err != nil {
+	if err := os.WriteFile(path, blob, 0o600); err != nil {
 		writeErr(w, http.StatusInternalServerError, "write failed")
 		return
 	}

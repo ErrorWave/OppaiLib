@@ -38,7 +38,14 @@ export class OppaiApp extends LitElement {
       pointer-events: none;
       animation: pop-in 0.3s ease-out both;
     }
-    .mascot-talk img { width: min(210px, 34vw); max-height: 38vh; object-fit: contain; object-position: bottom; }
+    .mascot-talk img {
+      width: min(210px, 34vw);
+      max-height: 38vh;
+      object-fit: contain;
+      object-position: bottom;
+      transform-origin: 55% 100%;
+      animation: libby-talk .34s ease-in-out infinite alternate;
+    }
     .speech {
       max-width: min(300px, 58vw);
       margin: 0 -18px 120px 0;
@@ -51,7 +58,9 @@ export class OppaiApp extends LitElement {
       font: 500 14px/1.4 Roboto, system-ui, sans-serif;
     }
     .mascot-talk.error .speech { border-color: var(--md-sys-color-error); }
+    .libby-name { display: block; color: var(--md-sys-color-error); font-size: 11px; font-weight: 700; }
     @keyframes pop-in { from { opacity: 0; transform: translateY(24px) scale(.94); } }
+    @keyframes libby-talk { from { transform: rotate(-.5deg); } to { transform: translateY(-5px) rotate(.65deg); } }
     @media (max-width: 600px) {
       .mascot-talk img { width: 150px; }
       .speech { margin-bottom: 100px; }
@@ -77,6 +86,9 @@ export class OppaiApp extends LitElement {
   }
 
   private onMascot = (event: CustomEvent<{ message: string; tone: "success" | "error" }>) => {
+    // Inside the app Libby is an error guide, not a permanent assistant. The login
+    // screen owns its always-visible Libby and handles both friendly and error speech.
+    if (event.detail.tone !== "error") return;
     this.mascotMessage = event.detail.message;
     this.mascotTone = event.detail.tone;
     if (this.mascotTimer) clearTimeout(this.mascotTimer);
@@ -129,6 +141,7 @@ export class OppaiApp extends LitElement {
   }
 
   private onLoggedIn(e: CustomEvent<User>) {
+    this.mascotMessage = "";
     this.user = e.detail;
     this.startProbe();
   }
@@ -143,15 +156,17 @@ export class OppaiApp extends LitElement {
   render() {
     const mascot = this.mascotMessage
       ? html`<div class="mascot-talk ${this.mascotTone}">
-          <div class="speech" role=${this.mascotTone === "error" ? "alert" : "status"}>${this.mascotMessage}</div>
-          <img src="/mascot.png" alt="" />
+          <div class="speech" role=${this.mascotTone === "error" ? "alert" : "status"}>
+            <span class="libby-name">LIBBY · 😟</span>${this.mascotMessage}
+          </div>
+          <img src="/mascot.png" alt="Libby" />
         </div>`
       : null;
     if (!this.ready) {
       return html`<div class="center"><md-circular-progress indeterminate></md-circular-progress></div>${mascot}`;
     }
     if (!this.user) {
-      return html`<oppai-login @logged-in=${this.onLoggedIn}></oppai-login>${mascot}`;
+      return html`<oppai-login @logged-in=${this.onLoggedIn}></oppai-login>`;
     }
     return html`<oppai-library
       .user=${this.user}

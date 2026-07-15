@@ -23,12 +23,14 @@ android {
 
     defaultConfig {
         applicationId = "net.fourbakers.oppailib"
-        minSdk = 26
+        // Compose and WorkManager support API 23 here. Keeping this at 26 made older
+        // phones end at Android's unhelpful "Cannot install" screen.
+        minSdk = 23
         targetSdk = 35
         // Overridable by CI so a tagged build gets a monotonically increasing
         // code — Android rejects an update whose versionCode isn't higher.
         versionCode = (System.getenv("ANDROID_VERSION_CODE") ?: "1").toInt()
-        versionName = System.getenv("ANDROID_VERSION_NAME") ?: "0.2.2"
+        versionName = System.getenv("ANDROID_VERSION_NAME") ?: "0.2.3"
     }
 
     signingConfigs {

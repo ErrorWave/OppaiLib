@@ -5,6 +5,8 @@ client for an OppaiLib server. Talks to the same REST API as the web UI and uses
 the same auth model (Bearer session token, stored in Jetpack Security's
 `EncryptedSharedPreferences`), with an optional biometric app lock.
 
+Requires Android 6.0 (API 23) or newer.
+
 ## Features implemented
 - Sign in to any server URL (stored encrypted on device)
 - Browse the library in a Material 3 grid, filter by kind

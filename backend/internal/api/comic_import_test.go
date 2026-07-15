@@ -94,7 +94,7 @@ func newTestServerWith(t *testing.T, allowPrivateHosts bool) (*Server, string) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sc := scraper.New(scraper.Options{UserAgent: "test", Delay: 0, RespectRobots: false, AllowPrivateHosts: allowPrivateHosts})
 	aiMgr := ai.NewManager(ai.Config{Enabled: false}, store, database, log)
-	cfg := &config.Config{}
+	cfg := &config.Config{ConfigDir: dir}
 
 	set := settings.NewStore(settings.Defaults(cfg))
 
