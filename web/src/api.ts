@@ -101,6 +101,20 @@ export interface Settings {
   // disables the feature; imageGenEnabled is a derived, read-only mirror of "URL set".
   imageGenUrl: string;
   imageGenEnabled: boolean;
+  chatUrl: string;
+  chatModel: string;
+  chatEnabled: boolean;
+}
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface ChatStatus {
+  enabled: boolean;
+  model?: string;
+  modes: string[];
 }
 
 // Environment/build facts the Settings screen shows but can't change — these come
@@ -555,6 +569,13 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(body),
     }),
+
+  chatStatus: () => request<ChatStatus>("/api/chat/status", {}, 12_000),
+  chat: (mode: string, messages: ChatMessage[]) =>
+    request<{ message: string }>("/api/chat", {
+      method: "POST",
+      body: JSON.stringify({ mode, messages }),
+    }, 125_000),
   loraThumbURL: (name: string) => `/api/imagegen/lora-thumb?name=${encodeURIComponent(name)}`,
   setLoraThumb: (body: { model: string; previewId?: string; imageData?: string }) =>
     request<{ status: string }>("/api/imagegen/lora-thumb", {

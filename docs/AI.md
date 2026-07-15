@@ -2,6 +2,22 @@
 
 OppaiLib tags media **entirely on your hardware**. Nothing is sent anywhere.
 
+## Libby chat
+
+The Chat tab talks to an OpenAI-compatible LLM on your own network. Configure it
+from **Settings → Libby chat**, or set both startup defaults:
+
+```env
+OPPAI_CHAT_URL=http://192.168.1.10:1234
+OPPAI_CHAT_MODEL=your-local-model-name
+```
+
+The URL is the server root; OppaiLib appends `/v1/chat/completions`. LM Studio,
+llama.cpp server, and Ollama's OpenAI-compatible bridge can all expose this shape.
+Conversation history stays in the current web/Android screen and is sent only to
+that configured endpoint. Libby's Sweet, Playful, Bold, and Roleplay modes change
+the local system prompt; the latter modes permit consensual adult NSFW chat.
+
 ## What gets tagged
 
 | kind | frames tagged | needs ffmpeg |

@@ -98,11 +98,24 @@ object AppUpdate {
         // A few OEM installers lose a URI grant when an ACTION_INSTALL_PACKAGE intent
         // crosses into their package installer. Supplying both an explicit APK MIME
         // type and ClipData keeps the grant attached through that hand-off.
-        val intent = Intent(Intent.ACTION_VIEW).apply {
+        val intent = Intent(Intent.ACTION_INSTALL_PACKAGE).apply {
             setDataAndType(uri, "application/vnd.android.package-archive")
             clipData = ClipData.newRawUri("OppaiLib update", uri)
+            putExtra(Intent.EXTRA_NOT_UNKNOWN_SOURCE, true)
+            putExtra(Intent.EXTRA_RETURN_RESULT, false)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         }
+        // Some OEM package installers ignore the transient flag unless their package
+        // also receives an explicit grant. Grant only to activities that resolve this
+        // install intent, and only for this one content URI.
+        context.packageManager.queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY)
+            .forEach {
+                context.grantUriPermission(
+                    it.activityInfo.packageName,
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            }
         context.startActivity(intent)
     }
 
@@ -122,11 +135,20 @@ object AppUpdate {
         if (versionCode(archive) < versionCode(installed)) {
             error("The server APK is older than the installed app.")
         }
-        if (signerDigests(archive) != signerDigests(installed)) {
+        val archiveSigners = signerDigests(archive)
+        val installedSigners = signerDigests(installed)
+        if (
+            archiveSigners.isEmpty() || installedSigners.isEmpty() ||
+            archiveSigners.intersect(installedSigners).isEmpty()
+        ) {
             error(
                 "This update was signed with a different key. Uninstall OppaiLib once, " +
                     "install the server copy, and future consistently signed updates will work.",
             )
+        }
+        val minSdk = archive.applicationInfo?.minSdkVersion ?: 1
+        if (minSdk > Build.VERSION.SDK_INT) {
+            error("This update needs Android $minSdk, but this device is Android ${Build.VERSION.SDK_INT}.")
         }
     }
 

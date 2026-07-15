@@ -239,9 +239,13 @@ fun ViewerScreen(
                         // Only for video: a comic's bottom bar is already a page scrubber,
                         // and stacking a second strip under it would be two scrubbers.
                         if (current.kind == "video") {
+                            val videoItems = items.mapIndexedNotNull { index, item ->
+                                if (item.kind == "video") index to item else null
+                            }
+                            val videoCurrent = videoItems.indexOfFirst { it.first == feed.currentPage }
                             UpNextStrip(
                                 repo = repo,
-                                items = items.map {
+                                items = videoItems.map { (_, it) ->
                                     StripItem(
                                         key = it.id.toString(),
                                         title = it.title.ifEmpty { it.kind },
@@ -249,8 +253,8 @@ fun ViewerScreen(
                                         isVideo = it.kind == "video",
                                     )
                                 },
-                                current = feed.currentPage,
-                                onPick = { poke++; scope.launch { feed.scrollToPage(it) } },
+                                current = videoCurrent,
+                                onPick = { at -> poke++; scope.launch { feed.scrollToPage(videoItems[at].first) } },
                                 // Browsing the strip holds the chrome open; when the scrub
                                 // settles, poke restarts the idle wait fresh from there.
                                 onBrowsing = { browsingUpNext = it; if (!it) poke++ },

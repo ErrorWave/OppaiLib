@@ -95,7 +95,9 @@ jobs:
           if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
             name="0.0.0-${GITHUB_SHA::7}"
           fi
-          code="$(date -u +%s)"
+          # Must match android.yml exactly: Android compares this integer before it
+          # considers replacing an installed package.
+          code="$(git show -s --format=%ct HEAD)"
           echo "name=$name" >> "$GITHUB_OUTPUT"
           echo "code=$code" >> "$GITHUB_OUTPUT"
 

@@ -51,6 +51,22 @@ func newFourChanStub(t *testing.T) (*FourChan, *httptest.Server) {
 	return f, srv
 }
 
+func TestNormalizeFourChanBoard(t *testing.T) {
+	tests := map[string]string{
+		"b":                             "b",
+		"/b/":                           "b",
+		"https://boards.4chan.org/GIF/": "gif",
+	}
+	for in, want := range tests {
+		if got := normalizeBoard(in); got != want {
+			t.Errorf("normalizeBoard(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if validBoard("b/") || validBoard("") || validBoard("way-too-long") {
+		t.Fatal("validBoard accepted a malformed board")
+	}
+}
+
 // A board lists threads, not a shredded pile of every file on it.
 func TestFourChanBrowseListsThreads(t *testing.T) {
 	f, srv := newFourChanStub(t)

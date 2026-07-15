@@ -247,9 +247,13 @@ fun RemoteViewerScreen(
                 ) {
                     // Tapping the video brings the chrome up; the chrome says what's next.
                     if (settled.kind == "video") {
+                        val videoItems = items.mapIndexedNotNull { index, item ->
+                            if (item.kind == "video") index to item else null
+                        }
+                        val videoCurrent = videoItems.indexOfFirst { it.first == feed.settledPage }
                         UpNextStrip(
                             repo = repo,
-                            items = items.map {
+                            items = videoItems.map { (_, it) ->
                                 StripItem(
                                     key = it.id,
                                     title = it.title,
@@ -257,8 +261,8 @@ fun RemoteViewerScreen(
                                     isVideo = it.kind == "video",
                                 )
                             },
-                            current = feed.settledPage,
-                            onPick = { poke++; scope.launch { feed.scrollToPage(it) } },
+                            current = videoCurrent,
+                            onPick = { at -> poke++; scope.launch { feed.scrollToPage(videoItems[at].first) } },
                             onBrowsing = { browsingUpNext = it; if (!it) poke++ },
                         )
                     }

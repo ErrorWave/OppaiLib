@@ -745,10 +745,16 @@ export class OppaiBrowse extends LitElement {
   private addThread(e: Event) {
     e.preventDefault();
     const raw = this.threadDraft.trim();
+	const boardOnly = raw.match(/^(?:https?:\/\/)?(?:boards\.4chan\.org\/)?\/?([a-z0-9]+)\/?$/i);
+	if (boardOnly) {
+	  this.threadDraft = "";
+	  this.pickFeed(boardOnly[1].toLowerCase());
+	  return;
+	}
     const match = raw.match(/(?:boards\.4chan\.org\/)?([a-z0-9]+)\/(?:thread\/)?(\d+)/i)
       ?? raw.match(/^\/?([a-z0-9]+):t?(\d+)$/i);
     if (!match) {
-      this.showToast("Enter a 4chan thread URL or board:thread number");
+      this.showToast("Enter a board such as /b/, or a 4chan thread URL");
       return;
     }
     const board = match[1].toLowerCase();
@@ -1026,12 +1032,16 @@ export class OppaiBrowse extends LitElement {
    * a thread isn't something the viewer can jump to.
    */
   private renderUpNext(current: SourceItem) {
-    const feed = this.items.filter((i) => i.kind !== "thread");
+	// A video opened from a comment can be absent from the board-level listing (which
+	// contains threads). Put it into the visible video timeline explicitly, then add
+	// the other videos from the current feed without duplicates.
+	const feed = this.items.filter((i) => i.kind === "video");
+	if (!feed.some((i) => i.id === current.id)) feed.unshift(current);
     if (feed.length < 2) return nothing;
     const at = feed.findIndex((i) => i.id === current.id);
     return html`
       <div class="upnext">
-        <div class="upnext-label">Up next</div>
+        <div class="upnext-label">Videos</div>
         <div class="strip">
           ${feed.map(
             (i, n) => html`
@@ -1269,17 +1279,20 @@ export class OppaiBrowse extends LitElement {
                     ${(this.source?.feeds ?? []).map(
                       (f) => html`<option value=${f.id} ?selected=${f.id === this.feedId}>${f.label}</option>`,
                     )}
+					${this.source?.feeds.some((f) => f.id === this.feedId)
+					  ? nothing
+					  : html`<option value=${this.feedId} selected>/${this.feedId}/ — Custom board</option>`}
                   </select>
                   <form class="thread-tools add-thread" @submit=${this.addThread}>
                     <label class="searchbox">
                       <span class="material-symbols-rounded" style="font-size:20px; color:var(--oppai-text-dim);">add_link</span>
                       <input
-                        placeholder="Paste thread URL or /board/thread/number"
+                        placeholder="Type /b/ or paste a thread URL"
                         .value=${this.threadDraft}
                         @input=${(e: Event) => (this.threadDraft = (e.target as HTMLInputElement).value)}
                       />
                     </label>
-                    <button class="chip" type="submit">Add thread</button>
+                    <button class="chip" type="submit">Open</button>
                   </form>
                 </div>`
               : html`<div class="chips ${this.isSearch ? "tight" : ""}">

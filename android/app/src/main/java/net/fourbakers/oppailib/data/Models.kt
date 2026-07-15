@@ -174,6 +174,22 @@ data class HealthResponse(
 )
 
 @Serializable
+data class ChatMessage(val role: String, val content: String)
+
+@Serializable
+data class ChatRequest(val mode: String, val messages: List<ChatMessage>)
+
+@Serializable
+data class ChatResponse(val message: String)
+
+@Serializable
+data class ChatStatus(
+    val enabled: Boolean = false,
+    val model: String = "",
+    val modes: List<String> = emptyList(),
+)
+
+@Serializable
 data class UrlRequest(val url: String)
 
 /** A tag the site's parser filed under a taxonomy (artist, character, parody, …). */

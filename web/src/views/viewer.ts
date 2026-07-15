@@ -1032,13 +1032,15 @@ export class OppaiViewer extends LitElement {
    * this is that list made visible.
    */
   private renderUpNext(current: Media) {
-    if (this.queue.length < 2) return nothing;
-    const at = this.queue.findIndex((x) => x.id === current.id);
+	const videos = this.queue.filter((x) => x.kind === "video");
+	if (!videos.some((x) => x.id === current.id)) videos.unshift(current);
+    if (videos.length < 2) return nothing;
+    const at = videos.findIndex((x) => x.id === current.id);
     return html`
       <div class="upnext">
-        <div class="upnext-label">Up next</div>
+        <div class="upnext-label">Videos</div>
         <div class="strip">
-          ${this.queue.map(
+          ${videos.map(
             (x, n) => html`
               <button
                 class="strip-item ${x.id === current.id ? "on" : ""}"

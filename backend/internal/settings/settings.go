@@ -41,6 +41,12 @@ type Settings struct {
 	// for the UI (true when a URL is set) — it isn't stored separately.
 	ImageGenURL     string `json:"imageGenUrl"`
 	ImageGenEnabled bool   `json:"imageGenEnabled"`
+
+	// Local OpenAI-compatible chat backend. No cloud service is contacted by
+	// OppaiLib; the operator explicitly chooses this URL and model.
+	ChatURL     string `json:"chatUrl"`
+	ChatModel   string `json:"chatModel"`
+	ChatEnabled bool   `json:"chatEnabled"`
 }
 
 // Setting keys as stored in the settings table.
@@ -55,6 +61,8 @@ const (
 	keyF95Username         = "f95.username"
 	keyF95Password         = "f95.password"
 	keyImageGenURL         = "imagegen.url"
+	keyChatURL             = "chat.url"
+	keyChatModel           = "chat.model"
 )
 
 // Defaults derives the baseline from environment config.
@@ -70,6 +78,8 @@ func Defaults(cfg *config.Config) Settings {
 		F95Username:         cfg.F95Username,
 		F95Password:         cfg.F95Password,
 		ImageGenURL:         cfg.ImageGenURL,
+		ChatURL:             cfg.ChatURL,
+		ChatModel:           cfg.ChatModel,
 	}
 }
 
@@ -112,6 +122,12 @@ func Merge(base Settings, stored map[string]string) Settings {
 	if v, ok := stored[keyImageGenURL]; ok {
 		s.ImageGenURL = v
 	}
+	if v, ok := stored[keyChatURL]; ok {
+		s.ChatURL = v
+	}
+	if v, ok := stored[keyChatModel]; ok {
+		s.ChatModel = v
+	}
 	s.Clamp()
 	return s
 }
@@ -129,6 +145,8 @@ func (s Settings) Map() map[string]string {
 		keyF95Username:         s.F95Username,
 		keyF95Password:         s.F95Password,
 		keyImageGenURL:         s.ImageGenURL,
+		keyChatURL:             s.ChatURL,
+		keyChatModel:           s.ChatModel,
 	}
 }
 
@@ -171,6 +189,9 @@ func (s *Settings) Clamp() {
 	// enabled flag simply tracks whether a URL is configured.
 	s.ImageGenURL = strings.TrimRight(strings.TrimSpace(s.ImageGenURL), "/")
 	s.ImageGenEnabled = s.ImageGenURL != ""
+	s.ChatURL = strings.TrimRight(strings.TrimSpace(s.ChatURL), "/")
+	s.ChatModel = strings.TrimSpace(s.ChatModel)
+	s.ChatEnabled = s.ChatURL != "" && s.ChatModel != ""
 }
 
 // ScrapeDelay is the politeness delay as a Duration.

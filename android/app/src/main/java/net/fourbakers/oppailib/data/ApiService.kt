@@ -18,6 +18,12 @@ interface ApiService {
     @GET("api/health")
     suspend fun health(): HealthResponse
 
+    @GET("api/chat/status")
+    suspend fun chatStatus(): ChatStatus
+
+    @POST("api/chat")
+    suspend fun chat(@Body body: ChatRequest): ChatResponse
+
     @POST("api/auth/login")
     suspend fun login(@Body body: LoginRequest): LoginResponse
 

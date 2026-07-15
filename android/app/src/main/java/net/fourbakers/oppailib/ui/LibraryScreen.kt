@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Collections
@@ -171,6 +172,7 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
     var searching by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var showBrowse by remember { mutableStateOf(false) }
+    var showChat by remember { mutableStateOf(false) }
     // Which pinned feed to open the browser on; null means the browser's own default.
     var browsePin by remember { mutableStateOf<PinnedFeed?>(null) }
     var pins by remember { mutableStateOf(repo.prefs.pinnedFeeds) }
@@ -296,6 +298,11 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
                 refresh()
             },
         )
+        return
+    }
+
+    if (showChat) {
+        ChatScreen(repo = repo, onBack = { showChat = false })
         return
     }
 
@@ -439,6 +446,13 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
                         browsePin = null
                         showBrowse = true
                     },
+                    modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
+                )
+                NavigationDrawerItem(
+                    icon = { Icon(Icons.Filled.ChatBubble, contentDescription = null) },
+                    label = { Text("Chat with Libby") },
+                    selected = false,
+                    onClick = { scope.launch { drawer.close() }; showChat = true },
                     modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
                 )
                 // Pinned remote feeds sit under Browse, as shortcuts into it. A long

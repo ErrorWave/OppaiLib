@@ -94,7 +94,7 @@ fun UpNextStrip(
 
     Column(modifier.fillMaxWidth()) {
         Text(
-            "Up next",
+            "Videos",
             style = MaterialTheme.typography.labelSmall,
             color = Color.White.copy(alpha = 0.7f),
             modifier = Modifier.padding(start = 12.dp, bottom = 4.dp),

@@ -47,6 +47,12 @@ type Config struct {
 	// reaches a cloud service. Settable at runtime from the Settings screen.
 	ImageGenURL string
 
+	// ChatURL is an OpenAI-compatible local LLM endpoint (LM Studio, Ollama's
+	// OpenAI bridge, llama.cpp server, etc.). ChatModel is the model name sent to
+	// /v1/chat/completions. Both are runtime-editable in Settings.
+	ChatURL   string
+	ChatModel string
+
 	// APKPath is the Android app the server offers for download. CI bakes the
 	// built APK into the image here; pointing this at /config lets an operator drop
 	// in their own build instead (a self-signed one, say, so updates install over
@@ -82,6 +88,8 @@ func Load() *Config {
 		F95Username:         env("OPPAI_F95_USERNAME", ""),
 		F95Password:         env("OPPAI_F95_PASSWORD", ""),
 		ImageGenURL:         env("OPPAI_IMAGEGEN_URL", ""),
+		ChatURL:             env("OPPAI_CHAT_URL", ""),
+		ChatModel:           env("OPPAI_CHAT_MODEL", ""),
 		APKPath:             env("OPPAI_APK_PATH", "/app/apk/oppailib.apk"),
 		SessionTTL:          time.Duration(envInt("OPPAI_SESSION_TTL_HOURS", 720)) * time.Hour,
 		WebIdleTimeout:      time.Duration(envInt("OPPAI_WEB_IDLE_MINUTES", 60)) * time.Minute,

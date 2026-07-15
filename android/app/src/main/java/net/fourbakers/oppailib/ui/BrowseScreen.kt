@@ -99,6 +99,7 @@ fun BrowseScreen(repo: Repository, openAt: PinnedFeed? = null, onBack: () -> Uni
     // The feed chosen from the chips. `container` is the thread browsed into from it,
     // if any — the feed actually being fetched is one or the other, never both.
     var boardFeed by remember { mutableStateOf("") }
+    var boardDraft by remember { mutableStateOf("") }
     var container by remember { mutableStateOf<SourceItem?>(null) }
     val feed = container?.feedId ?: boardFeed
 
@@ -436,6 +437,25 @@ fun BrowseScreen(repo: Repository, openAt: PinnedFeed? = null, onBack: () -> Uni
                             }
                         },
                     )
+                    if (src.id == "4chan") {
+                        OutlinedTextField(
+                            value = boardDraft,
+                            onValueChange = { boardDraft = it },
+                            label = { Text("Open another board (for example /b/)") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                            keyboardActions = KeyboardActions(onGo = {
+                                normalizeBoardInput(boardDraft)?.let {
+                                    keyboard?.hide()
+                                    boardFeed = it
+                                    boardDraft = ""
+                                    query = ""
+                                    sort = ""
+                                }
+                            }),
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                        )
+                    }
                 }
             } else {
                 Text(
@@ -511,6 +531,14 @@ fun BrowseScreen(repo: Repository, openAt: PinnedFeed? = null, onBack: () -> Uni
             }
         }
     }
+}
+
+/** Accepts b, /b/, or a copied board URL and returns the bare API board id. */
+private fun normalizeBoardInput(raw: String): String? {
+    val value = raw.trim().lowercase()
+        .removePrefix("https://").removePrefix("http://")
+        .removePrefix("boards.4chan.org/").trim('/').substringBefore('/')
+    return value.takeIf { it.length in 1..10 && it.all(Char::isLetterOrDigit) }
 }
 
 @Composable

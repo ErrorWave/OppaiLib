@@ -121,6 +121,7 @@ type fourChanPost struct {
 // a path segment without depending on how a client escapes a slash.
 func threadFeed(feed string) (board string, no int64, ok bool) {
 	board, rest, found := strings.Cut(feed, ":")
+	board = normalizeBoard(board)
 	if !found || !validBoard(board) || !strings.HasPrefix(rest, "t") {
 		return "", 0, false
 	}
@@ -142,7 +143,7 @@ func (f *FourChan) Browse(ctx context.Context, p BrowseParams) (*Listing, error)
 
 // browseBoard lists a board's threads, one tile per thread.
 func (f *FourChan) browseBoard(ctx context.Context, p BrowseParams) (*Listing, error) {
-	feed := p.Feed
+	feed := normalizeBoard(p.Feed)
 	// An empty board means "whatever this source leads with", so a client that hasn't
 	// picked yet still gets a listing rather than an error.
 	if feed == "" && len(fourChanBoards) > 0 {
@@ -365,12 +366,29 @@ func (f *FourChan) Pages(ctx context.Context, itemID string) ([]string, error) {
 }
 
 func validBoard(id string) bool {
-	for _, b := range fourChanBoards {
-		if b.ID == id {
-			return true
+	if len(id) < 1 || len(id) > 10 {
+		return false
+	}
+	for _, r := range id {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') {
+			return false
 		}
 	}
-	return false
+	return true
+}
+
+// normalizeBoard accepts how people actually write a board name: b, /b/, or a
+// copied boards.4chan.org/b/ URL. The API itself needs only the bare id.
+func normalizeBoard(raw string) string {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	s = strings.TrimPrefix(s, "https://")
+	s = strings.TrimPrefix(s, "http://")
+	s = strings.TrimPrefix(s, "boards.4chan.org/")
+	s = strings.Trim(s, "/")
+	if before, _, ok := strings.Cut(s, "/"); ok {
+		s = before
+	}
+	return s
 }
 
 var tagRe = regexp.MustCompile(`<[^>]*>`)

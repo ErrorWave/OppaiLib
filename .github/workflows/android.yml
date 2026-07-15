@@ -83,7 +83,10 @@ jobs:
             name="0.0.0-${GITHUB_SHA::7}"
           fi
           echo "name=$name" >> "$GITHUB_OUTPUT"
-          code="$(date -u +%s)"
+          # Identical commit => identical versionCode in every workflow. Using each
+          # runner's wall clock made the server APK randomly older than the release
+          # APK even though both came from the same source.
+          code="$(git show -s --format=%ct HEAD)"
           echo "code=$code" >> "$GITHUB_OUTPUT"
           echo "APK version $name (code $code)" >> "$GITHUB_STEP_SUMMARY"
 

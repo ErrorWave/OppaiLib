@@ -169,6 +169,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/imagegen/lora-thumb", s.requireAuth(s.handleGetLoraThumb))
 	mux.HandleFunc("PUT /api/imagegen/lora-thumb", s.requireAuth(s.handleSetLoraThumb))
 
+	// Libby chat proxies only to the operator-configured local OpenAI-compatible
+	// endpoint. Conversation history lives in the clients, not in OppaiLib's DB.
+	mux.HandleFunc("GET /api/chat/status", s.requireAuth(s.handleChatStatus))
+	mux.HandleFunc("POST /api/chat", s.requireAuth(s.handleChat))
+
 	mux.HandleFunc("POST /api/scrape", s.requireAuth(s.handleScrape))
 	mux.HandleFunc("POST /api/scrape/bulk", s.requireAuth(s.handleScrapeBulk))
 	mux.HandleFunc("POST /api/scrape/import", s.requireAuth(s.handleScrapeImport))
