@@ -28,7 +28,7 @@ android {
         // Overridable by CI so a tagged build gets a monotonically increasing
         // code — Android rejects an update whose versionCode isn't higher.
         versionCode = (System.getenv("ANDROID_VERSION_CODE") ?: "1").toInt()
-        versionName = System.getenv("ANDROID_VERSION_NAME") ?: "0.2.1"
+        versionName = System.getenv("ANDROID_VERSION_NAME") ?: "0.2.2"
     }
 
     signingConfigs {
