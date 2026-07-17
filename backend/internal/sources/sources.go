@@ -36,6 +36,8 @@ const kindComic = "comic"
 // order) — so it exists only between here and the client's grid.
 const kindThread = "thread"
 
+const sourceUserAgent = "Mozilla/5.0 (compatible; OppaiLib/1.0)"
+
 // Feed is one browsable listing inside a source: a board, a category, a search.
 type Feed struct {
 	ID    string `json:"id"`
@@ -190,7 +192,7 @@ type Registry struct {
 // for almost everyone, does not work. A user file with the same id wins, so a site
 // that restyles can be fixed by dropping in a corrected spec — no rebuild.
 func NewRegistry(pages PageFetcher, dir string, log Logger) *Registry {
-	r := &Registry{srcs: []Source{NewFourChan(pages.Client())}}
+	r := &Registry{srcs: []Source{NewFourChan(pages.Client()), NewRule34(pages.Client())}}
 
 	specs := map[string]SourceSpec{}
 	order := []string{}

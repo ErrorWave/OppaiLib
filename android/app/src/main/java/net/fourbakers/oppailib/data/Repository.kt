@@ -1,7 +1,10 @@
 package net.fourbakers.oppailib.data
 
 import android.content.Context
+import android.os.Build
 import coil.ImageLoader
+import coil.decode.GifDecoder
+import coil.decode.ImageDecoderDecoder
 import kotlinx.serialization.json.Json
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -26,6 +29,8 @@ class Repository(private val appContext: Context, val prefs: Prefs) {
     private val json = Json { ignoreUnknownKeys = true }
     private val _errors = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val errors = _errors.asSharedFlow()
+    private val _libraryChanges = MutableSharedFlow<Unit>(extraBufferCapacity = 4)
+    val libraryChanges = _libraryChanges.asSharedFlow()
 
     @Volatile private var baseUrl: String = normalize(prefs.serverUrl ?: "http://10.0.2.2:8080/")
     @Volatile lateinit var api: ApiService
@@ -91,6 +96,8 @@ class Repository(private val appContext: Context, val prefs: Prefs) {
 
     fun saveSession(token: String) { prefs.token = token }
     fun clearSession() { prefs.clearSession() }
+    fun report(message: String) { _errors.tryEmit(message) }
+    fun notifyLibraryChanged() { _libraryChanges.tryEmit(Unit) }
 
     // ── client construction ──────────────────────────────────────────────
 
@@ -135,7 +142,18 @@ class Repository(private val appContext: Context, val prefs: Prefs) {
             .addConverterFactory(json.asConverterFactory(contentType))
             .build()
             .create(ApiService::class.java)
-        imageLoader = ImageLoader.Builder(appContext).okHttpClient(client).build()
+        imageLoader = ImageLoader.Builder(appContext)
+            .okHttpClient(client)
+            .components {
+                // Coil's base artifact decodes only the first frame. Registering its
+                // animated decoder makes stored and remotely browsed GIFs actually play.
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    add(ImageDecoderDecoder.Factory())
+                } else {
+                    add(GifDecoder.Factory())
+                }
+            }
+            .build()
     }
 
     // ── upload helper ────────────────────────────────────────────────────

@@ -1,9 +1,12 @@
 package net.fourbakers.oppailib
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -40,28 +43,128 @@ import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.lifecycleScope
 import net.fourbakers.oppailib.data.Repository
+import net.fourbakers.oppailib.data.ScrapeImportRequest
+import net.fourbakers.oppailib.data.UrlRequest
 import net.fourbakers.oppailib.ui.LibraryScreen
 import net.fourbakers.oppailib.ui.LoginScreen
 import net.fourbakers.oppailib.ui.theme.OppaiTheme
+import net.fourbakers.oppailib.util.copyUriToCache
+import net.fourbakers.oppailib.util.mimeOf
+import net.fourbakers.oppailib.work.ImportWorker
+import kotlinx.coroutines.launch
 
 class MainActivity : FragmentActivity() {
+
+    private var pendingShare: Intent? = null
 
     private val askNotifications =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* declined is fine */ }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Android recents must never retain a readable frame of the library. FLAG_SECURE
+        // makes the system use a blank/locked task thumbnail on every supported version.
+        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         enableEdgeToEdge()
         requestNotificationsIfNeeded()
         val repo = OppaiApp.from(this).repository
         setContent {
             OppaiTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    AppRoot(repo, ::promptBiometric)
+                    AppRoot(repo, ::promptBiometric) { consumePendingShare(repo) }
                 }
             }
         }
+        acceptShareIntent(intent, repo)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        acceptShareIntent(intent, OppaiApp.from(this).repository)
+    }
+
+    private fun acceptShareIntent(intent: Intent?, repo: Repository) {
+        val action = intent?.action
+        if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return
+        pendingShare = Intent(intent)
+        if (repo.hasSession) consumePendingShare(repo)
+    }
+
+    private fun consumePendingShare(repo: Repository) {
+        val shared = pendingShare ?: return
+        if (!repo.hasSession) return
+        pendingShare = null
+        lifecycleScope.launch {
+            val uris = sharedUris(shared)
+            var uploaded = 0
+            for (uri in uris) {
+                runCatching {
+                    val (file, _) = copyUriToCache(this@MainActivity, uri)
+                    try {
+                        repo.api.upload(repo.filePart(file, mimeOf(this@MainActivity, uri)))
+                    } finally {
+                        file.delete()
+                    }
+                }.onSuccess { uploaded++ }
+                    .onFailure { repo.report(it.message ?: "Couldn't import the shared file.") }
+            }
+
+            val urls = URL_PATTERN.findAll(shared.getStringExtra(Intent.EXTRA_TEXT).orEmpty())
+                .map { it.value.trimEnd('.', ',', ')', ']', '}') }.distinct().toList()
+            var queued = 0
+            for (url in urls) {
+                runCatching {
+                    val result = repo.api.scrape(UrlRequest(url))
+                    if (result.mediaUrls.isEmpty()) error("No media found at $url")
+                    ImportWorker.scrapeImport(
+                        this@MainActivity,
+                        ScrapeImportRequest(
+                            url = url,
+                            mediaUrls = result.mediaUrls,
+                            title = result.title,
+                            tags = result.tags,
+                            categorizedTags = result.categorizedTags,
+                        ),
+                        result.title.ifBlank { "Shared link" },
+                    )
+                }.onSuccess { queued++ }
+                    .onFailure { repo.report(it.message ?: "Couldn't import the shared link.") }
+            }
+            if (uploaded > 0) repo.notifyLibraryChanged()
+            if (uploaded + queued > 0) {
+                val message = buildString {
+                    if (uploaded > 0) append("Imported $uploaded shared file${if (uploaded == 1) "" else "s"}.")
+                    if (queued > 0) {
+                        if (isNotEmpty()) append(' ')
+                        append("Queued $queued shared link${if (queued == 1) "" else "s"}.")
+                    }
+                }
+                repo.report(message)
+            }
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun sharedUris(intent: Intent): List<Uri> {
+        val out = linkedSetOf<Uri>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)?.let(out::add)
+            intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)?.let(out::addAll)
+        } else {
+            intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)?.let(out::add)
+            intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)?.let(out::addAll)
+        }
+        intent.clipData?.let { clip ->
+            for (i in 0 until clip.itemCount) clip.getItemAt(i).uri?.let(out::add)
+        }
+        return out.toList()
+    }
+
+    companion object {
+        private val URL_PATTERN = Regex("https?://[^\\s<>]+", RegexOption.IGNORE_CASE)
     }
 
     /**
@@ -131,6 +234,7 @@ class MainActivity : FragmentActivity() {
 private fun AppRoot(
     repo: Repository,
     biometric: (onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit,
+    onAuthenticated: () -> Unit,
 ) {
     var authed by remember { mutableStateOf(repo.hasSession) }
     var locked by remember { mutableStateOf(repo.hasSession && repo.prefs.biometricLock) }
@@ -188,7 +292,7 @@ private fun AppRoot(
         when {
             !authed -> LoginScreen(
                 repo,
-                onAuthed = { authed = true; locked = false },
+                onAuthed = { authed = true; locked = false; onAuthenticated() },
                 onMascot = { mascotMessage = it },
             )
             locked -> LockScreen(
