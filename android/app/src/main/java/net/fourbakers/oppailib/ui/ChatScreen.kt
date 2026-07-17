@@ -106,12 +106,16 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
         )
     }) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
-            AsyncImage(
-                model = "file:///android_asset/${mode.asset}",
-                contentDescription = "Libby",
-                contentScale = ContentScale.Fit,
-                modifier = Modifier.fillMaxWidth().height(180.dp),
-            )
+            // Hiding Libby drops her portrait; the mode chips stay, since modes change
+            // how the assistant answers, not how it looks.
+            if (!repo.prefs.hideLibby) {
+                AsyncImage(
+                    model = "file:///android_asset/${mode.asset}",
+                    contentDescription = "Libby",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxWidth().height(180.dp),
+                )
+            }
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),

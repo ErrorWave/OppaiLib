@@ -73,6 +73,7 @@ fun SettingsScreen(repo: Repository, onBack: () -> Unit, onLogout: () -> Unit) {
     var buffer by remember { mutableIntStateOf(prefs.bufferSeconds) }
     var backBuffer by remember { mutableStateOf(prefs.keepBackBuffer) }
     var rtl by remember { mutableStateOf(prefs.comicRtl) }
+    var hideLibby by remember { mutableStateOf(prefs.hideLibby) }
     var biometric by remember { mutableStateOf(prefs.biometricLock) }
     var server by remember { mutableStateOf(prefs.serverUrl ?: "") }
 
@@ -179,6 +180,13 @@ fun SettingsScreen(repo: Repository, onBack: () -> Unit, onLogout: () -> Unit) {
                 "Manga order: page one on the right, and you swipe right-to-left to advance",
                 rtl,
             ) { rtl = it; prefs.comicRtl = it }
+
+            SectionHeader("Libby")
+            SwitchRow(
+                "Hide Libby",
+                "Take the mascot out of error popups and Chat. Messages still show; only the artwork goes.",
+                hideLibby,
+            ) { hideLibby = it; prefs.hideLibby = it }
 
             SectionHeader("Library")
             StatsBlock(stats)

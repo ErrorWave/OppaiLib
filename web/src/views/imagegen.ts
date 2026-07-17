@@ -626,7 +626,7 @@ export class OppaiImageGen extends LitElement {
         <span class="material-symbols-rounded">auto_awesome</span>
         <div style="font-size:15px; margin-bottom:6px;">Image generation isn't set up yet.</div>
         <div style="font-size:13px;">
-          Add the URL of your local Automatic1111 / SD.Next server under
+          Add the URL of your local InvokeAI or Automatic1111 / SD.Next server under
           <strong>Settings → Image generation</strong>, then come back here.
         </div>
       </div>`;

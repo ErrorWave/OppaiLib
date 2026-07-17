@@ -129,11 +129,12 @@ func (s *Server) handleImageGenStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"enabled": true, "reachable": false, "error": err.Error()})
 		return
 	}
+	backend, _ := s.imagegen.Backend(ctx, set.ImageGenURL)
 	// Some older A1111-compatible implementations do not expose the LoRA endpoint.
 	// Checkpoints still work there, so report that limitation without declaring the
 	// whole generator unreachable.
 	loras, loraErr := s.imagegen.Loras(ctx, set.ImageGenURL)
-	out := map[string]any{"enabled": true, "reachable": true, "models": models, "loras": loras}
+	out := map[string]any{"enabled": true, "reachable": true, "backend": backend, "models": models, "loras": loras}
 	if loraErr != nil {
 		out["loraError"] = loraErr.Error()
 	}
@@ -196,7 +197,11 @@ func (s *Server) handleImageGenGenerate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	clampGenerate(&req)
-	prompt := req.Prompt
+	// Sanitize the LoRA picks once here; each backend applies them its own way
+	// (A1111 as prompt tokens, InvokeAI as graph nodes). promptRecord is the
+	// human-readable account of the whole request, kept for the save notes.
+	var loras []imagegen.LoraWeight
+	promptRecord := req.Prompt
 	for _, lora := range req.Loras {
 		name := strings.TrimSpace(strings.NewReplacer("<", "", ">", "", ":", "").Replace(lora.Name))
 		if name == "" {
@@ -208,11 +213,12 @@ func (s *Server) handleImageGenGenerate(w http.ResponseWriter, r *http.Request) 
 		} else if weight > 2 {
 			weight = 2
 		}
-		prompt += fmt.Sprintf(" <lora:%s:%.2g>", name, weight)
+		loras = append(loras, imagegen.LoraWeight{Name: name, Weight: weight})
+		promptRecord += fmt.Sprintf(" <lora:%s:%.2g>", name, weight)
 	}
 
 	gen := imagegen.GenerateRequest{
-		Prompt:         prompt,
+		Prompt:         req.Prompt,
 		NegativePrompt: req.NegativePrompt,
 		Checkpoint:     req.Checkpoint,
 		Sampler:        req.Sampler,
@@ -222,6 +228,7 @@ func (s *Server) handleImageGenGenerate(w http.ResponseWriter, r *http.Request) 
 		CfgScale:       req.CfgScale,
 		Seed:           req.Seed,
 		Count:          req.Count,
+		Loras:          loras,
 	}
 	res, err := s.imagegen.Generate(r.Context(), set.ImageGenURL, gen)
 	if err != nil {
@@ -235,17 +242,21 @@ func (s *Server) handleImageGenGenerate(w http.ResponseWriter, r *http.Request) 
 		Seed int64  `json:"seed"`
 	}
 	out := make([]preview, 0, len(res.Images))
-	for _, img := range res.Images {
+	for i, img := range res.Images {
+		seed := res.Seed
+		if i < len(res.Seeds) {
+			seed = res.Seeds[i]
+		}
 		id := s.genCache.put(&genPreview{
 			data:     img,
-			prompt:   prompt,
+			prompt:   promptRecord,
 			negative: req.NegativePrompt,
-			seed:     res.Seed,
+			seed:     seed,
 			model:    req.Checkpoint,
 		})
-		out = append(out, preview{ID: id, Seed: res.Seed})
+		out = append(out, preview{ID: id, Seed: seed})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"images": out, "prompt": prompt})
+	writeJSON(w, http.StatusOK, map[string]any{"images": out, "prompt": promptRecord})
 }
 
 // clampGenerate forces a request into ranges a generator (and our memory) can survive,

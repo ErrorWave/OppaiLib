@@ -291,6 +291,8 @@ export interface GenLora {
 export interface ImageGenStatus {
   enabled: boolean;
   reachable?: boolean;
+  /** Which API the generator speaks — "a1111" or "invokeai" — detected server-side. */
+  backend?: string;
   error?: string;
   models?: GenModel[];
   loras?: GenLora[];

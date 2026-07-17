@@ -313,13 +313,15 @@ private fun AppRoot(
             )
         }
         if (mascotMessage.isNotBlank()) {
-            MascotPopup(mascotMessage, Modifier.align(Alignment.BottomEnd))
+            MascotPopup(mascotMessage, repo.prefs.hideLibby, Modifier.align(Alignment.BottomEnd))
         }
     }
 }
 
+// This popup is the app's error surface, so hiding Libby keeps the bubble and drops
+// only the artwork.
 @Composable
-private fun MascotPopup(message: String, modifier: Modifier = Modifier) {
+private fun MascotPopup(message: String, hideLibby: Boolean, modifier: Modifier = Modifier) {
     Row(
         modifier = modifier.padding(end = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.Bottom,
@@ -329,15 +331,17 @@ private fun MascotPopup(message: String, modifier: Modifier = Modifier) {
             shape = MaterialTheme.shapes.large,
             tonalElevation = 6.dp,
             shadowElevation = 8.dp,
-            modifier = Modifier.widthIn(max = 240.dp).padding(bottom = 72.dp),
+            modifier = Modifier.widthIn(max = 240.dp).padding(bottom = if (hideLibby) 16.dp else 72.dp),
         ) {
             Text(message, modifier = Modifier.padding(14.dp), style = MaterialTheme.typography.bodyMedium)
         }
-        AsyncImage(
-            model = "file:///android_asset/mascot.png",
-            contentDescription = null,
-            modifier = Modifier.size(width = 150.dp, height = 220.dp),
-        )
+        if (!hideLibby) {
+            AsyncImage(
+                model = "file:///android_asset/mascot.png",
+                contentDescription = null,
+                modifier = Modifier.size(width = 150.dp, height = 220.dp),
+            )
+        }
     }
 }
 
