@@ -248,6 +248,12 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
         runCatching { repo.api.health() }.getOrNull()?.let { aiTagger = if (it.aiEnabled) it.aiTagger else "off" }
     }
 
+    // Imports received through Android's share sheet happen outside this composable.
+    // Reload when the repository announces one so the shared item appears immediately.
+    LaunchedEffect(repo) {
+        repo.libraryChanges.collect { refresh() }
+    }
+
     // An import that finished while we were sitting here has put something in the
     // library that the grid doesn't know about. Watching the worker is how the grid
     // finds out — the alternative is a user staring at a stale screen after a

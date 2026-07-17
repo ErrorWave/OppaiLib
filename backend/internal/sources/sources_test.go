@@ -339,6 +339,51 @@ func TestFourChanRejectsUnknownBoard(t *testing.T) {
 	}
 }
 
+// ── Rule34.xxx ─────────────────────────────────────────────────────────────
+
+func TestRule34BrowseAndResolvePost(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("s") {
+		case "list":
+			_, _ = io.WriteString(w, `<div class="image-list"><span class="thumb">
+<a href="/index.php?page=post&amp;s=view&amp;id=123"><img class="preview webm-thumb"
+src="https://wimg.rule34.xxx/thumbnails/1/thumbnail_hash.jpg?123"
+alt="animated blue_hair video score:4 rating:explicit"></a></span></div>`)
+		case "view":
+			_, _ = io.WriteString(w, `<video poster="https://wimg.rule34.xxx/images/1/hash.jpg?123">
+<source src="https://nymp4.rule34.xxx/images/1/hash.mp4?123"></video>
+<textarea id="tags">animated blue_hair video</textarea>`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	src := NewRule34(srv.Client())
+	src.baseURL = srv.URL
+	listing, err := src.Browse(context.Background(), BrowseParams{Feed: "search", Query: "blue hair"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listing.Items) != 1 || listing.Items[0].FeedID != "post:123" || listing.Items[0].Kind != "thread" {
+		t.Fatalf("listing = %+v", listing)
+	}
+	post, err := src.Browse(context.Background(), BrowseParams{Feed: "post:123"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(post.Items) != 1 || post.Items[0].Kind != "video" || !strings.Contains(post.Items[0].MediaURL, "hash.mp4") {
+		t.Fatalf("post = %+v", post)
+	}
+}
+
+func TestRule34TagSearchRequiresTerm(t *testing.T) {
+	src := NewRule34(http.DefaultClient)
+	if _, err := src.Browse(context.Background(), BrowseParams{Feed: "search"}); err == nil {
+		t.Fatal("empty tag search should fail before making a request")
+	}
+}
+
 // An empty feed id means "lead with something", not "error".
 func TestFourChanDefaultsToFirstBoard(t *testing.T) {
 	f, srv := newFourChanStub(t)

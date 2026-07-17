@@ -33,7 +33,10 @@ class Prefs(context: Context) {
 
     var token: String?
         get() = sp.getString(KEY_TOKEN, null)
-        set(v) = sp.edit().putString(KEY_TOKEN, v).apply()
+        // A login is rare and the token is load-bearing. Commit it before reporting
+        // success so Android killing the process immediately afterward cannot leave the
+        // UI signed in while the durable preference still has no session.
+        set(v) { sp.edit().putString(KEY_TOKEN, v).commit() }
 
     var biometricLock: Boolean
         get() = sp.getBoolean(KEY_BIOMETRIC, false)
@@ -133,7 +136,7 @@ class Prefs(context: Context) {
     }
 
     fun clearSession() {
-        sp.edit().remove(KEY_TOKEN).apply()
+        sp.edit().remove(KEY_TOKEN).commit()
     }
 
     companion object {
