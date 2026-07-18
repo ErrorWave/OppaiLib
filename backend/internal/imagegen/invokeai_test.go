@@ -28,11 +28,19 @@ func (st *stubInvoke) server(t *testing.T) *httptest.Server {
 			fmt.Fprint(w, `{"version":"5.4.0"}`)
 		case r.URL.Path == "/api/v2/models/":
 			fmt.Fprint(w, `{"models":[
-				{"key":"key-main","hash":"h1","name":"AnimeThing","base":"sd-1","type":"main"},
+				{"key":"key-main","hash":"h1","name":"AnimeThing","base":"sd-1","type":"main",
+					"default_settings":{"steps":30,"cfg_scale":6.5,"width":512,"height":768}},
 				{"key":"key-flux","hash":"h3","name":"FluxThing","base":"flux","type":"main"},
 				{"key":"key-lora","hash":"h2","name":"detail-tweaker","base":"sd-1","type":"lora"},
-				{"key":"key-lora-xl","hash":"h4","name":"xl-only","base":"sdxl","type":"lora"}
+				{"key":"key-lora-xl","hash":"h4","name":"xl-only","base":"sdxl","type":"lora"},
+				{"key":"key-vae","hash":"h5","name":"fixed-vae","base":"sd-1","type":"vae"}
 			]}`)
+		case r.URL.Path == "/api/v1/style_presets/":
+			fmt.Fprint(w, `[{"id":"sp1","name":"Anime","type":"default",
+				"preset_data":{"positive_prompt":"{prompt}, anime style","negative_prompt":"photo"}}]`)
+		case r.URL.Path == "/api/v2/models/i/key-main/image":
+			w.Header().Set("Content-Type", "image/png")
+			fmt.Fprint(w, "COVERPNG")
 		case r.URL.Path == "/api/v1/queue/default/enqueue_batch":
 			var payload struct {
 				Batch map[string]any `json:"batch"`
@@ -89,12 +97,48 @@ func TestInvokeModelsAndLoras(t *testing.T) {
 	if len(models) != 2 || models[0].Title != "key-main" || models[0].Name != "AnimeThing" {
 		t.Fatalf("models = %+v", models)
 	}
+	// Per-model defaults ride along so pickers can apply them on selection.
+	if models[0].Base != "sd-1" || models[0].Defaults == nil || models[0].Defaults.Steps != 30 || models[0].Defaults.Width != 512 {
+		t.Fatalf("model defaults = %+v", models[0])
+	}
+	if models[1].Defaults != nil {
+		t.Fatalf("flux model should carry no defaults: %+v", models[1])
+	}
 	loras, err := c.Loras(context.Background(), srv.URL)
 	if err != nil {
 		t.Fatalf("loras: %v", err)
 	}
 	if len(loras) != 2 || loras[0].Name != "detail-tweaker" {
 		t.Fatalf("loras = %+v", loras)
+	}
+	vaes, err := c.Vaes(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("vaes: %v", err)
+	}
+	if len(vaes) != 1 || vaes[0].Key != "key-vae" || vaes[0].Base != "sd-1" {
+		t.Fatalf("vaes = %+v", vaes)
+	}
+	templates, err := c.Templates(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("templates: %v", err)
+	}
+	if len(templates) != 1 || templates[0].Name != "Anime" || !strings.Contains(templates[0].Prompt, "{prompt}") {
+		t.Fatalf("templates = %+v", templates)
+	}
+}
+
+func TestInvokeCover(t *testing.T) {
+	srv := (&stubInvoke{}).server(t)
+	c := New()
+	// By key and by display name; a model without cover art is a clean miss.
+	for _, sel := range []string{"key-main", "AnimeThing"} {
+		data, ct, err := c.Cover(context.Background(), srv.URL, sel)
+		if err != nil || string(data) != "COVERPNG" || ct != "image/png" {
+			t.Fatalf("cover(%q) = %q, %q, %v", sel, data, ct, err)
+		}
+	}
+	if _, _, err := c.Cover(context.Background(), srv.URL, "FluxThing"); err == nil {
+		t.Fatal("cover for a model without one should fail")
 	}
 }
 
@@ -106,6 +150,7 @@ func TestInvokeGenerate(t *testing.T) {
 	res, err := c.Generate(context.Background(), srv.URL, GenerateRequest{
 		Prompt:     "portrait",
 		Checkpoint: "key-main",
+		VAE:        "fixed-vae",
 		Steps:      20, Width: 512, Height: 768, CfgScale: 7,
 		Seed: 1000, Count: 2,
 		Loras: []LoraWeight{
@@ -141,6 +186,14 @@ func TestInvokeGenerate(t *testing.T) {
 	}
 	if !strings.Contains(batch, `"node_path":"noise"`) || !strings.Contains(batch, `[1000,1001]`) {
 		t.Errorf("batch seed data wrong: %s", batch)
+	}
+	// The picked VAE decodes the latents, and it decodes in fp32 — fp16 VAE decode is
+	// what produced all-black images.
+	if !strings.Contains(batch, `"key":"key-vae"`) || !strings.Contains(batch, `"vae_loader"`) {
+		t.Errorf("batch is missing the chosen VAE: %s", batch)
+	}
+	if !strings.Contains(batch, `"fp32":true`) {
+		t.Errorf("l2i must decode in fp32: %s", batch)
 	}
 }
 

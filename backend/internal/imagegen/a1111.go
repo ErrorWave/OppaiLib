@@ -81,8 +81,14 @@ func (c *Client) a1111Generate(ctx context.Context, base string, req GenerateReq
 		BatchSize:      1,
 		RestoreAfter:   true,
 	}
-	if req.Checkpoint != "" {
-		payload.OverrideSettings = map[string]any{"sd_model_checkpoint": req.Checkpoint}
+	if req.Checkpoint != "" || req.VAE != "" {
+		payload.OverrideSettings = map[string]any{}
+		if req.Checkpoint != "" {
+			payload.OverrideSettings["sd_model_checkpoint"] = req.Checkpoint
+		}
+		if req.VAE != "" {
+			payload.OverrideSettings["sd_vae"] = req.VAE
+		}
 	}
 
 	body, err := json.Marshal(payload)

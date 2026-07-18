@@ -76,6 +76,24 @@ class Repository(private val appContext: Context, val prefs: Prefs) {
     fun sourceStreamUrl(url: String): String =
         "${baseUrl}api/sources/stream?url=${URLEncoder.encode(url, "UTF-8")}"
 
+    // ── image generation URLs ─────────────────────────────────────────────
+    // All streamed through the server like every other image; the Coil loader's auth
+    // header rides along.
+
+    /** A just-generated preview, held in the server's memory until saved or expired. */
+    fun genPreviewUrl(id: String): String =
+        "${baseUrl}api/imagegen/preview/${URLEncoder.encode(id, "UTF-8")}"
+
+    /** A checkpoint's preview art (user-set, or the generator's own cover image). */
+    fun modelThumbUrl(model: String): String =
+        "${baseUrl}api/imagegen/model-thumb?model=${URLEncoder.encode(model, "UTF-8")}"
+
+    fun loraThumbUrl(name: String): String =
+        "${baseUrl}api/imagegen/lora-thumb?name=${URLEncoder.encode(name, "UTF-8")}"
+
+    fun characterThumbUrl(id: String): String =
+        "${baseUrl}api/imagegen/characters/${URLEncoder.encode(id, "UTF-8")}/thumb"
+
     /**
      * The whole library (or one kind of it), walked a page at a time.
      *

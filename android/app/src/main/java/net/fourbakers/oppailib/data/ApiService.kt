@@ -107,6 +107,22 @@ interface ApiService {
     @POST("api/sources/{id}/save")
     suspend fun saveFromSource(@Path("id") id: String, @Body body: SourceSaveRequest): ImportResponse
 
+    // ── image generation ─────────────────────────────────────────────────
+    // Talks to the local generator through the server; generated images live in the
+    // server's memory until save() files one into the library.
+
+    @GET("api/imagegen/status")
+    suspend fun imageGenStatus(): ImageGenStatus
+
+    @POST("api/imagegen/generate")
+    suspend fun imageGenGenerate(@Body body: GenerateRequest): GenerateResponse
+
+    @POST("api/imagegen/save")
+    suspend fun imageGenSave(@Body body: GenSaveRequest): GenSaveResponse
+
+    @GET("api/imagegen/characters")
+    suspend fun imageGenCharacters(): GenCharacterListResponse
+
     @POST("api/scrape")
     suspend fun scrape(@Body body: UrlRequest): ScrapeResult
 

@@ -138,6 +138,14 @@ func (s *Server) handleImageGenStatus(w http.ResponseWriter, r *http.Request) {
 	if loraErr != nil {
 		out["loraError"] = loraErr.Error()
 	}
+	// VAEs and templates are conveniences, not prerequisites: a generator that lacks
+	// the endpoints (A1111, older InvokeAI) just yields empty lists.
+	if vaes, err := s.imagegen.Vaes(ctx, set.ImageGenURL); err == nil {
+		out["vaes"] = vaes
+	}
+	if templates, err := s.imagegen.Templates(ctx, set.ImageGenURL); err == nil {
+		out["templates"] = templates
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -166,6 +174,7 @@ type generateReq struct {
 	Prompt         string    `json:"prompt"`
 	NegativePrompt string    `json:"negativePrompt"`
 	Checkpoint     string    `json:"checkpoint"`
+	VAE            string    `json:"vae"`
 	Sampler        string    `json:"sampler"`
 	Steps          int       `json:"steps"`
 	Width          int       `json:"width"`
@@ -221,6 +230,7 @@ func (s *Server) handleImageGenGenerate(w http.ResponseWriter, r *http.Request) 
 		Prompt:         req.Prompt,
 		NegativePrompt: req.NegativePrompt,
 		Checkpoint:     req.Checkpoint,
+		VAE:            req.VAE,
 		Sampler:        req.Sampler,
 		Steps:          req.Steps,
 		Width:          req.Width,
@@ -419,7 +429,7 @@ func (s *Server) handleGetModelThumb(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "model is required")
 		return
 	}
-	s.servePickerThumb(w, s.modelThumbPath(model), "model-thumb")
+	s.servePickerThumb(w, r, s.modelThumbPath(model), "model-thumb", model)
 }
 
 func (s *Server) handleGetLoraThumb(w http.ResponseWriter, r *http.Request) {
@@ -428,24 +438,42 @@ func (s *Server) handleGetLoraThumb(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "LoRA name is required")
 		return
 	}
-	s.servePickerThumb(w, s.loraThumbPath(name), "lora-thumb")
+	s.servePickerThumb(w, r, s.loraThumbPath(name), "lora-thumb", name)
 }
 
-func (s *Server) servePickerThumb(w http.ResponseWriter, path, aad string) {
-	blob, err := os.ReadFile(path)
-	if err != nil {
-		writeErr(w, http.StatusNotFound, "no thumbnail for that model")
+// servePickerThumb serves a user-set (encrypted) preview if one exists, and otherwise
+// falls back to the cover art the generator itself keeps for that model — InvokeAI
+// lets users attach one to every model, and those should show up here without being
+// re-uploaded.
+func (s *Server) servePickerThumb(w http.ResponseWriter, r *http.Request, path, aad, name string) {
+	if blob, err := os.ReadFile(path); err == nil {
+		data, err := crypto.OpenBytes(s.kek, blob, []byte(aad))
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "thumbnail unreadable")
+			return
+		}
+		w.Header().Set("Content-Type", safeInlineContentType(http.DetectContentType(data)))
+		w.Header().Set("Cache-Control", "private, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(data)
 		return
 	}
-	data, err := crypto.OpenBytes(s.kek, blob, []byte(aad))
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "thumbnail unreadable")
-		return
+	set := s.settings.Get()
+	if set.ImageGenEnabled {
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		if data, ct, err := s.imagegen.Cover(ctx, set.ImageGenURL, name); err == nil && len(data) > 0 {
+			if ct == "" {
+				ct = http.DetectContentType(data)
+			}
+			w.Header().Set("Content-Type", safeInlineContentType(ct))
+			w.Header().Set("Cache-Control", "private, max-age=300")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
+			return
+		}
 	}
-	w.Header().Set("Content-Type", safeInlineContentType(http.DetectContentType(data)))
-	w.Header().Set("Cache-Control", "private, max-age=60")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(data)
+	writeErr(w, http.StatusNotFound, "no thumbnail for that model")
 }
 
 type setModelThumbReq struct {

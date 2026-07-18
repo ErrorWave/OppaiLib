@@ -42,6 +42,7 @@ type Server struct {
 	imagegen      *imagegen.Client
 	genCache      *genCache
 	modelThumbDir string
+	characterDir  string // encrypted character-library records + thumbnails
 
 	thumbSem  chan struct{} // bounds concurrent ffmpeg thumbnail jobs
 	thumbWarn sync.Once     // warn once if ffmpeg is missing
@@ -84,6 +85,7 @@ func NewServer(cfg *config.Config, database *db.DB, store *storage.Store, sc *sc
 		imagegen:      imagegen.New(),
 		genCache:      newGenCache(),
 		modelThumbDir: filepath.Join(cfg.ConfigDir, "model_thumbs"),
+		characterDir:  filepath.Join(cfg.ConfigDir, "characters"),
 
 		pageCache:    newResolveCache[[]string](sourcePagesTTL),
 		commentCache: newResolveCache[[]sources.Comment](sourceCommentsTTL),
@@ -168,6 +170,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/imagegen/model-thumb", s.requireAuth(s.handleSetModelThumb))
 	mux.HandleFunc("GET /api/imagegen/lora-thumb", s.requireAuth(s.handleGetLoraThumb))
 	mux.HandleFunc("PUT /api/imagegen/lora-thumb", s.requireAuth(s.handleSetLoraThumb))
+	// The character library: reusable prompt fragments with a name and a face. Not
+	// media items — they live encrypted beside the config, like model thumbnails.
+	mux.HandleFunc("GET /api/imagegen/characters", s.requireAuth(s.handleListCharacters))
+	mux.HandleFunc("POST /api/imagegen/characters", s.requireAuth(s.handleSaveCharacter))
+	mux.HandleFunc("DELETE /api/imagegen/characters/{id}", s.requireAuth(s.handleDeleteCharacter))
+	mux.HandleFunc("GET /api/imagegen/characters/{id}/thumb", s.requireAuth(s.handleCharacterThumb))
 
 	// Libby chat proxies only to the operator-configured local OpenAI-compatible
 	// endpoint. Conversation history lives in the clients, not in OppaiLib's DB.

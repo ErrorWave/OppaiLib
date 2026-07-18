@@ -1,7 +1,16 @@
 import { LitElement, html, css, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { iconStyles, motionStyles } from "../theme.js";
-import { api, type GenLora, type GenModel, type GenPreview, type ImageGenStatus } from "../api.js";
+import {
+  api,
+  type GenCharacter,
+  type GenLora,
+  type GenModel,
+  type GenPreview,
+  type GenTemplate,
+  type GenVae,
+  type ImageGenStatus,
+} from "../api.js";
 
 // ── Web Speech typings ─────────────────────────────────────────────────────────
 // The Speech Recognition API isn't in the standard DOM lib, and it's still vendor-
@@ -39,32 +48,68 @@ interface Shot extends GenPreview {
   saved: boolean;
 }
 
-// Aspect presets — the three shapes people actually ask for, so nobody has to type
-// pixel dimensions to get a portrait.
-const SIZES: { id: string; label: string; w: number; h: number }[] = [
-  { id: "portrait", label: "Portrait", w: 512, h: 768 },
-  { id: "square", label: "Square", w: 640, h: 640 },
-  { id: "landscape", label: "Landscape", w: 768, h: 512 },
+// Resolution presets under the prompt's Options menu. SD 1.x models train at ~512,
+// SDXL at ~1024 — offering both families beats making people type pixel counts.
+const RESOLUTIONS: { label: string; hint: string; w: number; h: number }[] = [
+  { label: "Portrait", hint: "512×768", w: 512, h: 768 },
+  { label: "Square", hint: "512×512", w: 512, h: 512 },
+  { label: "Landscape", hint: "768×512", w: 768, h: 512 },
+  { label: "Tall", hint: "640×960", w: 640, h: 960 },
+  { label: "XL Portrait", hint: "832×1216", w: 832, h: 1216 },
+  { label: "XL Square", hint: "1024×1024", w: 1024, h: 1024 },
+  { label: "XL Landscape", hint: "1216×832", w: 1216, h: 832 },
 ];
 
+// Schedulers offered under Model settings. The server maps A1111-style names onto
+// InvokeAI ids, so the same values work against either backend.
+const SCHEDULERS: { id: string; label: string }[] = [
+  { id: "", label: "Default (Euler a)" },
+  { id: "euler a", label: "Euler a" },
+  { id: "dpm++ 2m", label: "DPM++ 2M" },
+  { id: "dpm++ 2m karras", label: "DPM++ 2M Karras" },
+  { id: "dpm++ 2m sde karras", label: "DPM++ 2M SDE Karras" },
+  { id: "dpm++ sde karras", label: "DPM++ SDE Karras" },
+];
+
+// A character being edited (or created — id undefined until saved).
+interface CharDraft {
+  id?: string;
+  name: string;
+  prompt: string;
+  negativePrompt: string;
+  /** A newly-chosen thumbnail as a data URL; undefined keeps the existing one. */
+  imageData?: string;
+}
+
 /**
- * The image-generation studio: pick a checkpoint, speak or type a prompt, generate,
- * and — only on an explicit Save — keep one in the library.
+ * The image-generation studio: pick a checkpoint (and LoRAs, VAE, templates,
+ * characters) in the sidebar, speak or type a prompt, generate, and — only on an
+ * explicit Save — keep one in the library.
  *
  * Nothing here is persisted until Save: the server holds generated images in memory and
  * streams them as previews, so an unsaved batch simply evaporates. That's the whole
  * point of the feature as asked for — "generated images don't save unless manually
  * saved" — made true by where the bytes live, not by a checkbox.
  *
- * It talks to a local Automatic1111 / SD.Next backend through the server (the browser
- * never reaches the generator directly), so it works the same on a phone as on a
- * desktop; speech uses the browser's own recognition where available.
+ * It talks to a local InvokeAI or Automatic1111 / SD.Next backend through the server
+ * (the browser never reaches the generator directly), so it works the same on a phone
+ * as on a desktop; speech uses the browser's own recognition where available.
  */
 @customElement("oppai-imagegen")
 export class OppaiImageGen extends LitElement {
   @state() private status: ImageGenStatus | null = null;
   @state() private checkpoint = "";
+  @state() private vae = "";
+  @state() private templateId = "";
   @state() private selectedLoras: Record<string, number> = {};
+  @state() private characters: GenCharacter[] = [];
+  @state() private selectedChars: string[] = [];
+  @state() private charDraft: CharDraft | null = null;
+  @state() private charBusy = false;
+
+  // Which sidebar sections are unfolded. Models start open — it's the choice that
+  // shapes everything else; the rest unfold on demand.
+  @state() private open: Record<string, boolean> = { models: true };
 
   @state() private speech = "";
   @state() private listening = false;
@@ -72,11 +117,13 @@ export class OppaiImageGen extends LitElement {
 
   @state() private prompt = "";
   @state() private negative = "";
-  @state() private showAdvanced = false;
+  @state() private showOptions = false;
 
-  @state() private sizeId = "portrait";
+  @state() private width = 512;
+  @state() private height = 768;
   @state() private steps = 25;
   @state() private cfg = 7;
+  @state() private scheduler = "";
   @state() private count = 1;
   @state() private seed = -1;
 
@@ -85,8 +132,8 @@ export class OppaiImageGen extends LitElement {
   @state() private error = "";
   @state() private toast = "";
 
-  // Bumps a model card's thumbnail query so a freshly-set preview repaints without a
-  // full reload fighting the browser cache.
+  // Bumps thumbnail query strings so a freshly-set preview repaints without a full
+  // reload fighting the browser cache.
   @state() private thumbVersion = 0;
 
   private recognition: SpeechRecognitionLike | null = null;
@@ -100,9 +147,20 @@ export class OppaiImageGen extends LitElement {
         color: var(--oppai-text);
       }
       .wrap {
-        max-width: 1000px;
+        max-width: 1240px;
         margin: 0 auto;
         padding-bottom: 40px;
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: 320px minmax(0, 1fr);
+        gap: 22px;
+        align-items: start;
+      }
+      @media (max-width: 940px) {
+        .layout {
+          grid-template-columns: minmax(0, 1fr);
+        }
       }
       .empty {
         text-align: center;
@@ -114,67 +172,98 @@ export class OppaiImageGen extends LitElement {
         display: block;
         margin-bottom: 12px;
       }
-      .section-label {
-        font-size: 12px;
-        font-weight: 600;
-        letter-spacing: 0.4px;
-        text-transform: uppercase;
-        color: var(--oppai-text-muted);
-        margin: 22px 0 10px;
-      }
 
-      /* Model picker — a strip of checkpoint cards with their previews. */
-      .models {
+      /* Sidebar: stacked, collapsible sections. */
+      .side {
         display: flex;
-        gap: 12px;
-        overflow-x: auto;
-        padding-bottom: 8px;
-        scrollbar-width: thin;
+        flex-direction: column;
+        gap: 10px;
       }
-      .model-wrap {
-        position: relative;
-        flex: 0 0 auto;
-        width: 116px;
-      }
-      .model {
-        width: 100%;
-        border: 2px solid transparent;
+      .sec {
+        background: var(--oppai-surface-2);
         border-radius: 14px;
         overflow: hidden;
-        background: var(--oppai-surface-2);
+      }
+      .sec-head {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        border: none;
+        background: none;
+        color: var(--oppai-text);
+        font: inherit;
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0.3px;
+        padding: 12px 14px;
+        cursor: pointer;
+        text-align: left;
+      }
+      .sec-head .count {
+        margin-left: auto;
+        font-weight: 400;
+        font-size: 12px;
+        color: var(--oppai-text-muted);
+      }
+      .sec-body {
+        padding: 0 12px 12px;
+      }
+      .sec-note {
+        font-size: 12px;
+        color: var(--oppai-text-muted);
+        padding: 0 2px 4px;
+      }
+
+      /* Picker cards (models, LoRAs, characters) — a 2-up grid in the sidebar. */
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 10px;
+      }
+      .card-wrap {
+        position: relative;
+      }
+      .card {
+        width: 100%;
+        border: 2px solid transparent;
+        border-radius: 12px;
+        overflow: hidden;
+        background: var(--oppai-surface);
         cursor: pointer;
         padding: 0;
         text-align: left;
         transition: transform 0.18s var(--oppai-ease-spring), border-color 0.18s ease;
       }
-      .model:hover {
+      .card:hover {
         transform: translateY(-2px);
       }
-      .model.on {
+      .card.on {
         border-color: var(--oppai-accent);
       }
-      .model-art {
+      .card-art {
         width: 100%;
         aspect-ratio: 3 / 4;
         object-fit: cover;
         display: block;
         background: var(--oppai-surface-3, var(--oppai-surface-2));
       }
-      .model-blank {
+      .card-blank {
         width: 100%;
         aspect-ratio: 3 / 4;
         display: grid;
         place-items: center;
         color: var(--oppai-text-muted);
+        background: var(--oppai-surface-3, var(--oppai-surface-2));
       }
-      .model-name {
+      .card-name {
         font-size: 11px;
         padding: 6px 8px;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
       }
-      .model-edit {
+      .card-edit {
         position: absolute;
         top: 4px;
         right: 4px;
@@ -197,6 +286,84 @@ export class OppaiImageGen extends LitElement {
         border-radius: 8px;
         background: var(--oppai-surface);
         color: var(--oppai-text);
+      }
+
+      /* Compact settings rows in the sidebar. */
+      .settings {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 10px;
+      }
+      .settings .full {
+        grid-column: 1 / -1;
+      }
+      label.field {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--oppai-text-dim);
+        display: block;
+        margin-bottom: 6px;
+      }
+      .num,
+      select.num {
+        width: 100%;
+        box-sizing: border-box;
+        background: var(--oppai-surface);
+        border: 1px solid var(--oppai-border-strong);
+        border-radius: 10px;
+        color: var(--oppai-text);
+        font: inherit;
+        font-size: 13px;
+        padding: 8px 10px;
+        outline: none;
+      }
+
+      /* Template / VAE rows. */
+      .rows {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .row-pick {
+        border: 1px solid var(--oppai-border-strong);
+        background: var(--oppai-surface);
+        color: var(--oppai-text);
+        border-radius: 10px;
+        font: inherit;
+        font-size: 13px;
+        text-align: left;
+        padding: 8px 10px;
+        cursor: pointer;
+      }
+      .row-pick.on {
+        border-color: var(--oppai-accent);
+        background: var(--oppai-accent);
+        color: var(--oppai-on-accent);
+      }
+      .row-sub {
+        display: block;
+        font-size: 11px;
+        opacity: 0.75;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .side-add {
+        margin-top: 10px;
+        width: 100%;
+        height: 36px;
+        border: 1px dashed var(--oppai-border-strong);
+        border-radius: 10px;
+        background: none;
+        color: var(--oppai-text-dim);
+        font: inherit;
+        font-size: 13px;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
       }
 
       /* Prompt block. */
@@ -257,13 +424,6 @@ export class OppaiImageGen extends LitElement {
       textarea:focus {
         border-color: var(--oppai-primary);
       }
-      label.field {
-        font-size: 12px;
-        font-weight: 600;
-        color: var(--oppai-text-dim);
-        display: block;
-        margin-bottom: 6px;
-      }
       .adv-toggle {
         background: none;
         border: none;
@@ -276,19 +436,14 @@ export class OppaiImageGen extends LitElement {
         align-items: center;
         gap: 4px;
       }
-      .adv {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-        gap: 12px;
-      }
       .chips {
         display: flex;
         gap: 8px;
         flex-wrap: wrap;
       }
       .chip {
-        height: 34px;
-        padding: 0 14px;
+        min-height: 34px;
+        padding: 4px 14px;
         border-radius: 17px;
         font-size: 13px;
         font-family: inherit;
@@ -296,22 +451,25 @@ export class OppaiImageGen extends LitElement {
         background: transparent;
         color: var(--oppai-text-dim);
         border: 1px solid var(--oppai-border-strong);
+        text-align: center;
       }
       .chip.on {
         background: var(--oppai-accent);
         color: var(--oppai-on-accent);
         border-color: var(--oppai-accent);
       }
-      .num {
-        width: 100%;
-        box-sizing: border-box;
-        background: var(--oppai-surface);
-        border: 1px solid var(--oppai-border-strong);
-        border-radius: 10px;
-        color: var(--oppai-text);
-        font: inherit;
-        padding: 8px 10px;
-        outline: none;
+      .chip .hint {
+        display: block;
+        font-size: 10px;
+        opacity: 0.75;
+      }
+      .custom-size {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+      }
+      .custom-size .num {
+        width: 90px;
       }
       .generate {
         margin-top: 16px;
@@ -392,6 +550,14 @@ export class OppaiImageGen extends LitElement {
         color: var(--oppai-text-dim);
         margin-top: 12px;
       }
+      .section-label {
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+        color: var(--oppai-text-muted);
+        margin: 22px 0 10px;
+      }
       .toast {
         position: fixed;
         bottom: 24px;
@@ -408,12 +574,91 @@ export class OppaiImageGen extends LitElement {
       .hidden-file {
         display: none;
       }
+
+      /* Character editor dialog. */
+      .overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.55);
+        display: grid;
+        place-items: center;
+        z-index: 50;
+        padding: 20px;
+      }
+      .dialog {
+        background: var(--oppai-surface-2);
+        border-radius: 18px;
+        padding: 18px;
+        width: min(440px, 100%);
+        max-height: 90vh;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .dialog h3 {
+        margin: 0;
+        font-size: 16px;
+      }
+      .dialog input[type="text"] {
+        width: 100%;
+        box-sizing: border-box;
+        background: var(--oppai-surface);
+        border: 1px solid var(--oppai-border-strong);
+        border-radius: 10px;
+        color: var(--oppai-text);
+        font: inherit;
+        font-size: 14px;
+        padding: 9px 11px;
+        outline: none;
+      }
+      .dialog-thumb {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+      }
+      .dialog-thumb img {
+        width: 72px;
+        height: 96px;
+        object-fit: cover;
+        border-radius: 10px;
+        background: var(--oppai-surface);
+      }
+      .dialog-actions {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+      }
+      .dialog-actions .danger {
+        margin-right: auto;
+        color: var(--oppai-error, #f2b8b5);
+      }
+      .btn {
+        border: none;
+        border-radius: 10px;
+        background: var(--oppai-surface-3, var(--oppai-surface));
+        color: var(--oppai-text);
+        font: inherit;
+        font-size: 13px;
+        font-weight: 600;
+        padding: 9px 14px;
+        cursor: pointer;
+      }
+      .btn.primary {
+        background: var(--oppai-primary);
+        color: var(--oppai-on-primary);
+      }
+      .btn:disabled {
+        opacity: 0.55;
+        cursor: default;
+      }
     `,
   ];
 
   connectedCallback() {
     super.connectedCallback();
     void this.loadStatus();
+    void this.loadCharacters();
   }
 
   disconnectedCallback() {
@@ -430,11 +675,37 @@ export class OppaiImageGen extends LitElement {
       // Default to the generator's first checkpoint so a first-time user can generate
       // without picking one.
       if (!this.checkpoint && st.models && st.models.length) {
-        this.checkpoint = st.models[0].title;
+        this.pickModel(st.models[0]);
       }
     } catch (e) {
       this.status = { enabled: true, reachable: false, error: (e as Error).message };
     }
+  }
+
+  private async loadCharacters() {
+    try {
+      const res = await api.characters();
+      this.characters = res.characters;
+      // A deleted character must not linger in the selection.
+      const ids = new Set(res.characters.map((c) => c.id));
+      this.selectedChars = this.selectedChars.filter((id) => ids.has(id));
+    } catch {
+      /* the section just stays empty */
+    }
+  }
+
+  // Selecting a model applies the generator's per-model defaults (InvokeAI keeps
+  // steps/CFG/size/VAE per model) — everything stays editable afterwards.
+  private pickModel(m: GenModel) {
+    this.checkpoint = m.title;
+    const d = m.defaults;
+    if (!d) return;
+    if (d.steps) this.steps = d.steps;
+    if (d.cfgScale) this.cfg = d.cfgScale;
+    if (d.scheduler) this.scheduler = d.scheduler;
+    if (d.width) this.width = d.width;
+    if (d.height) this.height = d.height;
+    if (d.vae) this.vae = d.vae;
   }
 
   // ── speech ────────────────────────────────────────────────────────────────
@@ -506,20 +777,51 @@ export class OppaiImageGen extends LitElement {
     }
   }
 
+  // ── prompt assembly ─────────────────────────────────────────────────────────
+
+  /**
+   * The final prompt pair sent to the generator: the typed prompt, plus the selected
+   * characters' fragments, threaded through the selected template's "{prompt}" slot.
+   */
+  private assemblePrompts(): { prompt: string; negative: string } {
+    const parts = [this.prompt.trim()];
+    const negParts = [this.negative.trim()];
+    for (const id of this.selectedChars) {
+      const c = this.characters.find((ch) => ch.id === id);
+      if (!c) continue;
+      if (c.prompt.trim()) parts.push(c.prompt.trim());
+      if (c.negativePrompt?.trim()) negParts.push(c.negativePrompt.trim());
+    }
+    let prompt = parts.filter(Boolean).join(", ");
+    let negative = negParts.filter(Boolean).join(", ");
+
+    const tpl = (this.status?.templates ?? []).find((t) => t.id === this.templateId);
+    if (tpl) {
+      if (tpl.prompt.includes("{prompt}")) prompt = tpl.prompt.replaceAll("{prompt}", prompt);
+      else if (tpl.prompt.trim()) prompt = `${prompt}, ${tpl.prompt.trim()}`;
+      if (tpl.negativePrompt.trim()) {
+        negative = negative ? `${negative}, ${tpl.negativePrompt.trim()}` : tpl.negativePrompt.trim();
+      }
+    }
+    return { prompt, negative };
+  }
+
   // ── generate / save ─────────────────────────────────────────────────────────
   private async generate() {
     if (this.generating || !this.prompt.trim()) return;
-    const size = SIZES.find((s) => s.id === this.sizeId) ?? SIZES[0];
+    const { prompt, negative } = this.assemblePrompts();
     this.generating = true;
     this.error = "";
     try {
       const res = await api.generate({
-        prompt: this.prompt.trim(),
-        negativePrompt: this.negative.trim() || undefined,
+        prompt,
+        negativePrompt: negative || undefined,
         checkpoint: this.checkpoint || undefined,
+        vae: this.vae || undefined,
+        sampler: this.scheduler || undefined,
         steps: this.steps,
-        width: size.w,
-        height: size.h,
+        width: this.width,
+        height: this.height,
         cfgScale: this.cfg,
         count: this.count,
         seed: this.seed,
@@ -605,6 +907,70 @@ export class OppaiImageGen extends LitElement {
     this.selectedLoras = next;
   }
 
+  private toggleCharacter(id: string) {
+    this.selectedChars = this.selectedChars.includes(id)
+      ? this.selectedChars.filter((c) => c !== id)
+      : [...this.selectedChars, id];
+  }
+
+  private toggleSection(id: string) {
+    this.open = { ...this.open, [id]: !this.open[id] };
+  }
+
+  // ── character editor ────────────────────────────────────────────────────────
+
+  private onCharThumbFile(e: Event) {
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file || !this.charDraft) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (this.charDraft) this.charDraft = { ...this.charDraft, imageData: String(reader.result) };
+    };
+    reader.readAsDataURL(file);
+  }
+
+  private async saveCharacter() {
+    const d = this.charDraft;
+    if (!d || !d.name.trim() || this.charBusy) return;
+    this.charBusy = true;
+    try {
+      await api.saveCharacter({
+        id: d.id,
+        name: d.name.trim(),
+        prompt: d.prompt,
+        negativePrompt: d.negativePrompt,
+        imageData: d.imageData,
+      });
+      this.charDraft = null;
+      this.thumbVersion++;
+      await this.loadCharacters();
+      this.showToast("Character saved");
+    } catch (e) {
+      this.showToast((e as Error).message);
+    } finally {
+      this.charBusy = false;
+    }
+  }
+
+  private async deleteCharacter() {
+    const d = this.charDraft;
+    if (!d?.id || this.charBusy) return;
+    if (!confirm(`Delete “${d.name}” from the character library?`)) return;
+    this.charBusy = true;
+    try {
+      await api.deleteCharacter(d.id);
+      this.charDraft = null;
+      await this.loadCharacters();
+      this.showToast("Character deleted");
+    } catch (e) {
+      this.showToast((e as Error).message);
+    } finally {
+      this.charBusy = false;
+    }
+  }
+
   private showToast(msg: string) {
     this.toast = msg;
     setTimeout(() => (this.toast = ""), 2600);
@@ -613,6 +979,7 @@ export class OppaiImageGen extends LitElement {
   // ── render ────────────────────────────────────────────────────────────────
   render() {
     return html`<div class="wrap">${this.renderBody()}</div>
+      ${this.charDraft ? this.renderCharEditor(this.charDraft) : nothing}
       ${this.toast ? html`<div class="toast">${this.toast}</div>` : nothing}`;
   }
 
@@ -641,42 +1008,69 @@ export class OppaiImageGen extends LitElement {
     }
 
     return html`
-      ${this.renderModels(st.models ?? [])}
-      ${this.renderLoras(st.loras ?? [], st.loraError)}
-      ${this.renderPrompt()}
-      ${this.error ? html`<div class="banner">${this.error}</div>` : nothing}
-      ${this.renderResults()}
+      <div class="layout">
+        <aside class="side">
+          ${this.renderModelSection(st.models ?? [])}
+          ${this.renderLoraSection(st.loras ?? [], st.loraError)}
+          ${this.renderVaeSection(st.vaes ?? [])}
+          ${this.renderSettingsSection()}
+          ${this.renderTemplateSection(st.templates ?? [])}
+          ${this.renderCharacterSection()}
+        </aside>
+        <div>
+          ${this.renderPrompt()}
+          ${this.error ? html`<div class="banner">${this.error}</div>` : nothing}
+          ${this.renderResults()}
+        </div>
+      </div>
     `;
   }
 
-  private renderModels(models: GenModel[]) {
-    if (!models.length) {
-      return html`<div class="banner">
-        Connected, but the generator lists no checkpoints. Add a model to it and hit Retry.
-      </div>`;
-    }
+  private section(id: string, label: string, count: string, body: unknown) {
+    const open = !!this.open[id];
     return html`
-      <div class="section-label">Model</div>
-      <div class="models">
+      <div class="sec">
+        <button class="sec-head" @click=${() => this.toggleSection(id)}>
+          <span class="material-symbols-rounded" style="font-size:18px;"
+            >${open ? "expand_more" : "chevron_right"}</span
+          >
+          ${label}
+          <span class="count">${count}</span>
+        </button>
+        ${open ? html`<div class="sec-body">${body}</div>` : nothing}
+      </div>
+    `;
+  }
+
+  private renderModelSection(models: GenModel[]) {
+    if (!models.length) {
+      return this.section(
+        "models",
+        "Models",
+        "0",
+        html`<div class="sec-note">
+          Connected, but the generator lists no checkpoints. Add a model to it and reload.
+        </div>`,
+      );
+    }
+    const body = html`
+      <div class="cards">
         ${models.map((m) => {
           const on = m.title === this.checkpoint;
           const thumb = `${api.modelThumbURL(m.title)}&v=${this.thumbVersion}`;
           return html`
-            <div class="model-wrap">
-              <button
-                class="model ${on ? "on" : ""}"
-                title=${m.title}
-                @click=${() => (this.checkpoint = m.title)}
-              >
+            <div class="card-wrap">
+              <button class="card ${on ? "on" : ""}" title=${m.title} @click=${() => this.pickModel(m)}>
                 <img
-                  class="model-art"
+                  class="card-art"
                   src=${thumb}
                   alt=${m.model_name}
+                  loading="lazy"
                   @error=${(e: Event) => ((e.target as HTMLImageElement).style.visibility = "hidden")}
                 />
-                <div class="model-name">${m.model_name}</div>
+                <div class="card-name">${m.model_name}${m.base ? html`<span class="row-sub">${m.base}</span>` : nothing}</div>
               </button>
-              <label class="model-edit" title="Upload a preview for this model">
+              <label class="card-edit" title="Upload a preview for this model">
                 <span class="material-symbols-rounded" style="font-size:15px;">photo_camera</span>
                 <input
                   class="hidden-file"
@@ -690,28 +1084,33 @@ export class OppaiImageGen extends LitElement {
         })}
       </div>
     `;
+    return this.section("models", "Models", String(models.length), body);
   }
 
-  private renderLoras(loras: GenLora[], loraError?: string) {
+  private renderLoraSection(loras: GenLora[], loraError?: string) {
     if (!loras.length) {
-      return loraError
-        ? html`<div class="banner">LoRAs aren't available from this generator: ${loraError}</div>`
-        : nothing;
+      return this.section(
+        "loras",
+        "LoRAs",
+        "0",
+        html`<div class="sec-note">
+          ${loraError ? `LoRAs aren't available from this generator: ${loraError}` : "No LoRAs installed."}
+        </div>`,
+      );
     }
-    return html`
-      <div class="section-label">LoRAs</div>
-      <div class="models">
+    const body = html`
+      <div class="cards">
         ${loras.map((lora) => {
           const on = lora.name in this.selectedLoras;
           const thumb = `${api.loraThumbURL(lora.name)}&v=${this.thumbVersion}`;
           return html`
-            <div class="model-wrap">
-              <button class="model ${on ? "on" : ""}" title=${lora.name} @click=${() => this.toggleLora(lora.name)}>
-                <img class="model-art" src=${thumb} alt=${lora.alias || lora.name}
+            <div class="card-wrap">
+              <button class="card ${on ? "on" : ""}" title=${lora.name} @click=${() => this.toggleLora(lora.name)}>
+                <img class="card-art" src=${thumb} alt=${lora.alias || lora.name} loading="lazy"
                   @error=${(e: Event) => ((e.target as HTMLImageElement).style.visibility = "hidden")} />
-                <div class="model-name">${lora.alias || lora.name}</div>
+                <div class="card-name">${lora.alias || lora.name}</div>
               </button>
-              <label class="model-edit" title="Upload a preview for this LoRA">
+              <label class="card-edit" title="Upload a preview for this LoRA">
                 <span class="material-symbols-rounded" style="font-size:15px;">photo_camera</span>
                 <input class="hidden-file" type="file" accept="image/*"
                   @change=${(e: Event) => this.onUploadLoraThumb(lora.name, e)} />
@@ -729,11 +1128,195 @@ export class OppaiImageGen extends LitElement {
         })}
       </div>
     `;
+    return this.section("loras", "LoRAs", String(Object.keys(this.selectedLoras).length || loras.length), body);
+  }
+
+  private renderVaeSection(vaes: GenVae[]) {
+    const body = !vaes.length
+      ? html`<div class="sec-note">The generator lists no standalone VAEs; the model's own is used.</div>`
+      : html`
+          <div class="rows">
+            <button class="row-pick ${this.vae === "" ? "on" : ""}" @click=${() => (this.vae = "")}>
+              Model default
+            </button>
+            ${vaes.map(
+              (v) => html`<button
+                class="row-pick ${this.vae === v.key ? "on" : ""}"
+                @click=${() => (this.vae = this.vae === v.key ? "" : v.key)}
+              >
+                ${v.name}
+                ${v.base ? html`<span class="row-sub">${v.base}</span>` : nothing}
+              </button>`,
+            )}
+          </div>
+        `;
+    return this.section("vaes", "VAEs", this.vae ? "1 picked" : "default", body);
+  }
+
+  private renderSettingsSection() {
+    const body = html`
+      <div class="settings">
+        <div class="full">
+          <label class="field">Scheduler</label>
+          <select
+            class="num"
+            .value=${this.scheduler}
+            @change=${(e: Event) => (this.scheduler = (e.target as HTMLSelectElement).value)}
+          >
+            ${SCHEDULERS.map((s) => html`<option value=${s.id} ?selected=${s.id === this.scheduler}>${s.label}</option>`)}
+          </select>
+        </div>
+        <div>
+          <label class="field">Steps</label>
+          <input class="num" type="number" min="1" max="80" .value=${String(this.steps)}
+            @input=${(e: Event) => (this.steps = clampNum((e.target as HTMLInputElement).value, 1, 80, 25))} />
+        </div>
+        <div>
+          <label class="field">CFG scale</label>
+          <input class="num" type="number" min="1" max="30" step="0.5" .value=${String(this.cfg)}
+            @input=${(e: Event) => (this.cfg = clampFloat((e.target as HTMLInputElement).value, 1, 30, 7))} />
+        </div>
+        <div>
+          <label class="field">Count</label>
+          <input class="num" type="number" min="1" max="8" .value=${String(this.count)}
+            @input=${(e: Event) => (this.count = clampNum((e.target as HTMLInputElement).value, 1, 8, 1))} />
+        </div>
+        <div>
+          <label class="field">Seed (-1 random)</label>
+          <input class="num" type="number" .value=${String(this.seed)}
+            @input=${(e: Event) => (this.seed = clampNum((e.target as HTMLInputElement).value, -1, 2 ** 31, -1))} />
+        </div>
+      </div>
+    `;
+    return this.section("settings", "Model settings", `${this.steps} steps`, body);
+  }
+
+  private renderTemplateSection(templates: GenTemplate[]) {
+    const body = !templates.length
+      ? html`<div class="sec-note">
+          No templates on the generator. In InvokeAI they're called style presets; add some there and reload.
+        </div>`
+      : html`
+          <div class="rows">
+            ${templates.map(
+              (t) => html`<button
+                class="row-pick ${this.templateId === t.id ? "on" : ""}"
+                title=${t.prompt}
+                @click=${() => (this.templateId = this.templateId === t.id ? "" : t.id)}
+              >
+                ${t.name}
+                <span class="row-sub">${t.prompt}</span>
+              </button>`,
+            )}
+          </div>
+        `;
+    const current = templates.find((t) => t.id === this.templateId);
+    return this.section("templates", "Invoke templates", current ? current.name : "none", body);
+  }
+
+  private renderCharacterSection() {
+    const body = html`
+      ${this.characters.length
+        ? html`<div class="cards">
+            ${this.characters.map((c) => {
+              const on = this.selectedChars.includes(c.id);
+              const thumb = `${api.characterThumbURL(c.id)}?v=${this.thumbVersion}`;
+              return html`
+                <div class="card-wrap">
+                  <button class="card ${on ? "on" : ""}" title=${c.prompt} @click=${() => this.toggleCharacter(c.id)}>
+                    ${c.hasThumb
+                      ? html`<img class="card-art" src=${thumb} alt=${c.name} loading="lazy"
+                          @error=${(e: Event) => ((e.target as HTMLImageElement).style.visibility = "hidden")} />`
+                      : html`<div class="card-blank">
+                          <span class="material-symbols-rounded" style="font-size:34px;">person</span>
+                        </div>`}
+                    <div class="card-name">${c.name}</div>
+                  </button>
+                  <button
+                    class="card-edit"
+                    title="Edit ${c.name}"
+                    @click=${() =>
+                      (this.charDraft = {
+                        id: c.id,
+                        name: c.name,
+                        prompt: c.prompt,
+                        negativePrompt: c.negativePrompt ?? "",
+                      })}
+                  >
+                    <span class="material-symbols-rounded" style="font-size:15px;">edit</span>
+                  </button>
+                </div>
+              `;
+            })}
+          </div>`
+        : html`<div class="sec-note">
+            Save the people you keep drawing: a character bundles a prompt fragment and a
+            portrait, and clicking one adds them to the next generation.
+          </div>`}
+      <button
+        class="side-add"
+        @click=${() => (this.charDraft = { name: "", prompt: "", negativePrompt: "" })}
+      >
+        <span class="material-symbols-rounded" style="font-size:17px;">person_add</span> New character
+      </button>
+    `;
+    const picked = this.selectedChars.length;
+    return this.section("characters", "Characters", picked ? `${picked} picked` : String(this.characters.length), body);
+  }
+
+  private renderCharEditor(d: CharDraft) {
+    const existingThumb =
+      d.imageData ?? (d.id && this.characters.find((c) => c.id === d.id)?.hasThumb
+        ? `${api.characterThumbURL(d.id)}?v=${this.thumbVersion}`
+        : undefined);
+    return html`
+      <div class="overlay" @click=${(e: Event) => { if (e.target === e.currentTarget) this.charDraft = null; }}>
+        <div class="dialog">
+          <h3>${d.id ? "Edit character" : "New character"}</h3>
+          <div>
+            <label class="field">Name</label>
+            <input type="text" .value=${d.name} placeholder="Rin"
+              @input=${(e: Event) => (this.charDraft = { ...d, name: (e.target as HTMLInputElement).value })} />
+          </div>
+          <div>
+            <label class="field">Prompt fragment</label>
+            <textarea .value=${d.prompt} placeholder="1girl, red hair, green eyes, …"
+              @input=${(e: Event) => (this.charDraft = { ...d, prompt: (e.target as HTMLTextAreaElement).value })}></textarea>
+          </div>
+          <div>
+            <label class="field">Negative fragment (optional)</label>
+            <textarea .value=${d.negativePrompt} placeholder="blonde, …"
+              @input=${(e: Event) => (this.charDraft = { ...d, negativePrompt: (e.target as HTMLTextAreaElement).value })}></textarea>
+          </div>
+          <div class="dialog-thumb">
+            ${existingThumb
+              ? html`<img src=${existingThumb} alt="Thumbnail" />`
+              : html`<div class="card-blank" style="width:72px; height:96px; aspect-ratio:auto; border-radius:10px;">
+                  <span class="material-symbols-rounded">person</span>
+                </div>`}
+            <label class="btn">
+              Choose thumbnail…
+              <input class="hidden-file" type="file" accept="image/*" @change=${(e: Event) => this.onCharThumbFile(e)} />
+            </label>
+          </div>
+          <div class="dialog-actions">
+            ${d.id
+              ? html`<button class="btn danger" ?disabled=${this.charBusy} @click=${() => this.deleteCharacter()}>
+                  Delete
+                </button>`
+              : nothing}
+            <button class="btn" @click=${() => (this.charDraft = null)}>Cancel</button>
+            <button class="btn primary" ?disabled=${!d.name.trim() || this.charBusy} @click=${() => this.saveCharacter()}>
+              Save
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
   }
 
   private renderPrompt() {
     return html`
-      <div class="section-label">Prompt</div>
       <div class="prompt-card">
         <div class="speech-row">
           ${this.speechSupported
@@ -765,14 +1348,14 @@ export class OppaiImageGen extends LitElement {
           ></textarea>
         </div>
 
-        <button class="adv-toggle" @click=${() => (this.showAdvanced = !this.showAdvanced)}>
+        <button class="adv-toggle" @click=${() => (this.showOptions = !this.showOptions)}>
           <span class="material-symbols-rounded" style="font-size:18px;"
-            >${this.showAdvanced ? "expand_less" : "tune"}</span
+            >${this.showOptions ? "expand_less" : "tune"}</span
           >
-          ${this.showAdvanced ? "Hide options" : "Options"}
+          ${this.showOptions ? "Hide options" : "Options"}
         </button>
 
-        ${this.showAdvanced ? this.renderAdvanced() : nothing}
+        ${this.showOptions ? this.renderPromptOptions() : nothing}
       </div>
 
       <button class="generate" ?disabled=${this.generating || !this.prompt.trim()} @click=${() => this.generate()}>
@@ -783,7 +1366,7 @@ export class OppaiImageGen extends LitElement {
     `;
   }
 
-  private renderAdvanced() {
+  private renderPromptOptions() {
     return html`
       <div>
         <label class="field">Negative prompt</label>
@@ -794,59 +1377,31 @@ export class OppaiImageGen extends LitElement {
         ></textarea>
       </div>
       <div>
-        <label class="field">Shape</label>
+        <label class="field">Resolution</label>
         <div class="chips">
-          ${SIZES.map(
-            (s) => html`<button
-              class="chip ${s.id === this.sizeId ? "on" : ""}"
-              @click=${() => (this.sizeId = s.id)}
-            >${s.label}</button>`,
-          )}
+          ${RESOLUTIONS.map((r) => {
+            const on = r.w === this.width && r.h === this.height;
+            return html`<button
+              class="chip ${on ? "on" : ""}"
+              @click=${() => {
+                this.width = r.w;
+                this.height = r.h;
+              }}
+            >${r.label}<span class="hint">${r.hint}</span></button>`;
+          })}
         </div>
       </div>
-      <div class="adv">
+      <div class="custom-size">
         <div>
-          <label class="field">Steps</label>
-          <input
-            class="num"
-            type="number"
-            min="1"
-            max="80"
-            .value=${String(this.steps)}
-            @input=${(e: Event) => (this.steps = clampNum((e.target as HTMLInputElement).value, 1, 80, 25))}
-          />
+          <label class="field">Width</label>
+          <input class="num" type="number" min="64" max="2048" step="8" .value=${String(this.width)}
+            @input=${(e: Event) => (this.width = clampNum((e.target as HTMLInputElement).value, 64, 2048, 512))} />
         </div>
+        <span class="material-symbols-rounded" style="margin-top:22px; color:var(--oppai-text-muted);">close</span>
         <div>
-          <label class="field">CFG scale</label>
-          <input
-            class="num"
-            type="number"
-            min="1"
-            max="30"
-            step="0.5"
-            .value=${String(this.cfg)}
-            @input=${(e: Event) => (this.cfg = clampNum((e.target as HTMLInputElement).value, 1, 30, 7))}
-          />
-        </div>
-        <div>
-          <label class="field">Count</label>
-          <input
-            class="num"
-            type="number"
-            min="1"
-            max="8"
-            .value=${String(this.count)}
-            @input=${(e: Event) => (this.count = clampNum((e.target as HTMLInputElement).value, 1, 8, 1))}
-          />
-        </div>
-        <div>
-          <label class="field">Seed (-1 random)</label>
-          <input
-            class="num"
-            type="number"
-            .value=${String(this.seed)}
-            @input=${(e: Event) => (this.seed = clampNum((e.target as HTMLInputElement).value, -1, 2 ** 31, -1))}
-          />
+          <label class="field">Height</label>
+          <input class="num" type="number" min="64" max="2048" step="8" .value=${String(this.height)}
+            @input=${(e: Event) => (this.height = clampNum((e.target as HTMLInputElement).value, 64, 2048, 768))} />
         </div>
       </div>
     `;
@@ -883,11 +1438,18 @@ export class OppaiImageGen extends LitElement {
   }
 }
 
-/** Clamp a numeric input's string value to a range, falling back to a default. */
+/** Clamp a numeric input's string value to an integer range, falling back to a default. */
 function clampNum(v: string, lo: number, hi: number, def: number): number {
   const n = Number(v);
   if (!Number.isFinite(n)) return def;
   return Math.min(hi, Math.max(lo, Math.round(n)));
+}
+
+/** Like clampNum but keeps fractional values (CFG scale moves in halves). */
+function clampFloat(v: string, lo: number, hi: number, def: number): number {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return def;
+  return Math.min(hi, Math.max(lo, n));
 }
 
 declare global {

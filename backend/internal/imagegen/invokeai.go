@@ -27,11 +27,54 @@ const invokeQueue = "default"
 
 // invokeModelRecord is one entry from /api/v2/models/ (InvokeAI 4.0+).
 type invokeModelRecord struct {
-	Key  string `json:"key"`
-	Hash string `json:"hash"`
-	Name string `json:"name"`
-	Base string `json:"base"` // "sd-1", "sd-2", "sdxl", "flux", ...
-	Type string `json:"type"` // "main", "lora", "vae", ...
+	Key             string                 `json:"key"`
+	Hash            string                 `json:"hash"`
+	Name            string                 `json:"name"`
+	Base            string                 `json:"base"`        // "sd-1", "sd-2", "sdxl", "flux", ...
+	Type            string                 `json:"type"`        // "main", "lora", "vae", ...
+	CoverImage      string                 `json:"cover_image"` // gallery image name, when the user set one
+	DefaultSettings *invokeDefaultSettings `json:"default_settings"`
+}
+
+// invokeDefaultSettings is InvokeAI's per-model recommended settings blob. Every
+// field is nullable there, hence the pointers.
+type invokeDefaultSettings struct {
+	Vae       *string  `json:"vae"`
+	Scheduler *string  `json:"scheduler"`
+	Steps     *int     `json:"steps"`
+	CfgScale  *float64 `json:"cfg_scale"`
+	Width     *int     `json:"width"`
+	Height    *int     `json:"height"`
+}
+
+func (d *invokeDefaultSettings) toModelDefaults() *ModelDefaults {
+	if d == nil {
+		return nil
+	}
+	out := &ModelDefaults{}
+	any := false
+	if d.Steps != nil && *d.Steps > 0 {
+		out.Steps, any = *d.Steps, true
+	}
+	if d.CfgScale != nil && *d.CfgScale > 0 {
+		out.CfgScale, any = *d.CfgScale, true
+	}
+	if d.Scheduler != nil && *d.Scheduler != "" {
+		out.Scheduler, any = *d.Scheduler, true
+	}
+	if d.Width != nil && *d.Width > 0 {
+		out.Width, any = *d.Width, true
+	}
+	if d.Height != nil && *d.Height > 0 {
+		out.Height, any = *d.Height, true
+	}
+	if d.Vae != nil && *d.Vae != "" {
+		out.Vae, any = *d.Vae, true
+	}
+	if !any {
+		return nil
+	}
+	return out
 }
 
 func invokeBaseSupported(base string) bool {
@@ -60,9 +103,90 @@ func (c *Client) invokeModels(ctx context.Context, base string) ([]Model, error)
 		if r.Type != "main" {
 			continue
 		}
-		out = append(out, Model{Title: r.Key, Name: r.Name, Hash: r.Hash})
+		out = append(out, Model{
+			Title: r.Key, Name: r.Name, Hash: r.Hash, Base: r.Base,
+			Defaults: r.DefaultSettings.toModelDefaults(),
+		})
 	}
 	return out, nil
+}
+
+func (c *Client) invokeVaes(ctx context.Context, base string) ([]Vae, error) {
+	records, err := c.invokeModelList(ctx, base)
+	if err != nil {
+		return nil, err
+	}
+	out := []Vae{}
+	for _, r := range records {
+		if r.Type != "vae" {
+			continue
+		}
+		out = append(out, Vae{Key: r.Key, Name: r.Name, Base: r.Base})
+	}
+	return out, nil
+}
+
+// invokeTemplates lists InvokeAI's style presets — named prompt scaffolds whose
+// positive half carries a "{prompt}" placeholder for the user's text.
+func (c *Client) invokeTemplates(ctx context.Context, base string) ([]Template, error) {
+	var out []struct {
+		ID         string `json:"id"`
+		Name       string `json:"name"`
+		PresetData struct {
+			Positive string `json:"positive_prompt"`
+			Negative string `json:"negative_prompt"`
+		} `json:"preset_data"`
+	}
+	if err := c.getJSON(ctx, base+"/api/v1/style_presets/", &out); err != nil {
+		return nil, err
+	}
+	templates := []Template{}
+	for _, p := range out {
+		templates = append(templates, Template{
+			ID: p.ID, Name: p.Name,
+			Prompt:         p.PresetData.Positive,
+			NegativePrompt: p.PresetData.Negative,
+		})
+	}
+	return templates, nil
+}
+
+// invokeCover fetches the cover art InvokeAI keeps for a model, resolving the picker
+// selector (a main model's key, a LoRA's display name) back to the record first.
+func (c *Client) invokeCover(ctx context.Context, base, name string) ([]byte, string, error) {
+	records, err := c.invokeModelList(ctx, base)
+	if err != nil {
+		return nil, "", err
+	}
+	var key string
+	for _, r := range records {
+		if r.Key == name || (key == "" && r.Name == name) {
+			key = r.Key
+			if r.Key == name {
+				break
+			}
+		}
+	}
+	if key == "" {
+		return nil, "", fmt.Errorf("no such model")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/v2/models/i/"+url.PathEscape(key)+"/image", nil)
+	if err != nil {
+		return nil, "", err
+	}
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("image generator unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("model has no cover image")
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	if err != nil {
+		return nil, "", err
+	}
+	return data, resp.Header.Get("Content-Type"), nil
 }
 
 func (c *Client) invokeLoras(ctx context.Context, base string) ([]Lora, error) {
@@ -132,8 +256,9 @@ type invokeLoraApply struct {
 
 // buildInvokeGraph assembles the standard txt2img node graph: model loader → LoRA
 // chain → prompts/noise → denoise → latents-to-image. Only the final l2i node is
-// non-intermediate, so intermediates never pile up in InvokeAI's gallery.
-func buildInvokeGraph(main invokeModelRecord, loras []invokeLoraApply, req GenerateRequest, scheduler string) map[string]any {
+// non-intermediate, so intermediates never pile up in InvokeAI's gallery. A non-nil
+// vae swaps in a standalone VAE for the decode; nil uses the checkpoint's own.
+func buildInvokeGraph(main invokeModelRecord, vae *invokeModelRecord, loras []invokeLoraApply, req GenerateRequest, scheduler string) map[string]any {
 	sdxl := main.Base == "sdxl"
 	nodes := map[string]any{}
 	edges := []map[string]any{}
@@ -223,13 +348,25 @@ func buildInvokeGraph(main invokeModelRecord, loras []invokeLoraApply, req Gener
 	edge("noise", "noise", "denoise", "noise")
 	edge(unetNode, "unet", "denoise", "unet")
 
+	// fp32 decode: fp16 VAEs (SDXL's stock one especially, and SD 1.5 on some cards)
+	// overflow to NaN during decode, which comes out as an all-black image. Decoding
+	// in fp32 costs a moment and never blacks out.
 	nodes["l2i"] = map[string]any{
 		"id": "l2i", "type": "l2i",
-		"fp32":            false,
+		"fp32":            true,
 		"is_intermediate": false,
 	}
 	edge("denoise", "latents", "l2i", "latents")
-	edge("model", "vae", "l2i", "vae")
+	if vae != nil {
+		nodes["vae"] = map[string]any{
+			"id": "vae", "type": "vae_loader",
+			"vae_model":       invokeModelIdent(*vae),
+			"is_intermediate": true,
+		}
+		edge("vae", "vae", "l2i", "vae")
+	} else {
+		edge("model", "vae", "l2i", "vae")
+	}
 
 	return map[string]any{"id": "oppailib_txt2img", "nodes": nodes, "edges": edges}
 }
@@ -325,6 +462,23 @@ func (c *Client) invokeGenerate(ctx context.Context, base string, req GenerateRe
 		}
 	}
 
+	// Resolve the VAE: the explicit pick first, else the model's own default-settings
+	// VAE (what InvokeAI's UI would use). A record for another base is ignored rather
+	// than failing graph validation — the checkpoint's built-in VAE still decodes.
+	wantVae := req.VAE
+	if wantVae == "" && main.DefaultSettings != nil && main.DefaultSettings.Vae != nil {
+		wantVae = *main.DefaultSettings.Vae
+	}
+	var vae *invokeModelRecord
+	if wantVae != "" {
+		for i, r := range records {
+			if r.Type == "vae" && (r.Key == wantVae || r.Name == wantVae) && r.Base == main.Base {
+				vae = &records[i]
+				break
+			}
+		}
+	}
+
 	seeds := make([]int64, req.Count)
 	for i := range seeds {
 		if req.Seed < 0 {
@@ -334,7 +488,7 @@ func (c *Client) invokeGenerate(ctx context.Context, base string, req GenerateRe
 		}
 	}
 
-	graph := buildInvokeGraph(main, loras, req, invokeScheduler(req.Sampler))
+	graph := buildInvokeGraph(main, vae, loras, req, invokeScheduler(req.Sampler))
 	payload := map[string]any{
 		"prepend": false,
 		"batch": map[string]any{

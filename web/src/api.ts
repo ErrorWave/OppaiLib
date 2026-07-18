@@ -275,12 +275,49 @@ export interface GenModel {
   title: string;
   model_name: string;
   hash?: string;
+  /** Model family — "sd-1", "sd-2", "sdxl" — when the generator reports one. */
+  base?: string;
+  /** The generator's recommended settings for this model, applied on selection. */
+  defaults?: GenModelDefaults;
+}
+
+export interface GenModelDefaults {
+  steps?: number;
+  cfgScale?: number;
+  scheduler?: string;
+  width?: number;
+  height?: number;
+  vae?: string;
 }
 
 export interface GenLora {
   name: string;
   alias?: string;
   path?: string;
+}
+
+/** A standalone VAE. `key` is the selector value the generate call wants. */
+export interface GenVae {
+  key: string;
+  name: string;
+  base?: string;
+}
+
+/** A prompt template (InvokeAI style preset). `prompt` may contain "{prompt}". */
+export interface GenTemplate {
+  id: string;
+  name: string;
+  prompt: string;
+  negativePrompt: string;
+}
+
+/** A character from the library: a reusable prompt fragment with a thumbnail. */
+export interface GenCharacter {
+  id: string;
+  name: string;
+  prompt: string;
+  negativePrompt?: string;
+  hasThumb: boolean;
 }
 
 /**
@@ -297,6 +334,8 @@ export interface ImageGenStatus {
   models?: GenModel[];
   loras?: GenLora[];
   loraError?: string;
+  vaes?: GenVae[];
+  templates?: GenTemplate[];
 }
 
 /** A just-generated image, held server-side in memory until saved. `id` streams it. */
@@ -310,6 +349,7 @@ export interface GenerateParams {
   prompt: string;
   negativePrompt?: string;
   checkpoint?: string;
+  vae?: string;
   sampler?: string;
   steps?: number;
   width?: number;
@@ -584,4 +624,26 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(body),
     }),
+
+  // ── character library ──────────────────────────────────────────────────────
+  // Reusable prompt fragments with a name and a face; stored encrypted server-side.
+
+  characters: () => request<{ characters: GenCharacter[] }>("/api/imagegen/characters"),
+  saveCharacter: (body: {
+    id?: string;
+    name: string;
+    prompt: string;
+    negativePrompt?: string;
+    previewId?: string;
+    imageData?: string;
+  }) =>
+    request<GenCharacter>("/api/imagegen/characters", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  deleteCharacter: (id: string) =>
+    request<{ status: string }>(`/api/imagegen/characters/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+  characterThumbURL: (id: string) => `/api/imagegen/characters/${encodeURIComponent(id)}/thumb`,
 };

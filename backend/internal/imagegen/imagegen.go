@@ -63,9 +63,41 @@ func New() *Client {
 // handed back on generate (A1111's checkpoint title, InvokeAI's model key); the rest
 // is for display.
 type Model struct {
-	Title string `json:"title"`
-	Name  string `json:"model_name"`
-	Hash  string `json:"hash,omitempty"`
+	Title    string         `json:"title"`
+	Name     string         `json:"model_name"`
+	Hash     string         `json:"hash,omitempty"`
+	Base     string         `json:"base,omitempty"`
+	Defaults *ModelDefaults `json:"defaults,omitempty"`
+}
+
+// ModelDefaults are the generation settings the generator recommends for a model
+// (InvokeAI stores these per model). Zero fields mean "no opinion"; the UI applies
+// them when the model is picked, and the user can still override everything.
+type ModelDefaults struct {
+	Steps     int     `json:"steps,omitempty"`
+	CfgScale  float64 `json:"cfgScale,omitempty"`
+	Scheduler string  `json:"scheduler,omitempty"`
+	Width     int     `json:"width,omitempty"`
+	Height    int     `json:"height,omitempty"`
+	Vae       string  `json:"vae,omitempty"`
+}
+
+// Vae is one standalone VAE the generator can decode with. Key is the selector value
+// handed back on generate; Base says which model family it belongs to.
+type Vae struct {
+	Key  string `json:"key"`
+	Name string `json:"name"`
+	Base string `json:"base,omitempty"`
+}
+
+// Template is a reusable prompt scaffold (InvokeAI calls them style presets, A1111
+// calls them styles). Prompt may contain a "{prompt}" placeholder; clients splice the
+// user's text in before generating, so the server never needs to know about them.
+type Template struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Prompt         string `json:"prompt"`
+	NegativePrompt string `json:"negativePrompt"`
 }
 
 // Lora is one LoRA network. Name is the selector value handed back on generate;
@@ -88,6 +120,7 @@ type GenerateRequest struct {
 	Prompt         string
 	NegativePrompt string
 	Checkpoint     string // Model.Title; empty leaves the choice to the backend
+	VAE            string // Vae.Key (or name); empty means the model's own VAE
 	Sampler        string
 	Steps          int
 	Width          int
@@ -173,6 +206,45 @@ func (c *Client) Loras(ctx context.Context, base string) ([]Lora, error) {
 		return c.invokeLoras(ctx, base)
 	}
 	return c.a1111Loras(ctx, base)
+}
+
+// Vaes lists the standalone VAEs the generator has installed. A1111-style servers
+// don't expose a comparable listing everywhere, so only InvokeAI answers with any.
+func (c *Client) Vaes(ctx context.Context, base string) ([]Vae, error) {
+	kind, err := c.Backend(ctx, base)
+	if err != nil {
+		return nil, err
+	}
+	if kind == KindInvokeAI {
+		return c.invokeVaes(ctx, base)
+	}
+	return []Vae{}, nil
+}
+
+// Templates lists the generator's prompt templates (InvokeAI style presets).
+func (c *Client) Templates(ctx context.Context, base string) ([]Template, error) {
+	kind, err := c.Backend(ctx, base)
+	if err != nil {
+		return nil, err
+	}
+	if kind == KindInvokeAI {
+		return c.invokeTemplates(ctx, base)
+	}
+	return []Template{}, nil
+}
+
+// Cover fetches the generator's own preview image for a model or LoRA, by selector
+// key or display name. Only InvokeAI keeps cover art; elsewhere this reports
+// "no cover" and the caller falls back to whatever it has.
+func (c *Client) Cover(ctx context.Context, base, name string) ([]byte, string, error) {
+	kind, err := c.Backend(ctx, base)
+	if err != nil {
+		return nil, "", err
+	}
+	if kind != KindInvokeAI {
+		return nil, "", fmt.Errorf("generator keeps no cover images")
+	}
+	return c.invokeCover(ctx, base, name)
 }
 
 // Ping confirms the generator is reachable and speaking a supported API. Used by the

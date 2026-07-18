@@ -189,6 +189,99 @@ data class ChatStatus(
     val modes: List<String> = emptyList(),
 )
 
+// ── image generation ─────────────────────────────────────────────────────────
+// Mirrors the web client's shapes: /api/imagegen/status lists what the generator
+// offers, /generate returns in-memory preview ids, /save files one into the library.
+
+@Serializable
+data class GenModel(
+    val title: String,
+    @SerialName("model_name") val modelName: String = "",
+    val base: String = "",
+    val defaults: GenModelDefaults? = null,
+)
+
+/** The generator's recommended settings for a model; applied when it's picked. */
+@Serializable
+data class GenModelDefaults(
+    val steps: Int = 0,
+    val cfgScale: Double = 0.0,
+    val scheduler: String = "",
+    val width: Int = 0,
+    val height: Int = 0,
+    val vae: String = "",
+)
+
+@Serializable
+data class GenLora(val name: String, val alias: String = "")
+
+@Serializable
+data class GenVae(val key: String, val name: String, val base: String = "")
+
+/** A prompt template (InvokeAI style preset); `prompt` may contain "{prompt}". */
+@Serializable
+data class GenTemplate(
+    val id: String,
+    val name: String,
+    val prompt: String = "",
+    val negativePrompt: String = "",
+)
+
+@Serializable
+data class GenCharacter(
+    val id: String,
+    val name: String,
+    val prompt: String = "",
+    val negativePrompt: String = "",
+    val hasThumb: Boolean = false,
+)
+
+@Serializable
+data class GenCharacterListResponse(val characters: List<GenCharacter> = emptyList())
+
+@Serializable
+data class ImageGenStatus(
+    val enabled: Boolean = false,
+    val reachable: Boolean = false,
+    val backend: String = "",
+    val error: String = "",
+    val models: List<GenModel> = emptyList(),
+    val loras: List<GenLora> = emptyList(),
+    val vaes: List<GenVae> = emptyList(),
+    val templates: List<GenTemplate> = emptyList(),
+)
+
+@Serializable
+data class GenLoraPick(val name: String, val weight: Double)
+
+@Serializable
+data class GenerateRequest(
+    val prompt: String,
+    val negativePrompt: String = "",
+    val checkpoint: String = "",
+    val vae: String = "",
+    val sampler: String = "",
+    val steps: Int = 25,
+    val width: Int = 512,
+    val height: Int = 768,
+    val cfgScale: Double = 7.0,
+    val seed: Long = -1,
+    val count: Int = 1,
+    val loras: List<GenLoraPick> = emptyList(),
+)
+
+@Serializable
+data class GenPreview(val id: String, val seed: Long = 0)
+
+@Serializable
+data class GenerateResponse(val images: List<GenPreview> = emptyList(), val prompt: String = "")
+
+@Serializable
+data class GenSaveRequest(val id: String, val title: String = "", val tags: List<String> = emptyList())
+
+@Serializable
+data class GenSaveResponse(val id: Long, val existed: Boolean = false)
+
 @Serializable
 data class UrlRequest(val url: String)
 

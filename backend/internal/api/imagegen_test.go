@@ -175,6 +175,56 @@ func TestImageGenLoraThumbnail(t *testing.T) {
 	}
 }
 
+// The character library round-trip: create with a thumbnail, list, update, delete.
+func TestImageGenCharacters(t *testing.T) {
+	s, token := newTestServer(t)
+	h := s.Handler()
+
+	rec := do(t, h, token, "GET", "/api/imagegen/characters", "")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"characters":[]`) {
+		t.Fatalf("empty list: %d %s", rec.Code, rec.Body)
+	}
+
+	rec = do(t, h, token, "POST", "/api/imagegen/characters",
+		`{"name":"Rin","prompt":"1girl, red hair","negativePrompt":"blonde","imageData":"`+onePixelPNG+`"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body)
+	}
+	var created struct {
+		ID       string `json:"id"`
+		HasThumb bool   `json:"hasThumb"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	if created.ID == "" || !created.HasThumb {
+		t.Fatalf("created = %+v", created)
+	}
+
+	rec = do(t, h, token, "GET", "/api/imagegen/characters/"+created.ID+"/thumb", "")
+	if rec.Code != http.StatusOK || !strings.HasPrefix(rec.Header().Get("Content-Type"), "image/") {
+		t.Fatalf("thumb: %d %q", rec.Code, rec.Header().Get("Content-Type"))
+	}
+
+	// Update keeps the thumbnail when no new image is sent.
+	rec = do(t, h, token, "POST", "/api/imagegen/characters",
+		`{"id":"`+created.ID+`","name":"Rin (v2)","prompt":"1girl, crimson hair"}`)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"hasThumb":true`) {
+		t.Fatalf("update: %d %s", rec.Code, rec.Body)
+	}
+	rec = do(t, h, token, "GET", "/api/imagegen/characters", "")
+	if !strings.Contains(rec.Body.String(), "Rin (v2)") || strings.Contains(rec.Body.String(), "red hair") {
+		t.Fatalf("list after update: %s", rec.Body)
+	}
+
+	rec = do(t, h, token, "DELETE", "/api/imagegen/characters/"+created.ID, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete: %d %s", rec.Code, rec.Body)
+	}
+	rec = do(t, h, token, "GET", "/api/imagegen/characters", "")
+	if !strings.Contains(rec.Body.String(), `"characters":[]`) {
+		t.Fatalf("list after delete: %s", rec.Body)
+	}
+}
+
 // A preview id must expire out of reach: a save against an unknown id 404s rather than
 // resurrecting something.
 func TestImageGenSaveUnknownPreview(t *testing.T) {

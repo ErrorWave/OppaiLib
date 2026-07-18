@@ -25,6 +25,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Android
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
@@ -173,6 +174,7 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
     var showSettings by remember { mutableStateOf(false) }
     var showBrowse by remember { mutableStateOf(false) }
     var showChat by remember { mutableStateOf(false) }
+    var showImageGen by remember { mutableStateOf(false) }
     // Which pinned feed to open the browser on; null means the browser's own default.
     var browsePin by remember { mutableStateOf<PinnedFeed?>(null) }
     var pins by remember { mutableStateOf(repo.prefs.pinnedFeeds) }
@@ -309,6 +311,17 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
 
     if (showChat) {
         ChatScreen(repo = repo, onBack = { showChat = false })
+        return
+    }
+
+    if (showImageGen) {
+        // A save inside the studio lands in the library; nudge the grid so it's there
+        // the moment the user comes back.
+        ImageGenScreen(
+            repo = repo,
+            onBack = { showImageGen = false; refresh() },
+            onSaved = { repo.notifyLibraryChanged() },
+        )
         return
     }
 
@@ -459,6 +472,13 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
                     label = { Text("Chat with Libby") },
                     selected = false,
                     onClick = { scope.launch { drawer.close() }; showChat = true },
+                    modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
+                )
+                NavigationDrawerItem(
+                    icon = { Icon(Icons.Filled.AutoAwesome, contentDescription = null) },
+                    label = { Text("Image studio") },
+                    selected = false,
+                    onClick = { scope.launch { drawer.close() }; showImageGen = true },
                     modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
                 )
                 // Pinned remote feeds sit under Browse, as shortcuts into it. A long
