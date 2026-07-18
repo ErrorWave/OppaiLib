@@ -43,6 +43,7 @@ type Server struct {
 	genCache      *genCache
 	modelThumbDir string
 	characterDir  string // encrypted character-library records + thumbnails
+	libbyDir      string // encrypted Libby outfit records + emotion art
 
 	thumbSem  chan struct{} // bounds concurrent ffmpeg thumbnail jobs
 	thumbWarn sync.Once     // warn once if ffmpeg is missing
@@ -86,6 +87,7 @@ func NewServer(cfg *config.Config, database *db.DB, store *storage.Store, sc *sc
 		genCache:      newGenCache(),
 		modelThumbDir: filepath.Join(cfg.ConfigDir, "model_thumbs"),
 		characterDir:  filepath.Join(cfg.ConfigDir, "characters"),
+		libbyDir:      filepath.Join(cfg.ConfigDir, "libby"),
 
 		pageCache:    newResolveCache[[]string](sourcePagesTTL),
 		commentCache: newResolveCache[[]sources.Comment](sourceCommentsTTL),
@@ -176,6 +178,33 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/imagegen/characters", s.requireAuth(s.handleSaveCharacter))
 	mux.HandleFunc("DELETE /api/imagegen/characters/{id}", s.requireAuth(s.handleDeleteCharacter))
 	mux.HandleFunc("GET /api/imagegen/characters/{id}/thumb", s.requireAuth(s.handleCharacterThumb))
+	// Model metadata: reads and writes InvokeAI's own model records, so edits here
+	// are the same edits its model manager would make.
+	mux.HandleFunc("GET /api/imagegen/model", s.requireAuth(s.handleGetModelMeta))
+	mux.HandleFunc("PATCH /api/imagegen/model", s.requireAuth(s.handlePatchModelMeta))
+	// The InvokeAI gallery: browse the generator's own boards and images, stream
+	// them through the server, delete from them, or copy one into the library.
+	mux.HandleFunc("GET /api/imagegen/gallery/boards", s.requireAuth(s.handleGalleryBoards))
+	mux.HandleFunc("GET /api/imagegen/gallery/images", s.requireAuth(s.handleGalleryImages))
+	mux.HandleFunc("GET /api/imagegen/gallery/image/{name}", s.requireAuth(s.handleGalleryFull))
+	mux.HandleFunc("GET /api/imagegen/gallery/image/{name}/thumb", s.requireAuth(s.handleGalleryThumb))
+	mux.HandleFunc("DELETE /api/imagegen/gallery/image/{name}", s.requireAuth(s.handleGalleryDelete))
+	mux.HandleFunc("POST /api/imagegen/gallery/save", s.requireAuth(s.handleGallerySave))
+	// Civitai catalogue (via the civitai.red mirror), proxied like every other
+	// remote source; install hands a download URL to InvokeAI.
+	mux.HandleFunc("GET /api/imagegen/civitai/search", s.requireAuth(s.handleCivitaiSearch))
+	mux.HandleFunc("GET /api/imagegen/civitai/image", s.requireAuth(s.handleCivitaiImage))
+	mux.HandleFunc("POST /api/imagegen/civitai/install", s.requireAuth(s.handleCivitaiInstall))
+	mux.HandleFunc("GET /api/imagegen/civitai/installs", s.requireAuth(s.handleCivitaiInstalls))
+
+	// Libby outfits: user-made wardrobes for the mascot, one image per emotion.
+	// Which outfit is worn is a per-device choice; the server only stores the art.
+	mux.HandleFunc("GET /api/libby/outfits", s.requireAuth(s.handleListLibbyOutfits))
+	mux.HandleFunc("POST /api/libby/outfits", s.requireAuth(s.handleSaveLibbyOutfit))
+	mux.HandleFunc("DELETE /api/libby/outfits/{id}", s.requireAuth(s.handleDeleteLibbyOutfit))
+	mux.HandleFunc("GET /api/libby/outfits/{id}/emotions/{emotion}", s.requireAuth(s.handleGetLibbyEmotion))
+	mux.HandleFunc("PUT /api/libby/outfits/{id}/emotions/{emotion}", s.requireAuth(s.handleSetLibbyEmotion))
+	mux.HandleFunc("DELETE /api/libby/outfits/{id}/emotions/{emotion}", s.requireAuth(s.handleDeleteLibbyEmotion))
 
 	// Libby chat proxies only to the operator-configured local OpenAI-compatible
 	// endpoint. Conversation history lives in the clients, not in OppaiLib's DB.

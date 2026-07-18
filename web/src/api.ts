@@ -360,6 +360,74 @@ export interface GenerateParams {
   loras?: { name: string; weight: number }[];
 }
 
+/** The full editable record of a model or LoRA, mirrored from InvokeAI. */
+export interface GenModelMeta {
+  key: string;
+  name: string;
+  base?: string;
+  type: string;
+  description?: string;
+  triggerPhrases: string[];
+  defaults?: GenModelDefaults & { weight?: number };
+}
+
+/** One InvokeAI gallery board. Board id "none" is the uncategorized pile. */
+export interface GalleryBoard {
+  id: string;
+  name: string;
+  count: number;
+}
+
+export interface GalleryImage {
+  name: string;
+  width?: number;
+  height?: number;
+  created?: string;
+}
+
+export interface GalleryPage {
+  items: GalleryImage[];
+  total: number;
+}
+
+/** One model from the Civitai catalogue (via civitai.red). */
+export interface CivitaiModel {
+  id: number;
+  name: string;
+  type: string;
+  creator?: string;
+  downloads: number;
+  likes: number;
+  versions: CivitaiVersion[];
+}
+
+export interface CivitaiVersion {
+  id: number;
+  name: string;
+  base: string;
+  trainedWords: string[];
+  downloadUrl: string;
+  sizeMB?: number;
+  images: string[];
+}
+
+/** One model download InvokeAI is running (or has finished). */
+export interface InstallJob {
+  id: number;
+  status: string;
+  source: string;
+  error?: string;
+  bytes?: number;
+  totalBytes?: number;
+}
+
+/** A Libby outfit: a name plus which emotions have art uploaded. */
+export interface LibbyOutfit {
+  id: string;
+  name: string;
+  emotions: string[];
+}
+
 const TOKEN_KEY = "oppai_token";
 
 export function getToken(): string | null {
@@ -646,4 +714,91 @@ export const api = {
       method: "DELETE",
     }),
   characterThumbURL: (id: string) => `/api/imagegen/characters/${encodeURIComponent(id)}/thumb`,
+
+  // ── model metadata (InvokeAI model manager) ────────────────────────────────
+  // Reads and writes the generator's own model records, so edits here are the
+  // same edits InvokeAI's model manager would make.
+
+  modelMeta: (name: string) =>
+    request<GenModelMeta>(`/api/imagegen/model?name=${encodeURIComponent(name)}`, {}, 20_000),
+  patchModelMeta: (body: {
+    key: string;
+    name?: string;
+    description?: string;
+    triggerPhrases?: string[];
+    defaults?: GenModelMeta["defaults"];
+  }) =>
+    request<GenModelMeta>("/api/imagegen/model", {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }, 25_000),
+
+  // ── InvokeAI gallery ───────────────────────────────────────────────────────
+  // The generator's own gallery (it keeps every finished image), browsed and
+  // pruned from here. Save copies one image into the library.
+
+  galleryBoards: () => request<{ boards: GalleryBoard[] }>("/api/imagegen/gallery/boards", {}, 20_000),
+  galleryImages: (board: string, offset = 0, limit = 60) =>
+    request<GalleryPage>(
+      `/api/imagegen/gallery/images?board=${encodeURIComponent(board)}&offset=${offset}&limit=${limit}`,
+      {},
+      20_000,
+    ),
+  galleryThumbURL: (name: string) => `/api/imagegen/gallery/image/${encodeURIComponent(name)}/thumb`,
+  galleryFullURL: (name: string) => `/api/imagegen/gallery/image/${encodeURIComponent(name)}`,
+  deleteGalleryImage: (name: string) =>
+    request<{ status: string }>(`/api/imagegen/gallery/image/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    }),
+  saveGalleryImage: (body: { name: string; title?: string; tags?: string[] }) =>
+    request<{ id: number; existed: boolean }>("/api/imagegen/gallery/save", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }, 90_000),
+
+  // ── Civitai browser ────────────────────────────────────────────────────────
+  // The public catalogue via civitai.red, proxied through the server. Install
+  // hands a download URL to InvokeAI, which fetches the file itself.
+
+  civitaiSearch: (opts: { q?: string; type?: string; sort?: string; cursor?: string } = {}) => {
+    const p = new URLSearchParams();
+    if (opts.q) p.set("q", opts.q);
+    if (opts.type) p.set("type", opts.type);
+    if (opts.sort) p.set("sort", opts.sort);
+    if (opts.cursor) p.set("cursor", opts.cursor);
+    return request<{ items: CivitaiModel[]; nextCursor?: string }>(
+      `/api/imagegen/civitai/search?${p}`,
+      {},
+      45_000,
+    );
+  },
+  civitaiImageURL: (u: string) => `/api/imagegen/civitai/image?url=${encodeURIComponent(u)}`,
+  civitaiInstall: (url: string) =>
+    request<InstallJob>("/api/imagegen/civitai/install", {
+      method: "POST",
+      body: JSON.stringify({ url }),
+    }, 30_000),
+  civitaiInstalls: () => request<{ jobs: InstallJob[] }>("/api/imagegen/civitai/installs", {}, 20_000),
+
+  // ── Libby outfits ──────────────────────────────────────────────────────────
+  // User-made wardrobes for the mascot: one image per emotion, stored encrypted
+  // server-side. Which outfit is worn is a per-device choice (see libby.ts).
+
+  libbyOutfits: () => request<{ outfits: LibbyOutfit[] }>("/api/libby/outfits"),
+  saveLibbyOutfit: (body: { id?: string; name: string }) =>
+    request<LibbyOutfit>("/api/libby/outfits", { method: "POST", body: JSON.stringify(body) }),
+  deleteLibbyOutfit: (id: string) =>
+    request<{ status: string }>(`/api/libby/outfits/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  setLibbyEmotion: (id: string, emotion: string, imageData: string) =>
+    request<{ status: string }>(
+      `/api/libby/outfits/${encodeURIComponent(id)}/emotions/${encodeURIComponent(emotion)}`,
+      { method: "PUT", body: JSON.stringify({ imageData }) },
+    ),
+  deleteLibbyEmotion: (id: string, emotion: string) =>
+    request<{ status: string }>(
+      `/api/libby/outfits/${encodeURIComponent(id)}/emotions/${encodeURIComponent(emotion)}`,
+      { method: "DELETE" },
+    ),
+  libbyEmotionURL: (id: string, emotion: string) =>
+    `/api/libby/outfits/${encodeURIComponent(id)}/emotions/${encodeURIComponent(emotion)}`,
 };

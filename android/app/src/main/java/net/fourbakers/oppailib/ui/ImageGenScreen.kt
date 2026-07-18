@@ -19,10 +19,13 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.Button
@@ -36,6 +39,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -48,10 +53,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import coil.compose.AsyncImage
+import coil.compose.SubcomposeAsyncImage
 import kotlinx.coroutines.launch
 import net.fourbakers.oppailib.data.GenCharacter
 import net.fourbakers.oppailib.data.GenLoraPick
@@ -108,6 +116,14 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
     var generating by remember { mutableStateOf(false) }
     var shots by remember { mutableStateOf<List<ShotState>>(emptyList()) }
     var error by remember { mutableStateOf("") }
+    var tab by remember { mutableStateOf(0) }
+    // Bumped after each generation so the Gallery tab reloads: InvokeAI keeps its
+    // own copy of everything that just finished.
+    var galleryRefresh by remember { mutableStateOf(0) }
+    /** Model or LoRA name whose record is being edited, or null. */
+    var editTarget by remember { mutableStateOf<String?>(null) }
+    /** A result expanded to full screen. */
+    var expandedShot by remember { mutableStateOf<ShotState?>(null) }
     val scope = rememberCoroutineScope()
 
     fun applyModel(m: GenModel) {
@@ -178,6 +194,7 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
                 )
             }.onSuccess { res ->
                 shots = res.images.map { ShotState(it, saved = false) } + shots
+                galleryRefresh++
             }.onFailure { error = it.message ?: "Generation failed" }
             generating = false
         }
@@ -229,8 +246,22 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
                 )
             }
 
-            else -> LazyColumn(
-                modifier = Modifier.padding(padding).fillMaxSize(),
+            else -> Column(Modifier.padding(padding).fillMaxSize()) {
+                // The Gallery and Civitai tabs only make sense against InvokeAI —
+                // an A1111 backend keeps no gallery and installs nothing.
+                val invoke = st.backend == "invokeai"
+                if (invoke) {
+                    TabRow(selectedTabIndex = tab) {
+                        listOf("Create", "Gallery", "Civitai").forEachIndexed { i, label ->
+                            Tab(selected = tab == i, onClick = { tab = i }, text = { Text(label) })
+                        }
+                    }
+                }
+                when {
+                    invoke && tab == 1 -> InvokeGalleryTab(repo, galleryRefresh, onSaved)
+                    invoke && tab == 2 -> CivitaiTab(repo)
+                    else -> LazyColumn(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(
                     start = 14.dp, end = 14.dp, top = 4.dp, bottom = 24.dp,
@@ -247,6 +278,7 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
                                 selected = m.title == checkpoint,
                                 repo = repo,
                                 onClick = { applyModel(m) },
+                                onEdit = if (invoke) ({ editTarget = m.title }) else null,
                             )
                         }
                     }
@@ -264,6 +296,7 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
                                         imageUrl = repo.loraThumbUrl(lora.name),
                                         selected = lora.name in loraWeights,
                                         repo = repo,
+                                        onEdit = if (invoke) ({ editTarget = lora.name }) else null,
                                         onClick = {
                                             loraWeights = if (lora.name in loraWeights) {
                                                 loraWeights - lora.name
@@ -435,7 +468,8 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
                                             .fillMaxWidth()
                                             .aspectRatio(3f / 4f)
                                             .clip(RoundedCornerShape(14.dp))
-                                            .background(MaterialTheme.colorScheme.surfaceVariant),
+                                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                                            .clickable { expandedShot = shot },
                                     )
                                     Button(
                                         onClick = { save(shot) },
@@ -456,10 +490,55 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
                     }
                     item {
                         Text(
-                            "Generated images live only on this screen until you save one — leaving drops the rest.",
+                            "Save copies an image into the library. InvokeAI also keeps its own " +
+                                "gallery copy — see the Gallery tab to browse or delete those.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                    }
+                }
+            }
+                }
+            }
+        }
+    }
+
+    editTarget?.let { name ->
+        ModelEditDialog(
+            repo = repo,
+            name = name,
+            onDismiss = { editTarget = null },
+            onSaved = {
+                // Names and recommended settings may have changed; reload the pickers.
+                scope.launch {
+                    runCatching { repo.api.imageGenStatus() }.onSuccess { status = it }
+                }
+            },
+        )
+    }
+
+    expandedShot?.let { shot ->
+        val current = shots.find { it.preview.id == shot.preview.id } ?: shot
+        Dialog(onDismissRequest = { expandedShot = null }) {
+            Column(
+                Modifier.clip(RoundedCornerShape(16.dp)).background(Color.Black).padding(bottom = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                AsyncImage(
+                    model = repo.genPreviewUrl(current.preview.id),
+                    imageLoader = repo.imageLoader,
+                    contentDescription = "Generated image",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Button(onClick = { save(current) }, enabled = !current.saved) {
+                        Icon(if (current.saved) Icons.Filled.Check else Icons.Filled.Save,
+                            contentDescription = null, Modifier.size(16.dp))
+                        Text(if (current.saved) "  Saved" else "  Save")
+                    }
+                    IconButton(onClick = { expandedShot = null }) {
+                        Icon(Icons.Filled.Close, contentDescription = "Close", tint = Color.White)
                     }
                 }
             }
@@ -477,7 +556,12 @@ private fun SectionLabel(text: String) {
     )
 }
 
-/** A model/LoRA/character tile: cover art (or a placeholder) with a caption. */
+/**
+ * A model/LoRA/character tile: cover art with a caption. A missing or failed
+ * thumbnail renders a placeholder icon rather than an empty dark box — a model
+ * without a preview used to read as a black tile. [onEdit] adds a small pencil
+ * overlay that opens the record editor (InvokeAI backends only).
+ */
 @Composable
 private fun PickerCard(
     label: String,
@@ -485,6 +569,7 @@ private fun PickerCard(
     selected: Boolean,
     repo: Repository,
     onClick: () -> Unit,
+    onEdit: (() -> Unit)? = null,
 ) {
     val border = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
     Surface(
@@ -494,25 +579,36 @@ private fun PickerCard(
         color = MaterialTheme.colorScheme.surfaceVariant,
     ) {
         Column {
-            if (imageUrl != null) {
-                AsyncImage(
-                    model = imageUrl,
-                    imageLoader = repo.imageLoader,
-                    contentDescription = label,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxWidth().aspectRatio(3f / 4f),
-                )
-            } else {
-                Box(
-                    Modifier.fillMaxWidth().aspectRatio(3f / 4f),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        Icons.Filled.Person,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(34.dp),
+            Box(Modifier.fillMaxWidth().aspectRatio(3f / 4f)) {
+                if (imageUrl != null) {
+                    SubcomposeAsyncImage(
+                        model = imageUrl,
+                        imageLoader = repo.imageLoader,
+                        contentDescription = label,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize(),
+                        error = { PickerPlaceholder() },
                     )
+                } else {
+                    PickerPlaceholder()
+                }
+                if (onEdit != null) {
+                    IconButton(
+                        onClick = onEdit,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .size(30.dp)
+                            .padding(3.dp)
+                            .clip(RoundedCornerShape(13.dp))
+                            .background(Color.Black.copy(alpha = 0.5f)),
+                    ) {
+                        Icon(
+                            Icons.Filled.Edit,
+                            contentDescription = "Edit $label",
+                            tint = Color.White,
+                            modifier = Modifier.size(14.dp),
+                        )
+                    }
                 }
             }
             Text(
@@ -523,6 +619,18 @@ private fun PickerCard(
                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
             )
         }
+    }
+}
+
+@Composable
+private fun PickerPlaceholder() {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Icon(
+            Icons.Filled.Person,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(34.dp),
+        )
     }
 }
 

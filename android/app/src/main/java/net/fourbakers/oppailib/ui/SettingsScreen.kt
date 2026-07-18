@@ -187,6 +187,7 @@ fun SettingsScreen(repo: Repository, onBack: () -> Unit, onLogout: () -> Unit) {
                 "Take the mascot out of error popups and Chat. Messages still show; only the artwork goes.",
                 hideLibby,
             ) { hideLibby = it; prefs.hideLibby = it }
+            LibbyOutfitsSection(repo)
 
             SectionHeader("Library")
             StatsBlock(stats)

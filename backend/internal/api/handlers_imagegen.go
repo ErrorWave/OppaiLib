@@ -399,6 +399,263 @@ func (s *Server) handleImageGenSave(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "existed": existed})
 }
 
+// ── model metadata (InvokeAI model manager) ──────────────────────────────────
+//
+// The edit dialog reads and writes the generator's own model records — name,
+// description, trigger phrases, recommended settings — so edits made here are the
+// same edits InvokeAI's model manager would make, and vice versa.
+
+func (s *Server) handleGetModelMeta(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeErr(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	set := s.settings.Get()
+	if !set.ImageGenEnabled {
+		writeErr(w, http.StatusServiceUnavailable, "image generation is not configured")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	detail, err := s.imagegen.ModelDetail(ctx, set.ImageGenURL, name)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, detail)
+}
+
+type modelMetaPatch struct {
+	Key            string                  `json:"key"`
+	Name           *string                 `json:"name"`
+	Description    *string                 `json:"description"`
+	TriggerPhrases *[]string               `json:"triggerPhrases"`
+	Defaults       *imagegen.ModelDefaults `json:"defaults"`
+}
+
+func (s *Server) handlePatchModelMeta(w http.ResponseWriter, r *http.Request) {
+	var req modelMetaPatch
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if req.Key == "" {
+		writeErr(w, http.StatusBadRequest, "key is required")
+		return
+	}
+	set := s.settings.Get()
+	if !set.ImageGenEnabled {
+		writeErr(w, http.StatusServiceUnavailable, "image generation is not configured")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	detail, err := s.imagegen.UpdateModel(ctx, set.ImageGenURL, req.Key, imagegen.ModelChanges{
+		Name:           req.Name,
+		Description:    req.Description,
+		TriggerPhrases: req.TriggerPhrases,
+		Defaults:       req.Defaults,
+	})
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, detail)
+}
+
+// ── InvokeAI gallery ─────────────────────────────────────────────────────────
+//
+// InvokeAI keeps every finished generation in its own gallery, sorted into boards.
+// These endpoints browse that gallery (it lives on the user's own box), stream its
+// images through the server, delete from it, and copy one image into the library —
+// the same one-way crossing the preview save uses.
+
+func (s *Server) galleryBase(w http.ResponseWriter) (string, bool) {
+	set := s.settings.Get()
+	if !set.ImageGenEnabled {
+		writeErr(w, http.StatusServiceUnavailable, "image generation is not configured")
+		return "", false
+	}
+	return set.ImageGenURL, true
+}
+
+func (s *Server) handleGalleryBoards(w http.ResponseWriter, r *http.Request) {
+	base, ok := s.galleryBase(w)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	boards, err := s.imagegen.Boards(ctx, base)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"boards": boards})
+}
+
+func (s *Server) handleGalleryImages(w http.ResponseWriter, r *http.Request) {
+	base, ok := s.galleryBase(w)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	offset := clampInt(atoiDefault(q.Get("offset"), 0), 0, 1<<20)
+	limit := clampInt(atoiDefault(q.Get("limit"), 60), 1, 200)
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	page, err := s.imagegen.BoardImages(ctx, base, q.Get("board"), offset, limit)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
+func atoiDefault(s string, def int) int {
+	if s == "" {
+		return def
+	}
+	n := 0
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return def
+		}
+		n = n*10 + int(r-'0')
+		if n > 1<<20 {
+			return def
+		}
+	}
+	return n
+}
+
+func (s *Server) serveGalleryImage(w http.ResponseWriter, r *http.Request, thumb bool) {
+	base, ok := s.galleryBase(w)
+	if !ok {
+		return
+	}
+	name := r.PathValue("name")
+	if name == "" {
+		writeErr(w, http.StatusBadRequest, "image name is required")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	data, ct, err := s.imagegen.GalleryImage(ctx, base, name, thumb)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if ct == "" {
+		ct = http.DetectContentType(data)
+	}
+	w.Header().Set("Content-Type", safeInlineContentType(ct))
+	// Gallery images are immutable under a given name; a short private cache keeps
+	// scrolling smooth without letting them outlive a delete for long.
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+func (s *Server) handleGalleryThumb(w http.ResponseWriter, r *http.Request) {
+	s.serveGalleryImage(w, r, true)
+}
+
+func (s *Server) handleGalleryFull(w http.ResponseWriter, r *http.Request) {
+	s.serveGalleryImage(w, r, false)
+}
+
+func (s *Server) handleGalleryDelete(w http.ResponseWriter, r *http.Request) {
+	base, ok := s.galleryBase(w)
+	if !ok {
+		return
+	}
+	name := r.PathValue("name")
+	if name == "" {
+		writeErr(w, http.StatusBadRequest, "image name is required")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	if err := s.imagegen.DeleteGalleryImage(ctx, base, name); err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+}
+
+type gallerySaveReq struct {
+	Name  string   `json:"name"`
+	Title string   `json:"title"`
+	Tags  []string `json:"tags"`
+}
+
+// handleGallerySave copies one InvokeAI gallery image into the library: fetch the
+// full PNG, store it encrypted, file it through the same ingest path as any other
+// image, and keep the generation prompt (when InvokeAI recorded one) as notes.
+func (s *Server) handleGallerySave(w http.ResponseWriter, r *http.Request) {
+	base, ok := s.galleryBase(w)
+	if !ok {
+		return
+	}
+	var req gallerySaveReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
+		writeErr(w, http.StatusBadRequest, "an image name is required")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	data, _, err := s.imagegen.GalleryImage(ctx, base, req.Name, false)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	prompt := s.imagegen.GalleryImagePrompt(ctx, base, req.Name)
+
+	put, err := s.store.Put(bytes.NewReader(data))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "store failed")
+		return
+	}
+	title := req.Title
+	if title == "" {
+		title = "Generated image"
+	}
+	titleEnc, _ := crypto.SealBytes(s.kek, []byte(title), []byte("title"))
+	var notesEnc []byte
+	if prompt != "" {
+		notesEnc, _ = crypto.SealBytes(s.kek, []byte(prompt), []byte("notes"))
+	}
+	id, existed, err := s.db.InsertMedia(r.Context(), &db.MediaRow{
+		Kind:     "image",
+		SHA256:   put.SHA256,
+		Size:     put.Size,
+		BlobPath: put.RelPath,
+		TitleEnc: titleEnc,
+		NotesEnc: notesEnc,
+	})
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if !existed {
+		s.processIngestAsync(id, put.RelPath, "image", put.Size, 0)
+	}
+	if err := s.db.AddTag(r.Context(), id, "ai-generated", "source", "generated", 0); err != nil {
+		s.log.Debug("tag generated image", "err", err)
+	}
+	for _, t := range req.Tags {
+		if t == "" {
+			continue
+		}
+		if err := s.db.AddTag(r.Context(), id, t, "general", "manual", 0); err != nil {
+			s.log.Debug("tag generated image", "tag", t, "err", err)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "existed": existed})
+}
+
 // ── model (checkpoint) thumbnails ────────────────────────────────────────────
 //
 // A checkpoint is just a name in a picker; a preview image makes it recognisable. The

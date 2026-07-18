@@ -51,6 +51,16 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(KEY_HIDE_LIBBY, false)
         set(v) = sp.edit().putBoolean(KEY_HIDE_LIBBY, v).apply()
 
+    /**
+     * Which Libby outfit this device shows, by server-side outfit id. Empty means
+     * the default art bundled with the app. Per-device like [hideLibby]: the
+     * wardrobe lives on the server, but what she wears is whoever's-phone-this-is
+     * business.
+     */
+    var libbyOutfit: String
+        get() = sp.getString(KEY_LIBBY_OUTFIT, "") ?: ""
+        set(v) = sp.edit().putString(KEY_LIBBY_OUTFIT, v).apply()
+
     // ── video ────────────────────────────────────────────────────────────
 
     /** How the frame fills the screen. See [VideoFit]. */
@@ -157,6 +167,7 @@ class Prefs(context: Context) {
         private const val KEY_TOKEN = "token"
         private const val KEY_BIOMETRIC = "biometric_lock"
         private const val KEY_HIDE_LIBBY = "hide_libby"
+        private const val KEY_LIBBY_OUTFIT = "libby_outfit"
         private const val KEY_COMIC_RTL = "comic_rtl"
         private const val KEY_COMIC_PAGE = "comic_page_"
         private const val KEY_VIDEO_FIT = "video_fit"

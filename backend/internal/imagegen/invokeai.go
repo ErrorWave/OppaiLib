@@ -17,9 +17,10 @@ import (
 // node graph enqueued on a session queue, executed asynchronously, with the result
 // saved into InvokeAI's own gallery. This client builds the standard text-to-image
 // graph (SD 1.x / 2.x / SDXL), enqueues one session per requested image, polls the
-// queue until they finish, downloads the PNGs — and then deletes them from the
-// InvokeAI gallery, so the only durable copy is the one the user explicitly saves
-// into the library.
+// queue until they finish and downloads the PNGs. The gallery copies stay put —
+// InvokeAI is the user's own box and keeps a gallery regardless — and the Gallery
+// panel here browses and deletes them. The *library* still only ever gains an image
+// through an explicit save.
 
 // invokeQueue is the queue id InvokeAI creates by default; there is exactly one
 // unless the operator runs a custom deployment.
@@ -33,11 +34,14 @@ type invokeModelRecord struct {
 	Base            string                 `json:"base"`        // "sd-1", "sd-2", "sdxl", "flux", ...
 	Type            string                 `json:"type"`        // "main", "lora", "vae", ...
 	CoverImage      string                 `json:"cover_image"` // gallery image name, when the user set one
+	Description     string                 `json:"description"`
+	TriggerPhrases  []string               `json:"trigger_phrases"`
 	DefaultSettings *invokeDefaultSettings `json:"default_settings"`
 }
 
 // invokeDefaultSettings is InvokeAI's per-model recommended settings blob. Every
-// field is nullable there, hence the pointers.
+// field is nullable there, hence the pointers. Main models carry the generation
+// settings; a LoRA's blob holds only a recommended weight.
 type invokeDefaultSettings struct {
 	Vae       *string  `json:"vae"`
 	Scheduler *string  `json:"scheduler"`
@@ -45,6 +49,7 @@ type invokeDefaultSettings struct {
 	CfgScale  *float64 `json:"cfg_scale"`
 	Width     *int     `json:"width"`
 	Height    *int     `json:"height"`
+	Weight    *float64 `json:"weight"`
 }
 
 func (d *invokeDefaultSettings) toModelDefaults() *ModelDefaults {
@@ -70,6 +75,9 @@ func (d *invokeDefaultSettings) toModelDefaults() *ModelDefaults {
 	}
 	if d.Vae != nil && *d.Vae != "" {
 		out.Vae, any = *d.Vae, true
+	}
+	if d.Weight != nil && *d.Weight != 0 {
+		out.Weight, any = *d.Weight, true
 	}
 	if !any {
 		return nil
@@ -187,6 +195,253 @@ func (c *Client) invokeCover(ctx context.Context, base, name string) ([]byte, st
 		return nil, "", err
 	}
 	return data, resp.Header.Get("Content-Type"), nil
+}
+
+func recordToDetail(r invokeModelRecord) *ModelDetail {
+	d := &ModelDetail{
+		Key: r.Key, Name: r.Name, Base: r.Base, Type: r.Type,
+		Description:    r.Description,
+		TriggerPhrases: r.TriggerPhrases,
+		Defaults:       r.DefaultSettings.toModelDefaults(),
+	}
+	if d.TriggerPhrases == nil {
+		d.TriggerPhrases = []string{}
+	}
+	return d
+}
+
+// invokeModelDetail resolves a picker selector (a main model's key, a LoRA's
+// display name) to its full record.
+func (c *Client) invokeModelDetail(ctx context.Context, base, name string) (*ModelDetail, error) {
+	records, err := c.invokeModelList(ctx, base)
+	if err != nil {
+		return nil, err
+	}
+	var match *invokeModelRecord
+	for i, r := range records {
+		if r.Key == name {
+			match = &records[i]
+			break
+		}
+		if match == nil && r.Name == name {
+			match = &records[i]
+		}
+	}
+	if match == nil {
+		return nil, fmt.Errorf("no such model")
+	}
+	return recordToDetail(*match), nil
+}
+
+// invokeUpdateModel PATCHes a model record the way InvokeAI's own model manager
+// does. Defaults replace the whole default_settings blob: a LoRA keeps only a
+// weight there, a main model the generation settings.
+func (c *Client) invokeUpdateModel(ctx context.Context, base, key string, ch ModelChanges) (*ModelDetail, error) {
+	cur, err := c.invokeModelDetail(ctx, base, key)
+	if err != nil {
+		return nil, err
+	}
+	body := map[string]any{}
+	if ch.Name != nil && strings.TrimSpace(*ch.Name) != "" {
+		body["name"] = strings.TrimSpace(*ch.Name)
+	}
+	if ch.Description != nil {
+		body["description"] = *ch.Description
+	}
+	if ch.TriggerPhrases != nil {
+		phrases := []string{}
+		for _, p := range *ch.TriggerPhrases {
+			if p = strings.TrimSpace(p); p != "" {
+				phrases = append(phrases, p)
+			}
+		}
+		body["trigger_phrases"] = phrases
+	}
+	if ch.Defaults != nil {
+		d := ch.Defaults
+		if cur.Type == "lora" {
+			settings := map[string]any{}
+			if d.Weight != 0 {
+				settings["weight"] = d.Weight
+			}
+			body["default_settings"] = settings
+		} else {
+			settings := map[string]any{}
+			if d.Steps > 0 {
+				settings["steps"] = d.Steps
+			}
+			if d.CfgScale > 0 {
+				settings["cfg_scale"] = d.CfgScale
+			}
+			if d.Scheduler != "" {
+				settings["scheduler"] = d.Scheduler
+			}
+			if d.Width > 0 {
+				settings["width"] = d.Width
+			}
+			if d.Height > 0 {
+				settings["height"] = d.Height
+			}
+			if d.Vae != "" {
+				settings["vae"] = d.Vae
+			}
+			body["default_settings"] = settings
+		}
+	}
+	var updated invokeModelRecord
+	if err := c.patchJSON(ctx, base+"/api/v2/models/i/"+url.PathEscape(cur.Key), body, &updated); err != nil {
+		return nil, err
+	}
+	return recordToDetail(updated), nil
+}
+
+// ── gallery ──────────────────────────────────────────────────────────────────
+//
+// InvokeAI keeps every finished generation in its own gallery, sorted into boards.
+// These calls surface that gallery so it can be browsed (and pruned) from here
+// without opening InvokeAI's UI.
+
+func (c *Client) invokeBoards(ctx context.Context, base string) ([]Board, error) {
+	var raw []struct {
+		BoardID    string `json:"board_id"`
+		BoardName  string `json:"board_name"`
+		ImageCount int    `json:"image_count"`
+	}
+	if err := c.getJSON(ctx, base+"/api/v1/boards/?all=true", &raw); err != nil {
+		return nil, err
+	}
+	// The uncategorized pile is a pseudo-board InvokeAI reports separately; putting
+	// it first mirrors InvokeAI's own gallery ordering.
+	boards := []Board{{ID: "none", Name: "Uncategorized"}}
+	if names, err := c.invokeUncategorizedNames(ctx, base); err == nil {
+		boards[0].Count = len(names)
+	}
+	for _, b := range raw {
+		boards = append(boards, Board{ID: b.BoardID, Name: b.BoardName, Count: b.ImageCount})
+	}
+	return boards, nil
+}
+
+func (c *Client) invokeUncategorizedNames(ctx context.Context, base string) ([]string, error) {
+	var names []string
+	if err := c.getJSON(ctx, base+"/api/v1/boards/none/image_names", &names); err != nil {
+		return nil, err
+	}
+	return names, nil
+}
+
+func (c *Client) invokeBoardImages(ctx context.Context, base, boardID string, offset, limit int) (*GalleryPage, error) {
+	if boardID == "" {
+		boardID = "none"
+	}
+	u := fmt.Sprintf("%s/api/v1/images/?board_id=%s&offset=%d&limit=%d&is_intermediate=false",
+		base, url.QueryEscape(boardID), offset, limit)
+	var out struct {
+		Items []struct {
+			ImageName string `json:"image_name"`
+			Width     int    `json:"width"`
+			Height    int    `json:"height"`
+			CreatedAt string `json:"created_at"`
+		} `json:"items"`
+		Total int `json:"total"`
+	}
+	if err := c.getJSON(ctx, u, &out); err != nil {
+		return nil, err
+	}
+	page := &GalleryPage{Items: []GalleryImage{}, Total: out.Total}
+	for _, it := range out.Items {
+		page.Items = append(page.Items, GalleryImage{
+			Name: it.ImageName, Width: it.Width, Height: it.Height, Created: it.CreatedAt,
+		})
+	}
+	return page, nil
+}
+
+func (c *Client) invokeGalleryImage(ctx context.Context, base, name string, thumb bool) ([]byte, string, error) {
+	variant := "full"
+	if thumb {
+		variant = "thumbnail"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		base+"/api/v1/images/i/"+url.PathEscape(name)+"/"+variant, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("image generator unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("InvokeAI returned %d for that image", resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	if err != nil {
+		return nil, "", err
+	}
+	return data, resp.Header.Get("Content-Type"), nil
+}
+
+// invokeImagePrompt digs the positive prompt out of an image's stored metadata.
+// Best-effort by design: not every image has metadata, and a save shouldn't fail
+// over a missing caption.
+func (c *Client) invokeImagePrompt(ctx context.Context, base, name string) string {
+	var meta struct {
+		PositivePrompt string `json:"positive_prompt"`
+	}
+	if err := c.getJSON(ctx, base+"/api/v1/images/i/"+url.PathEscape(name)+"/metadata", &meta); err != nil {
+		return ""
+	}
+	return meta.PositivePrompt
+}
+
+// ── model install ────────────────────────────────────────────────────────────
+
+func installJobFromRaw(raw invokeInstallJobRaw) InstallJob {
+	job := InstallJob{ID: raw.ID, Status: raw.Status, Bytes: raw.Bytes, TotalBytes: raw.TotalBytes}
+	if raw.Source.URL != "" {
+		job.Source = raw.Source.URL
+	}
+	if raw.ErrorReason != "" {
+		job.Error = raw.ErrorReason
+	} else if raw.Error != "" {
+		job.Error = raw.Error
+	}
+	return job
+}
+
+type invokeInstallJobRaw struct {
+	ID     int64  `json:"id"`
+	Status string `json:"status"`
+	Source struct {
+		URL string `json:"url"`
+	} `json:"source"`
+	Error       string `json:"error"`
+	ErrorReason string `json:"error_reason"`
+	Bytes       int64  `json:"bytes"`
+	TotalBytes  int64  `json:"total_bytes"`
+}
+
+func (c *Client) invokeInstallModel(ctx context.Context, base, source string) (*InstallJob, error) {
+	u := base + "/api/v2/models/install?source=" + url.QueryEscape(source)
+	var raw invokeInstallJobRaw
+	if err := c.postJSON(ctx, u, map[string]any{}, &raw); err != nil {
+		return nil, err
+	}
+	job := installJobFromRaw(raw)
+	return &job, nil
+}
+
+func (c *Client) invokeInstallJobs(ctx context.Context, base string) ([]InstallJob, error) {
+	var raw []invokeInstallJobRaw
+	if err := c.getJSON(ctx, base+"/api/v2/models/install", &raw); err != nil {
+		return nil, err
+	}
+	jobs := []InstallJob{}
+	for i := len(raw) - 1; i >= 0; i-- { // newest first
+		jobs = append(jobs, installJobFromRaw(raw[i]))
+	}
+	return jobs, nil
 }
 
 func (c *Client) invokeLoras(ctx context.Context, base string) ([]Lora, error) {
@@ -526,10 +781,11 @@ func (c *Client) invokeGenerate(ctx context.Context, base string, req GenerateRe
 		if err != nil {
 			return nil, err
 		}
+		// The gallery copy is left in place: InvokeAI keeps every finished image in
+		// its own gallery anyway, and the studio's Gallery panel browses (and prunes)
+		// it. "Save" still only refers to the library — nothing lands there until the
+		// user asks.
 		data, err := c.invokeFetchImage(ctx, base, name)
-		// Downloaded or not, the gallery copy has served its purpose. Best-effort
-		// delete keeps "nothing persists unless saved" true on the InvokeAI side too.
-		c.invokeDeleteImage(ctx, base, name)
 		if err != nil {
 			return nil, err
 		}
@@ -606,23 +862,38 @@ func (c *Client) invokeFetchImage(ctx context.Context, base, name string) ([]byt
 	return io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 }
 
-func (c *Client) invokeDeleteImage(ctx context.Context, base, name string) {
+func (c *Client) invokeDeleteImage(ctx context.Context, base, name string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, base+"/api/v1/images/i/"+url.PathEscape(name), nil)
 	if err != nil {
-		return
+		return err
 	}
-	if resp, err := c.hc.Do(req); err == nil {
-		resp.Body.Close()
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return fmt.Errorf("image generator unreachable: %w", err)
 	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return fmt.Errorf("InvokeAI returned %d deleting the image", resp.StatusCode)
+	}
+	return nil
 }
 
 // postJSON POSTs in as JSON and decodes the response into out (which may be nil).
 func (c *Client) postJSON(ctx context.Context, u string, in, out any) error {
+	return c.sendJSON(ctx, http.MethodPost, u, in, out)
+}
+
+// patchJSON PATCHes in as JSON and decodes the response into out (which may be nil).
+func (c *Client) patchJSON(ctx context.Context, u string, in, out any) error {
+	return c.sendJSON(ctx, http.MethodPatch, u, in, out)
+}
+
+func (c *Client) sendJSON(ctx context.Context, method, u string, in, out any) error {
 	body, err := json.Marshal(in)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, method, u, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}

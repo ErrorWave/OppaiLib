@@ -42,18 +42,20 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import coil.compose.SubcomposeAsyncImage
 import kotlinx.coroutines.launch
 import net.fourbakers.oppailib.data.ChatMessage
 import net.fourbakers.oppailib.data.ChatRequest
 import net.fourbakers.oppailib.data.ChatStatus
 import net.fourbakers.oppailib.data.Repository
 
-private data class LibbyMode(val id: String, val label: String, val asset: String)
+/** Each mode maps to one of Libby's emotions; [asset] is the bundled default art. */
+private data class LibbyMode(val id: String, val label: String, val emotion: String, val asset: String)
 private val libbyModes = listOf(
-    LibbyMode("sweet", "Sweet", "mascot-happy.png"),
-    LibbyMode("playful", "Playful", "mascot-mischievous.png"),
-    LibbyMode("bold", "Bold", "mascot-surprised.png"),
-    LibbyMode("roleplay", "Roleplay", "mascot-thinking.png"),
+    LibbyMode("sweet", "Sweet", "happy", "mascot-happy.png"),
+    LibbyMode("playful", "Playful", "mischievous", "mascot-mischievous.png"),
+    LibbyMode("bold", "Bold", "surprised", "mascot-surprised.png"),
+    LibbyMode("roleplay", "Roleplay", "thinking", "mascot-thinking.png"),
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -107,13 +109,25 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
     }) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
             // Hiding Libby drops her portrait; the mode chips stay, since modes change
-            // how the assistant answers, not how it looks.
+            // how the assistant answers, not how it looks. A worn outfit swaps the art
+            // per emotion, falling back to the bundled default when the outfit lacks one.
             if (!repo.prefs.hideLibby) {
-                AsyncImage(
-                    model = "file:///android_asset/${mode.asset}",
+                val outfit = repo.prefs.libbyOutfit
+                SubcomposeAsyncImage(
+                    model = if (outfit.isEmpty()) "file:///android_asset/${mode.asset}"
+                    else repo.libbyEmotionUrl(outfit, mode.emotion),
+                    imageLoader = repo.imageLoader,
                     contentDescription = "Libby",
                     contentScale = ContentScale.Fit,
                     modifier = Modifier.fillMaxWidth().height(180.dp),
+                    error = {
+                        AsyncImage(
+                            model = "file:///android_asset/${mode.asset}",
+                            contentDescription = "Libby",
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier.fillMaxWidth().height(180.dp),
+                        )
+                    },
                 )
             }
             Row(

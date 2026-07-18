@@ -1,7 +1,7 @@
 import { LitElement, html, css } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { api, getToken, setToken, type User } from "./api.js";
-import { loadHideLibby } from "./libby.js";
+import { libbyEmotionSrc, loadHideLibby } from "./libby.js";
 import "./views/login.js";
 import "./views/library.js";
 
@@ -171,7 +171,13 @@ export class OppaiApp extends LitElement {
           <div class="speech" role=${this.mascotTone === "error" ? "alert" : "status"}>
             ${hideLibby ? null : html`<span class="libby-name">LIBBY · 😟</span>`}${this.mascotMessage}
           </div>
-          ${hideLibby ? null : html`<img src="/mascot.png" alt="Libby" />`}
+          ${hideLibby
+            ? null
+            : html`<img src=${libbyEmotionSrc("neutral")} alt="Libby"
+                @error=${(e: Event) => {
+                  const img = e.target as HTMLImageElement;
+                  if (!img.src.endsWith("/mascot.png")) img.src = "/mascot.png";
+                }} />`}
         </div>`
       : null;
     if (!this.ready) {

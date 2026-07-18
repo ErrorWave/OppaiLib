@@ -80,6 +80,8 @@ type ModelDefaults struct {
 	Width     int     `json:"width,omitempty"`
 	Height    int     `json:"height,omitempty"`
 	Vae       string  `json:"vae,omitempty"`
+	// Weight is a LoRA's recommended strength (InvokeAI stores just this for LoRAs).
+	Weight float64 `json:"weight,omitempty"`
 }
 
 // Vae is one standalone VAE the generator can decode with. Key is the selector value
@@ -106,6 +108,60 @@ type Lora struct {
 	Name  string `json:"name"`
 	Alias string `json:"alias,omitempty"`
 	Path  string `json:"path,omitempty"`
+}
+
+// ModelDetail is the full editable record for one model or LoRA, as InvokeAI's
+// model manager shows it. Key is the stable identifier the update call wants back.
+type ModelDetail struct {
+	Key            string         `json:"key"`
+	Name           string         `json:"name"`
+	Base           string         `json:"base,omitempty"`
+	Type           string         `json:"type"`
+	Description    string         `json:"description,omitempty"`
+	TriggerPhrases []string       `json:"triggerPhrases"`
+	Defaults       *ModelDefaults `json:"defaults,omitempty"`
+}
+
+// ModelChanges is a partial edit to a model record. Nil fields are left unchanged;
+// a non-nil Defaults replaces the whole recommended-settings blob (matching how
+// InvokeAI's own UI writes it).
+type ModelChanges struct {
+	Name           *string        `json:"name"`
+	Description    *string        `json:"description"`
+	TriggerPhrases *[]string      `json:"triggerPhrases"`
+	Defaults       *ModelDefaults `json:"defaults"`
+}
+
+// Board is one InvokeAI gallery board. The pseudo-id "none" stands for the
+// uncategorized pile, mirroring InvokeAI's own API.
+type Board struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
+// GalleryImage is one image InvokeAI keeps in its gallery.
+type GalleryImage struct {
+	Name    string `json:"name"`
+	Width   int    `json:"width,omitempty"`
+	Height  int    `json:"height,omitempty"`
+	Created string `json:"created,omitempty"`
+}
+
+// GalleryPage is one page of a board's images, newest first.
+type GalleryPage struct {
+	Items []GalleryImage `json:"items"`
+	Total int            `json:"total"`
+}
+
+// InstallJob is one model download InvokeAI is running (or has finished).
+type InstallJob struct {
+	ID         int64  `json:"id"`
+	Status     string `json:"status"` // waiting | downloading | running | completed | error | cancelled
+	Source     string `json:"source"`
+	Error      string `json:"error,omitempty"`
+	Bytes      int64  `json:"bytes,omitempty"`
+	TotalBytes int64  `json:"totalBytes,omitempty"`
 }
 
 // LoraWeight is one LoRA to apply to a generation, by selector name.
@@ -245,6 +301,95 @@ func (c *Client) Cover(ctx context.Context, base, name string) ([]byte, string, 
 		return nil, "", fmt.Errorf("generator keeps no cover images")
 	}
 	return c.invokeCover(ctx, base, name)
+}
+
+// errInvokeOnly wraps the features InvokeAI alone offers with a readable refusal
+// for an A1111-style backend.
+func (c *Client) requireInvoke(ctx context.Context, base, what string) error {
+	kind, err := c.Backend(ctx, base)
+	if err != nil {
+		return err
+	}
+	if kind != KindInvokeAI {
+		return fmt.Errorf("%s requires an InvokeAI backend", what)
+	}
+	return nil
+}
+
+// ModelDetail fetches the full editable record for a model or LoRA by key or name.
+func (c *Client) ModelDetail(ctx context.Context, base, name string) (*ModelDetail, error) {
+	if err := c.requireInvoke(ctx, base, "editing model settings"); err != nil {
+		return nil, err
+	}
+	return c.invokeModelDetail(ctx, base, name)
+}
+
+// UpdateModel applies a partial edit to a model record, so name, description,
+// trigger phrases and recommended settings stay in sync with InvokeAI's own UI.
+func (c *Client) UpdateModel(ctx context.Context, base, key string, ch ModelChanges) (*ModelDetail, error) {
+	if err := c.requireInvoke(ctx, base, "editing model settings"); err != nil {
+		return nil, err
+	}
+	return c.invokeUpdateModel(ctx, base, key, ch)
+}
+
+// Boards lists the InvokeAI gallery's boards, with "none" (Uncategorized) first.
+func (c *Client) Boards(ctx context.Context, base string) ([]Board, error) {
+	if err := c.requireInvoke(ctx, base, "the generator gallery"); err != nil {
+		return nil, err
+	}
+	return c.invokeBoards(ctx, base)
+}
+
+// BoardImages lists one board's images, newest first. boardID "none" is the
+// uncategorized pile.
+func (c *Client) BoardImages(ctx context.Context, base, boardID string, offset, limit int) (*GalleryPage, error) {
+	if err := c.requireInvoke(ctx, base, "the generator gallery"); err != nil {
+		return nil, err
+	}
+	return c.invokeBoardImages(ctx, base, boardID, offset, limit)
+}
+
+// GalleryImage streams one gallery image (the thumbnail or the full PNG).
+func (c *Client) GalleryImage(ctx context.Context, base, name string, thumb bool) ([]byte, string, error) {
+	if err := c.requireInvoke(ctx, base, "the generator gallery"); err != nil {
+		return nil, "", err
+	}
+	return c.invokeGalleryImage(ctx, base, name, thumb)
+}
+
+// GalleryImagePrompt fetches the positive prompt recorded in an image's metadata,
+// best-effort — an image without metadata just yields "".
+func (c *Client) GalleryImagePrompt(ctx context.Context, base, name string) string {
+	if err := c.requireInvoke(ctx, base, "the generator gallery"); err != nil {
+		return ""
+	}
+	return c.invokeImagePrompt(ctx, base, name)
+}
+
+// DeleteGalleryImage removes one image from InvokeAI's gallery.
+func (c *Client) DeleteGalleryImage(ctx context.Context, base, name string) error {
+	if err := c.requireInvoke(ctx, base, "the generator gallery"); err != nil {
+		return err
+	}
+	return c.invokeDeleteImage(ctx, base, name)
+}
+
+// InstallModel asks InvokeAI to download and register a model from a URL (a
+// Civitai download link). The download runs inside InvokeAI; poll InstallJobs.
+func (c *Client) InstallModel(ctx context.Context, base, source string) (*InstallJob, error) {
+	if err := c.requireInvoke(ctx, base, "installing models"); err != nil {
+		return nil, err
+	}
+	return c.invokeInstallModel(ctx, base, source)
+}
+
+// InstallJobs lists InvokeAI's model-install queue, newest first.
+func (c *Client) InstallJobs(ctx context.Context, base string) ([]InstallJob, error) {
+	if err := c.requireInvoke(ctx, base, "installing models"); err != nil {
+		return nil, err
+	}
+	return c.invokeInstallJobs(ctx, base)
 }
 
 // Ping confirms the generator is reachable and speaking a supported API. Used by the

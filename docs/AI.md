@@ -23,6 +23,16 @@ the Android app has the same switch in its settings) removes the artwork from th
 login screen, error popups, and Chat. The features stay — errors show as plain
 messages and chat keeps working.
 
+### Outfits
+
+**Settings → Libby → Outfits** is the outfit creator: an outfit is a named set of
+replacement artwork, one image per emotion (neutral for popups; happy,
+mischievous, surprised, and thinking for the four chat modes). On the web, drag
+and drop an image onto each emotion slot; on Android, tap a slot and pick an
+image. Outfit art is stored encrypted on the server beside the config; which
+outfit Libby *wears* is a per-device choice, and an emotion an outfit doesn't
+cover falls back to the default art.
+
 ## Image generation
 
 The Create tab drives a local image generator, configured by URL under
@@ -31,11 +41,24 @@ Two backends are supported and auto-detected:
 
 - **InvokeAI** (4.0+) — models and LoRAs come from its model manager; generation
   runs through its session queue with the standard txt2img graph (SD 1.x/2.x and
-  SDXL; LoRAs whose base doesn't match the chosen model are skipped). Finished
-  images are downloaded and then deleted from InvokeAI's gallery, so the only
-  durable copy is the one you explicitly save into the library.
+  SDXL; LoRAs whose base doesn't match the chosen model are skipped). InvokeAI
+  keeps every finished image in its own gallery, and the studio's **Gallery**
+  panel (a tab on Android) browses those boards, expands images, deletes them
+  from InvokeAI, or saves one into the library — which remains the only way an
+  image enters the library.
 - **Automatic1111 / SD.Next** — anything exposing `/sdapi/v1`. LoRAs are applied
   as `<lora:name:weight>` prompt tokens.
+
+With an InvokeAI backend the studio also offers:
+
+- **Model/LoRA editing** — the ✎ on a picker card opens the record as InvokeAI's
+  model manager holds it: name, description, trigger phrases, and recommended
+  settings (steps, CFG, size, scheduler, VAE; a LoRA's recommended weight).
+  Edits are written back to InvokeAI, so both UIs stay in sync.
+- **A Civitai browser** — search the Civitai catalogue (proxied through the
+  server via the civitai.red mirror), preview images and trigger words, and
+  install a version straight into InvokeAI; the download runs on the generator
+  box and its progress is shown in the browser.
 
 ## What gets tagged
 

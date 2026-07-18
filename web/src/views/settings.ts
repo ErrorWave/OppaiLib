@@ -10,7 +10,29 @@ import {
   applyTheme,
 } from "../theme.js";
 import { KIND_META, type Kind, type ComicFit, loadComicFit, saveComicFit } from "../media-meta.js";
-import { loadHideLibby, saveHideLibby } from "../libby.js";
+import { loadHideLibby, loadLibbyOutfit, saveHideLibby, saveLibbyOutfit } from "../libby.js";
+import type { LibbyOutfit } from "../api.js";
+
+/** Libby's emotion slots, in the order the outfit editor lays them out. */
+const LIBBY_EMOTIONS: { id: string; label: string; hint: string }[] = [
+  { id: "neutral", label: "Neutral", hint: "Login screen and error popups" },
+  { id: "happy", label: "Happy", hint: "Chat · Sweet mode" },
+  { id: "mischievous", label: "Mischievous", hint: "Chat · Playful mode" },
+  { id: "surprised", label: "Surprised", hint: "Chat · Bold mode" },
+  { id: "thinking", label: "Thinking", hint: "Chat · Roleplay mode" },
+];
+
+/**
+ * An outfit being created or edited. Staged images are data URLs dropped onto the
+ * emotion slots; they upload on Save, so backing out costs nothing.
+ */
+interface OutfitDraft {
+  id?: string;
+  name: string;
+  /** Emotions that already have art on the server (existing outfits). */
+  existing: string[];
+  staged: Record<string, string>;
+}
 
 // The Settings screen. Server-side settings (AI tagging, scraping) are loaded
 // from and saved back to /api/settings and only an admin may write them —
@@ -35,6 +57,13 @@ export class OppaiSettings extends LitElement {
   @state() private theme: ThemePref = loadTheme();
   @state() private fit: ComicFit = loadComicFit();
   @state() private hideLibby = loadHideLibby();
+
+  // Libby outfits: the wardrobe lives on the server; which outfit is worn is a
+  // per-device pick like hideLibby.
+  @state() private outfits: LibbyOutfit[] = [];
+  @state() private wornOutfit = loadLibbyOutfit();
+  @state() private outfitDraft: OutfitDraft | null = null;
+  @state() private outfitBusy = false;
 
   @state() private pwCurrent = "";
   @state() private pwNew = "";
@@ -306,11 +335,137 @@ export class OppaiSettings extends LitElement {
         max-width: 360px;
       }
     `,
+    // Libby outfit editor.
+    css`
+      .outfit-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 0;
+        border-top: 1px solid var(--oppai-border);
+        font-size: 14px;
+      }
+      .outfit-row .name {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .outfit-row .meta {
+        font-size: 12px;
+        color: var(--oppai-text-muted);
+      }
+      .outfit-btn {
+        border: 1px solid var(--oppai-border-strong);
+        background: transparent;
+        color: var(--oppai-text-dim);
+        border-radius: 999px;
+        font: inherit;
+        font-size: 12px;
+        padding: 5px 12px;
+        cursor: pointer;
+      }
+      .outfit-btn.on {
+        background: var(--oppai-accent);
+        color: var(--oppai-on-accent);
+        border-color: var(--oppai-accent);
+      }
+      .outfit-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.55);
+        display: grid;
+        place-items: center;
+        z-index: 50;
+        padding: 20px;
+      }
+      .outfit-dialog {
+        background: var(--oppai-surface);
+        border: 1px solid var(--oppai-border);
+        border-radius: 18px;
+        padding: 18px;
+        width: min(640px, 100%);
+        max-height: 92vh;
+        overflow-y: auto;
+      }
+      .outfit-dialog h3 {
+        margin: 0 0 12px;
+        font-size: 16px;
+      }
+      .slots {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+        gap: 12px;
+        margin-top: 14px;
+      }
+      .slot {
+        border: 2px dashed var(--oppai-border-strong);
+        border-radius: 14px;
+        padding: 10px;
+        text-align: center;
+        cursor: pointer;
+        transition: border-color 0.15s ease, background 0.15s ease;
+      }
+      .slot.dragover {
+        border-color: var(--oppai-primary);
+        background: var(--oppai-surface-2);
+      }
+      .slot img {
+        width: 100%;
+        aspect-ratio: 3 / 4;
+        object-fit: contain;
+        border-radius: 10px;
+        background: var(--oppai-surface-2);
+      }
+      .slot .drop-hint {
+        aspect-ratio: 3 / 4;
+        display: grid;
+        place-items: center;
+        color: var(--oppai-text-muted);
+        font-size: 12px;
+        padding: 6px;
+      }
+      .slot .slot-label {
+        font-size: 13px;
+        font-weight: 600;
+        margin-top: 6px;
+      }
+      .slot .slot-hint {
+        font-size: 11px;
+        color: var(--oppai-text-muted);
+      }
+      .outfit-actions {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+        margin-top: 16px;
+      }
+      .outfit-actions .danger {
+        margin-right: auto;
+        color: var(--oppai-error, #f2b8b5);
+      }
+    `,
   ];
 
   connectedCallback() {
     super.connectedCallback();
     this.load();
+    void this.loadOutfits();
+  }
+
+  private async loadOutfits() {
+    try {
+      const res = await api.libbyOutfits();
+      this.outfits = res.outfits;
+      // A worn outfit that has been deleted (possibly from another device) must
+      // not stick: fall back to the default art.
+      if (this.wornOutfit && !res.outfits.some((o) => o.id === this.wornOutfit)) {
+        this.wornOutfit = "";
+        saveLibbyOutfit("");
+      }
+    } catch {
+      /* the section just shows none */
+    }
   }
 
   private async load() {
@@ -585,7 +740,182 @@ export class OppaiSettings extends LitElement {
             ></button>
           </div>
         </div>
+
+        <div class="field stack">
+          <div class="field-text">
+            <div class="field-label">Outfits</div>
+            <div class="field-help">
+              Dress Libby up: an outfit swaps her artwork, one image per emotion. Drop
+              images onto the emotion slots in the editor; an emotion you leave empty
+              falls back to the default art. Which outfit she wears is per-device.
+            </div>
+          </div>
+          <div class="field-control" style="display:block;">
+            <div class="outfit-row" style="border-top:none;">
+              <span class="name">Default Libby</span>
+              <button
+                class="outfit-btn ${this.wornOutfit === "" ? "on" : ""}"
+                @click=${() => this.wearOutfit("")}
+              >${this.wornOutfit === "" ? "Wearing" : "Wear"}</button>
+            </div>
+            ${this.outfits.map(
+              (o) => html`<div class="outfit-row">
+                <span class="name">${o.name}</span>
+                <span class="meta">${o.emotions.length}/5 emotions</span>
+                <button
+                  class="outfit-btn ${this.wornOutfit === o.id ? "on" : ""}"
+                  @click=${() => this.wearOutfit(this.wornOutfit === o.id ? "" : o.id)}
+                >${this.wornOutfit === o.id ? "Wearing" : "Wear"}</button>
+                <button class="outfit-btn" @click=${() => this.openOutfitEditor(o)}>Edit</button>
+              </div>`,
+            )}
+            <div class="outfit-row" style="border-top:none; padding-top:12px;">
+              <button
+                class="outfit-btn"
+                @click=${() => (this.outfitDraft = { name: "", existing: [], staged: {} })}
+              >
+                <span class="material-symbols-rounded" style="font-size:14px; vertical-align:-2px;">add</span>
+                New outfit
+              </button>
+            </div>
+          </div>
+        </div>
       </section>
+      ${this.outfitDraft ? this.renderOutfitEditor(this.outfitDraft) : nothing}
+    `;
+  }
+
+  // ── Libby outfits ───────────────────────────────────────────────────────────
+
+  private wearOutfit(id: string) {
+    this.wornOutfit = id;
+    saveLibbyOutfit(id);
+  }
+
+  private openOutfitEditor(o: LibbyOutfit) {
+    this.outfitDraft = { id: o.id, name: o.name, existing: [...o.emotions], staged: {} };
+  }
+
+  /** Reads a dropped/picked image file into the draft's staging area. */
+  private stageEmotion(emotion: string, file: File | undefined) {
+    if (!file || !file.type.startsWith("image/") || !this.outfitDraft) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (!this.outfitDraft) return;
+      this.outfitDraft = {
+        ...this.outfitDraft,
+        staged: { ...this.outfitDraft.staged, [emotion]: String(reader.result) },
+      };
+    };
+    reader.readAsDataURL(file);
+  }
+
+  private async saveOutfit() {
+    const d = this.outfitDraft;
+    if (!d || !d.name.trim() || this.outfitBusy) return;
+    this.outfitBusy = true;
+    try {
+      // Create (or rename) first so the emotion uploads have an id to hang off.
+      const saved = await api.saveLibbyOutfit({ id: d.id, name: d.name.trim() });
+      for (const [emotion, dataUrl] of Object.entries(d.staged)) {
+        await api.setLibbyEmotion(saved.id, emotion, dataUrl);
+      }
+      this.outfitDraft = null;
+      await this.loadOutfits();
+    } catch (e) {
+      this.loadError = (e as Error).message;
+    } finally {
+      this.outfitBusy = false;
+    }
+  }
+
+  private async deleteOutfit() {
+    const d = this.outfitDraft;
+    if (!d?.id || this.outfitBusy) return;
+    if (!confirm(`Delete the “${d.name}” outfit?`)) return;
+    this.outfitBusy = true;
+    try {
+      await api.deleteLibbyOutfit(d.id);
+      if (this.wornOutfit === d.id) this.wearOutfit("");
+      this.outfitDraft = null;
+      await this.loadOutfits();
+    } catch (e) {
+      this.loadError = (e as Error).message;
+    } finally {
+      this.outfitBusy = false;
+    }
+  }
+
+  private renderOutfitEditor(d: OutfitDraft) {
+    return html`
+      <div class="outfit-overlay" @click=${(e: Event) => { if (e.target === e.currentTarget) this.outfitDraft = null; }}>
+        <div class="outfit-dialog">
+          <h3>${d.id ? "Edit outfit" : "New outfit"}</h3>
+          <input
+            type="text"
+            placeholder="Outfit name (Summer dress, Maid, …)"
+            .value=${d.name}
+            @input=${(e: Event) => (this.outfitDraft = { ...d, name: (e.target as HTMLInputElement).value })}
+          />
+          <div class="slots">
+            ${LIBBY_EMOTIONS.map((em) => {
+              const staged = d.staged[em.id];
+              const existing = !staged && d.id && d.existing.includes(em.id)
+                ? `/api/libby/outfits/${encodeURIComponent(d.id)}/emotions/${em.id}`
+                : "";
+              return html`
+                <label
+                  class="slot"
+                  @dragover=${(e: DragEvent) => {
+                    e.preventDefault();
+                    (e.currentTarget as HTMLElement).classList.add("dragover");
+                  }}
+                  @dragleave=${(e: DragEvent) =>
+                    (e.currentTarget as HTMLElement).classList.remove("dragover")}
+                  @drop=${(e: DragEvent) => {
+                    e.preventDefault();
+                    (e.currentTarget as HTMLElement).classList.remove("dragover");
+                    this.stageEmotion(em.id, e.dataTransfer?.files?.[0]);
+                  }}
+                >
+                  ${staged
+                    ? html`<img src=${staged} alt=${em.label} />`
+                    : existing
+                      ? html`<img src=${existing} alt=${em.label} />`
+                      : html`<div class="drop-hint">Drop an image here<br />or click to browse</div>`}
+                  <div class="slot-label">${em.label}</div>
+                  <div class="slot-hint">${em.hint}</div>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    style="display:none;"
+                    @change=${(e: Event) => {
+                      const input = e.target as HTMLInputElement;
+                      this.stageEmotion(em.id, input.files?.[0]);
+                      input.value = "";
+                    }}
+                  />
+                </label>
+              `;
+            })}
+          </div>
+          <div class="outfit-actions">
+            ${d.id
+              ? html`<button class="outfit-btn danger" ?disabled=${this.outfitBusy} @click=${() => this.deleteOutfit()}>
+                  Delete outfit
+                </button>`
+              : nothing}
+            <button class="outfit-btn" @click=${() => (this.outfitDraft = null)}>Cancel</button>
+            <button
+              class="btn-primary"
+              ?disabled=${!d.name.trim() || this.outfitBusy}
+              @click=${() => this.saveOutfit()}
+            >
+              ${this.outfitBusy ? "Saving…" : "Save outfit"}
+            </button>
+          </div>
+        </div>
+      </div>
     `;
   }
 

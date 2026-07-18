@@ -1,16 +1,20 @@
 import { LitElement, html, css, nothing } from "lit";
-import { customElement, state } from "lit/decorators.js";
+import { customElement, query, state } from "lit/decorators.js";
 import { iconStyles, motionStyles } from "../theme.js";
 import {
   api,
   type GenCharacter,
   type GenLora,
   type GenModel,
+  type GenModelMeta,
   type GenPreview,
   type GenTemplate,
   type GenVae,
   type ImageGenStatus,
 } from "../api.js";
+import "./imagegen-gallery.js";
+import "./civitai.js";
+import type { OppaiInvokeGallery } from "./imagegen-gallery.js";
 
 // ── Web Speech typings ─────────────────────────────────────────────────────────
 // The Speech Recognition API isn't in the standard DOM lib, and it's still vendor-
@@ -86,10 +90,11 @@ interface CharDraft {
  * characters) in the sidebar, speak or type a prompt, generate, and — only on an
  * explicit Save — keep one in the library.
  *
- * Nothing here is persisted until Save: the server holds generated images in memory and
- * streams them as previews, so an unsaved batch simply evaporates. That's the whole
- * point of the feature as asked for — "generated images don't save unless manually
- * saved" — made true by where the bytes live, not by a checkbox.
+ * The *library* gains nothing until Save: the server holds generated previews in
+ * memory and streams them from there, so an unsaved batch never touches the library.
+ * InvokeAI, meanwhile, keeps every finished image in its own gallery on the
+ * generator box — the right-hand panel browses that gallery, saves picks into the
+ * library, and deletes the rest.
  *
  * It talks to a local InvokeAI or Automatic1111 / SD.Next backend through the server
  * (the browser never reaches the generator directly), so it works the same on a phone
@@ -136,6 +141,26 @@ export class OppaiImageGen extends LitElement {
   // reload fighting the browser cache.
   @state() private thumbVersion = 0;
 
+  // Thumbnail URLs that 404'd, so their tiles render a proper placeholder instead
+  // of a black box. Tracked as state (not by mutating the <img> in its error
+  // handler) because Lit reuses DOM nodes across renders — a style hack stuck to
+  // one <img> used to bleed onto other cards and survive a successful reload,
+  // which is why freshly-set previews appeared to "stay black".
+  @state() private failedThumbs = new Set<string>();
+
+  /** A result shot expanded to full size, by preview id. */
+  @state() private expandedShot: Shot | null = null;
+
+  /** The model/LoRA record being edited, or null. */
+  @state() private metaDraft: GenModelMeta | null = null;
+  @state() private metaBusy = false;
+  @state() private metaTriggerText = "";
+
+  /** Whether the Civitai browser is on screen. */
+  @state() private civitaiOpen = false;
+
+  @query("oppai-invoke-gallery") private galleryPanel?: OppaiInvokeGallery;
+
   private recognition: SpeechRecognitionLike | null = null;
 
   static styles = [
@@ -153,13 +178,25 @@ export class OppaiImageGen extends LitElement {
       }
       .layout {
         display: grid;
-        grid-template-columns: 320px minmax(0, 1fr);
-        gap: 22px;
+        grid-template-columns: 300px minmax(0, 1fr) 300px;
+        gap: 20px;
         align-items: start;
+      }
+      @media (max-width: 1220px) {
+        .layout {
+          grid-template-columns: 300px minmax(0, 1fr);
+        }
+        /* The gallery drops under the main column rather than vanishing. */
+        .layout > .right {
+          grid-column: 2;
+        }
       }
       @media (max-width: 940px) {
         .layout {
           grid-template-columns: minmax(0, 1fr);
+        }
+        .layout > .right {
+          grid-column: 1;
         }
       }
       .empty {
@@ -276,6 +313,10 @@ export class OppaiImageGen extends LitElement {
         display: grid;
         place-items: center;
         cursor: pointer;
+      }
+      .card-edit.left {
+        right: auto;
+        left: 4px;
       }
       .lora-weight {
         width: 100%;
@@ -652,6 +693,62 @@ export class OppaiImageGen extends LitElement {
         opacity: 0.55;
         cursor: default;
       }
+
+      /* Result lightbox. */
+      .lightbox {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.85);
+        z-index: 60;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        padding: 20px;
+      }
+      .lightbox img {
+        max-width: min(96vw, 1400px);
+        max-height: 82vh;
+        object-fit: contain;
+        border-radius: 10px;
+      }
+      .lightbox .row {
+        display: flex;
+        gap: 10px;
+      }
+
+      /* Model/LoRA edit dialog fields. */
+      .meta-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+      }
+      .meta-grid .full {
+        grid-column: 1 / -1;
+      }
+      .topline {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 14px;
+      }
+      .topline .spacer {
+        flex: 1;
+      }
+      .ghost {
+        border: 1px solid var(--oppai-border-strong);
+        background: transparent;
+        color: var(--oppai-text-dim);
+        border-radius: 12px;
+        font: inherit;
+        font-size: 13px;
+        padding: 8px 14px;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
     `,
   ];
 
@@ -829,6 +926,8 @@ export class OppaiImageGen extends LitElement {
       });
       // Newest batch first, kept above earlier ones so a session builds a roll.
       this.shots = [...res.images.map((g: GenPreview) => ({ ...g, saved: false })), ...this.shots];
+      // InvokeAI keeps its own gallery copy of everything that just finished.
+      void this.galleryPanel?.refresh();
     } catch (e) {
       this.error = (e as Error).message;
     } finally {
@@ -850,6 +949,34 @@ export class OppaiImageGen extends LitElement {
     }
   }
 
+  /** Repaint every picker thumbnail and retry the ones that had failed. */
+  private bumpThumbs() {
+    this.bumpThumbs();
+    this.failedThumbs = new Set();
+  }
+
+  /**
+   * A picker card's artwork: the image when it loads, a proper placeholder when it
+   * can't. The failure is tracked per-URL in state so a miss can't leak hidden
+   * styles onto reused <img> nodes (the old approach left cards black).
+   */
+  private renderArt(url: string, alt: string, icon: string) {
+    if (this.failedThumbs.has(url)) {
+      return html`<div class="card-blank">
+        <span class="material-symbols-rounded" style="font-size:34px;">${icon}</span>
+      </div>`;
+    }
+    return html`<img
+      class="card-art"
+      src=${url}
+      alt=${alt}
+      loading="lazy"
+      @error=${() => {
+        this.failedThumbs = new Set(this.failedThumbs).add(url);
+      }}
+    />`;
+  }
+
   private async useAsModelThumb(shot: Shot) {
     if (!this.checkpoint) {
       this.showToast("Pick a model first");
@@ -857,7 +984,7 @@ export class OppaiImageGen extends LitElement {
     }
     try {
       await api.setModelThumb({ model: this.checkpoint, previewId: shot.id });
-      this.thumbVersion++;
+      this.bumpThumbs();
       this.showToast("Set as model preview");
     } catch (e) {
       this.showToast((e as Error).message);
@@ -873,7 +1000,7 @@ export class OppaiImageGen extends LitElement {
     reader.onload = async () => {
       try {
         await api.setModelThumb({ model, imageData: String(reader.result) });
-        this.thumbVersion++;
+        this.bumpThumbs();
         this.showToast("Model preview updated");
       } catch (err) {
         this.showToast((err as Error).message);
@@ -891,13 +1018,62 @@ export class OppaiImageGen extends LitElement {
     reader.onload = async () => {
       try {
         await api.setLoraThumb({ model: name, imageData: String(reader.result) });
-        this.thumbVersion++;
+        this.bumpThumbs();
         this.showToast("LoRA preview updated");
       } catch (err) {
         this.showToast((err as Error).message);
       }
     };
     reader.readAsDataURL(file);
+  }
+
+  // ── model / LoRA metadata editor ────────────────────────────────────────────
+  // Edits the generator's own record (via the server), so name, description,
+  // trigger phrases and recommended settings match InvokeAI's model manager.
+
+  private async openMetaEditor(name: string) {
+    this.metaBusy = true;
+    try {
+      const meta = await api.modelMeta(name);
+      this.metaDraft = meta;
+      this.metaTriggerText = meta.triggerPhrases.join(", ");
+    } catch (e) {
+      this.showToast((e as Error).message);
+    } finally {
+      this.metaBusy = false;
+    }
+  }
+
+  private setMetaDefaults(patch: Partial<NonNullable<GenModelMeta["defaults"]>>) {
+    const d = this.metaDraft;
+    if (!d) return;
+    this.metaDraft = { ...d, defaults: { ...(d.defaults ?? {}), ...patch } };
+  }
+
+  private async saveMeta() {
+    const d = this.metaDraft;
+    if (!d || this.metaBusy) return;
+    this.metaBusy = true;
+    try {
+      await api.patchModelMeta({
+        key: d.key,
+        name: d.name,
+        description: d.description ?? "",
+        triggerPhrases: this.metaTriggerText
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
+        defaults: d.defaults,
+      });
+      this.metaDraft = null;
+      this.showToast("Model updated");
+      // Names and defaults may have changed; the status payload carries both.
+      await this.loadStatus();
+    } catch (e) {
+      this.showToast((e as Error).message);
+    } finally {
+      this.metaBusy = false;
+    }
   }
 
   private toggleLora(name: string) {
@@ -944,7 +1120,7 @@ export class OppaiImageGen extends LitElement {
         imageData: d.imageData,
       });
       this.charDraft = null;
-      this.thumbVersion++;
+      this.bumpThumbs();
       await this.loadCharacters();
       this.showToast("Character saved");
     } catch (e) {
@@ -980,7 +1156,121 @@ export class OppaiImageGen extends LitElement {
   render() {
     return html`<div class="wrap">${this.renderBody()}</div>
       ${this.charDraft ? this.renderCharEditor(this.charDraft) : nothing}
+      ${this.metaDraft ? this.renderMetaEditor(this.metaDraft) : nothing}
+      ${this.expandedShot ? this.renderLightbox(this.expandedShot) : nothing}
       ${this.toast ? html`<div class="toast">${this.toast}</div>` : nothing}`;
+  }
+
+  /** Item 4: a generated result expanded to full size, with its actions to hand. */
+  private renderLightbox(shot: Shot) {
+    const current = this.shots.find((s) => s.id === shot.id) ?? shot;
+    return html`
+      <div class="lightbox" @click=${(e: Event) => { if (e.target === e.currentTarget) this.expandedShot = null; }}>
+        <img src=${api.genPreviewURL(current.id)} alt="Generated image" />
+        <div class="row">
+          <button class="btn primary" ?disabled=${current.saved} @click=${() => this.save(current)}>
+            <span class="material-symbols-rounded" style="font-size:17px;">${current.saved ? "check" : "save"}</span>
+            ${current.saved ? "Saved" : "Save to library"}
+          </button>
+          <button class="btn" @click=${() => this.useAsModelThumb(current)}>
+            <span class="material-symbols-rounded" style="font-size:17px;">photo_camera</span> Model preview
+          </button>
+          <button class="btn" @click=${() => (this.expandedShot = null)}>
+            <span class="material-symbols-rounded" style="font-size:17px;">close</span> Close
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  private renderMetaEditor(d: GenModelMeta) {
+    const defaults = d.defaults ?? {};
+    const isLora = d.type === "lora";
+    return html`
+      <div class="overlay" @click=${(e: Event) => { if (e.target === e.currentTarget) this.metaDraft = null; }}>
+        <div class="dialog">
+          <h3>Edit ${isLora ? "LoRA" : "model"} — synced with InvokeAI</h3>
+          <div>
+            <label class="field">Name</label>
+            <input type="text" .value=${d.name}
+              @input=${(e: Event) => (this.metaDraft = { ...d, name: (e.target as HTMLInputElement).value })} />
+          </div>
+          <div>
+            <label class="field">Description</label>
+            <textarea .value=${d.description ?? ""}
+              @input=${(e: Event) => (this.metaDraft = { ...d, description: (e.target as HTMLTextAreaElement).value })}></textarea>
+          </div>
+          <div>
+            <label class="field">Trigger phrases (comma-separated)</label>
+            <input type="text" .value=${this.metaTriggerText} placeholder="my-style, detailed face"
+              @input=${(e: Event) => (this.metaTriggerText = (e.target as HTMLInputElement).value)} />
+          </div>
+          ${isLora
+            ? html`<div>
+                <label class="field">Recommended weight</label>
+                <input class="num" type="number" min="-2" max="2" step="0.05"
+                  .value=${String(defaults.weight ?? "")} placeholder="1"
+                  @input=${(e: Event) =>
+                    this.setMetaDefaults({ weight: Number((e.target as HTMLInputElement).value) || 0 })} />
+              </div>`
+            : html`
+                <div class="meta-grid">
+                  <div>
+                    <label class="field">Steps</label>
+                    <input class="num" type="number" min="1" max="80" .value=${String(defaults.steps ?? "")}
+                      @input=${(e: Event) =>
+                        this.setMetaDefaults({ steps: Number((e.target as HTMLInputElement).value) || 0 })} />
+                  </div>
+                  <div>
+                    <label class="field">CFG scale</label>
+                    <input class="num" type="number" min="1" max="30" step="0.5" .value=${String(defaults.cfgScale ?? "")}
+                      @input=${(e: Event) =>
+                        this.setMetaDefaults({ cfgScale: Number((e.target as HTMLInputElement).value) || 0 })} />
+                  </div>
+                  <div>
+                    <label class="field">Width</label>
+                    <input class="num" type="number" min="64" max="2048" step="8" .value=${String(defaults.width ?? "")}
+                      @input=${(e: Event) =>
+                        this.setMetaDefaults({ width: Number((e.target as HTMLInputElement).value) || 0 })} />
+                  </div>
+                  <div>
+                    <label class="field">Height</label>
+                    <input class="num" type="number" min="64" max="2048" step="8" .value=${String(defaults.height ?? "")}
+                      @input=${(e: Event) =>
+                        this.setMetaDefaults({ height: Number((e.target as HTMLInputElement).value) || 0 })} />
+                  </div>
+                  <div class="full">
+                    <label class="field">Scheduler</label>
+                    <select class="num" .value=${defaults.scheduler ?? ""}
+                      @change=${(e: Event) =>
+                        this.setMetaDefaults({ scheduler: (e.target as HTMLSelectElement).value })}>
+                      <option value="">No preference</option>
+                      ${["euler_a", "euler", "dpmpp_2m", "dpmpp_2m_k", "dpmpp_2m_sde_k", "dpmpp_sde_k", "unipc"].map(
+                        (s) => html`<option value=${s} ?selected=${s === defaults.scheduler}>${s}</option>`,
+                      )}
+                    </select>
+                  </div>
+                  <div class="full">
+                    <label class="field">Default VAE</label>
+                    <select class="num" .value=${defaults.vae ?? ""}
+                      @change=${(e: Event) => this.setMetaDefaults({ vae: (e.target as HTMLSelectElement).value })}>
+                      <option value="">Model's own</option>
+                      ${(this.status?.vaes ?? []).map(
+                        (v) => html`<option value=${v.key} ?selected=${v.key === defaults.vae}>${v.name}</option>`,
+                      )}
+                    </select>
+                  </div>
+                </div>
+              `}
+          <div class="dialog-actions">
+            <button class="btn" @click=${() => (this.metaDraft = null)}>Cancel</button>
+            <button class="btn primary" ?disabled=${this.metaBusy || !d.name.trim()} @click=${() => this.saveMeta()}>
+              Save
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
   }
 
   private renderBody() {
@@ -1007,6 +1297,7 @@ export class OppaiImageGen extends LitElement {
       </div>`;
     }
 
+    const invoke = st.backend === "invokeai";
     return html`
       <div class="layout">
         <aside class="side">
@@ -1018,12 +1309,34 @@ export class OppaiImageGen extends LitElement {
           ${this.renderCharacterSection()}
         </aside>
         <div>
+          ${invoke
+            ? html`<div class="topline">
+                <div class="spacer"></div>
+                <button class="ghost" @click=${() => (this.civitaiOpen = true)}>
+                  <span class="material-symbols-rounded" style="font-size:17px;">travel_explore</span>
+                  Browse Civitai
+                </button>
+              </div>`
+            : nothing}
           ${this.renderPrompt()}
           ${this.error ? html`<div class="banner">${this.error}</div>` : nothing}
           ${this.renderResults()}
         </div>
+        ${invoke
+          ? html`<aside class="right">
+              <oppai-invoke-gallery></oppai-invoke-gallery>
+            </aside>`
+          : nothing}
       </div>
+      ${this.civitaiOpen ? html`<oppai-civitai @close=${() => this.onCivitaiClose()}></oppai-civitai>` : nothing}
     `;
+  }
+
+  // Closing the Civitai browser refreshes the model list: an install may have
+  // finished while it was open, and a new checkpoint should appear right away.
+  private onCivitaiClose() {
+    this.civitaiOpen = false;
+    void this.loadStatus();
   }
 
   private section(id: string, label: string, count: string, body: unknown) {
@@ -1061,13 +1374,7 @@ export class OppaiImageGen extends LitElement {
           return html`
             <div class="card-wrap">
               <button class="card ${on ? "on" : ""}" title=${m.title} @click=${() => this.pickModel(m)}>
-                <img
-                  class="card-art"
-                  src=${thumb}
-                  alt=${m.model_name}
-                  loading="lazy"
-                  @error=${(e: Event) => ((e.target as HTMLImageElement).style.visibility = "hidden")}
-                />
+                ${this.renderArt(thumb, m.model_name, "texture")}
                 <div class="card-name">${m.model_name}${m.base ? html`<span class="row-sub">${m.base}</span>` : nothing}</div>
               </button>
               <label class="card-edit" title="Upload a preview for this model">
@@ -1079,6 +1386,9 @@ export class OppaiImageGen extends LitElement {
                   @change=${(e: Event) => this.onUploadThumb(m.title, e)}
                 />
               </label>
+              <button class="card-edit left" title="Edit model settings" @click=${() => this.openMetaEditor(m.title)}>
+                <span class="material-symbols-rounded" style="font-size:15px;">edit</span>
+              </button>
             </div>
           `;
         })}
@@ -1106,8 +1416,7 @@ export class OppaiImageGen extends LitElement {
           return html`
             <div class="card-wrap">
               <button class="card ${on ? "on" : ""}" title=${lora.name} @click=${() => this.toggleLora(lora.name)}>
-                <img class="card-art" src=${thumb} alt=${lora.alias || lora.name} loading="lazy"
-                  @error=${(e: Event) => ((e.target as HTMLImageElement).style.visibility = "hidden")} />
+                ${this.renderArt(thumb, lora.alias || lora.name, "style")}
                 <div class="card-name">${lora.alias || lora.name}</div>
               </button>
               <label class="card-edit" title="Upload a preview for this LoRA">
@@ -1115,6 +1424,9 @@ export class OppaiImageGen extends LitElement {
                 <input class="hidden-file" type="file" accept="image/*"
                   @change=${(e: Event) => this.onUploadLoraThumb(lora.name, e)} />
               </label>
+              <button class="card-edit left" title="Edit LoRA settings" @click=${() => this.openMetaEditor(lora.name)}>
+                <span class="material-symbols-rounded" style="font-size:15px;">edit</span>
+              </button>
               ${on ? html`<input class="lora-weight" type="number" min="-2" max="2" step="0.05"
                 aria-label=${`${lora.alias || lora.name} weight`}
                 .value=${String(this.selectedLoras[lora.name])}
@@ -1225,8 +1537,7 @@ export class OppaiImageGen extends LitElement {
                 <div class="card-wrap">
                   <button class="card ${on ? "on" : ""}" title=${c.prompt} @click=${() => this.toggleCharacter(c.id)}>
                     ${c.hasThumb
-                      ? html`<img class="card-art" src=${thumb} alt=${c.name} loading="lazy"
-                          @error=${(e: Event) => ((e.target as HTMLImageElement).style.visibility = "hidden")} />`
+                      ? this.renderArt(thumb, c.name, "person")
                       : html`<div class="card-blank">
                           <span class="material-symbols-rounded" style="font-size:34px;">person</span>
                         </div>`}
@@ -1415,7 +1726,14 @@ export class OppaiImageGen extends LitElement {
         ${this.shots.map(
           (shot) => html`
             <div class="shot">
-              <img src=${api.genPreviewURL(shot.id)} alt="Generated image" loading="lazy" />
+              <img
+                src=${api.genPreviewURL(shot.id)}
+                alt="Generated image"
+                loading="lazy"
+                style="cursor: zoom-in;"
+                title="Expand"
+                @click=${() => (this.expandedShot = shot)}
+              />
               <div class="shot-actions">
                 <button class="act primary" ?disabled=${shot.saved} @click=${() => this.save(shot)}>
                   <span class="material-symbols-rounded" style="font-size:16px;"
@@ -1432,7 +1750,8 @@ export class OppaiImageGen extends LitElement {
         )}
       </div>
       <div class="banner">
-        Generated images live only here until you Save one — leaving this page drops the rest.
+        Save copies an image into the library. InvokeAI also keeps its own gallery copy of
+        everything generated — see the Invoke gallery panel to browse or delete those.
       </div>
     `;
   }

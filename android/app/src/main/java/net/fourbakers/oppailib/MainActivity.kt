@@ -37,6 +37,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import coil.compose.SubcomposeAsyncImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import androidx.core.content.ContextCompat
@@ -313,15 +314,17 @@ private fun AppRoot(
             )
         }
         if (mascotMessage.isNotBlank()) {
-            MascotPopup(mascotMessage, repo.prefs.hideLibby, Modifier.align(Alignment.BottomEnd))
+            MascotPopup(mascotMessage, repo, Modifier.align(Alignment.BottomEnd))
         }
     }
 }
 
 // This popup is the app's error surface, so hiding Libby keeps the bubble and drops
-// only the artwork.
+// only the artwork. A worn outfit swaps the art (its "neutral" pose), falling back
+// to the bundled mascot when the outfit lacks one.
 @Composable
-private fun MascotPopup(message: String, hideLibby: Boolean, modifier: Modifier = Modifier) {
+private fun MascotPopup(message: String, repo: Repository, modifier: Modifier = Modifier) {
+    val hideLibby = repo.prefs.hideLibby
     Row(
         modifier = modifier.padding(end = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.Bottom,
@@ -336,10 +339,20 @@ private fun MascotPopup(message: String, hideLibby: Boolean, modifier: Modifier 
             Text(message, modifier = Modifier.padding(14.dp), style = MaterialTheme.typography.bodyMedium)
         }
         if (!hideLibby) {
-            AsyncImage(
-                model = "file:///android_asset/mascot.png",
+            val outfit = repo.prefs.libbyOutfit
+            SubcomposeAsyncImage(
+                model = if (outfit.isEmpty()) "file:///android_asset/mascot.png"
+                else repo.libbyEmotionUrl(outfit, "neutral"),
+                imageLoader = repo.imageLoader,
                 contentDescription = null,
                 modifier = Modifier.size(width = 150.dp, height = 220.dp),
+                error = {
+                    AsyncImage(
+                        model = "file:///android_asset/mascot.png",
+                        contentDescription = null,
+                        modifier = Modifier.size(width = 150.dp, height = 220.dp),
+                    )
+                },
             )
         }
     }

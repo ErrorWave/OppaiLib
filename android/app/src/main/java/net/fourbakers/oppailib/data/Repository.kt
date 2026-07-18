@@ -94,6 +94,21 @@ class Repository(private val appContext: Context, val prefs: Prefs) {
     fun characterThumbUrl(id: String): String =
         "${baseUrl}api/imagegen/characters/${URLEncoder.encode(id, "UTF-8")}/thumb"
 
+    /** An InvokeAI gallery image's thumbnail, streamed through the server. */
+    fun galleryThumbUrl(name: String): String =
+        "${baseUrl}api/imagegen/gallery/image/${URLEncoder.encode(name, "UTF-8")}/thumb"
+
+    fun galleryFullUrl(name: String): String =
+        "${baseUrl}api/imagegen/gallery/image/${URLEncoder.encode(name, "UTF-8")}"
+
+    /** A Civitai preview image, proxied so the phone never talks to Civitai. */
+    fun civitaiImageUrl(url: String): String =
+        "${baseUrl}api/imagegen/civitai/image?url=${URLEncoder.encode(url, "UTF-8")}"
+
+    /** One emotion of a Libby outfit. 404s when the outfit lacks that emotion. */
+    fun libbyEmotionUrl(outfitId: String, emotion: String): String =
+        "${baseUrl}api/libby/outfits/${URLEncoder.encode(outfitId, "UTF-8")}/emotions/$emotion"
+
     /**
      * The whole library (or one kind of it), walked a page at a time.
      *

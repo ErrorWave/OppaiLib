@@ -170,9 +170,10 @@ func TestInvokeGenerate(t *testing.T) {
 
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	// Both gallery copies must have been cleaned up after download.
-	if len(st.deleted) != 2 {
-		t.Fatalf("deleted = %v, want both generated images", st.deleted)
+	// The gallery copies stay put — InvokeAI keeps them and the Gallery panel
+	// browses them; only an explicit gallery delete removes one.
+	if len(st.deleted) != 0 {
+		t.Fatalf("deleted = %v, want no gallery deletions during generate", st.deleted)
 	}
 	// The enqueued graph carries the chosen model, exactly one LoRA (the sd-1 one),
 	// and per-run seeds for the noise node.

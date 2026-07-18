@@ -210,7 +210,125 @@ data class GenModelDefaults(
     val width: Int = 0,
     val height: Int = 0,
     val vae: String = "",
+    /** A LoRA's recommended strength; zero on main models. */
+    val weight: Double = 0.0,
 )
+
+/** The full editable record of a model or LoRA, mirrored from InvokeAI. */
+@Serializable
+data class GenModelMeta(
+    val key: String,
+    val name: String,
+    val base: String = "",
+    val type: String = "main",
+    val description: String = "",
+    val triggerPhrases: List<String> = emptyList(),
+    val defaults: GenModelDefaults? = null,
+)
+
+/**
+ * A partial edit to a model record. Like [MediaPatch], null fields are omitted by
+ * the encoder and left unchanged server-side; [defaults] replaces the whole
+ * recommended-settings blob when present.
+ */
+@Serializable
+data class GenModelMetaPatch(
+    val key: String,
+    val name: String? = null,
+    val description: String? = null,
+    val triggerPhrases: List<String>? = null,
+    val defaults: GenModelDefaults? = null,
+)
+
+// ── InvokeAI gallery ─────────────────────────────────────────────────────────
+
+/** One gallery board. Board id "none" is InvokeAI's uncategorized pile. */
+@Serializable
+data class GalleryBoard(val id: String, val name: String, val count: Int = 0)
+
+@Serializable
+data class GalleryBoardsResponse(val boards: List<GalleryBoard> = emptyList())
+
+@Serializable
+data class GalleryImage(
+    val name: String,
+    val width: Int = 0,
+    val height: Int = 0,
+    val created: String = "",
+)
+
+@Serializable
+data class GalleryPageResponse(val items: List<GalleryImage> = emptyList(), val total: Int = 0)
+
+@Serializable
+data class GallerySaveRequest(val name: String, val title: String = "", val tags: List<String> = emptyList())
+
+// ── Civitai catalogue ────────────────────────────────────────────────────────
+
+@Serializable
+data class CivitaiVersion(
+    val id: Long,
+    val name: String = "",
+    val base: String = "",
+    val trainedWords: List<String> = emptyList(),
+    val downloadUrl: String = "",
+    val sizeMB: Long = 0,
+    val images: List<String> = emptyList(),
+)
+
+@Serializable
+data class CivitaiModel(
+    val id: Long,
+    val name: String = "",
+    val type: String = "",
+    val creator: String = "",
+    val downloads: Long = 0,
+    val likes: Long = 0,
+    val versions: List<CivitaiVersion> = emptyList(),
+)
+
+@Serializable
+data class CivitaiSearchResponse(
+    val items: List<CivitaiModel> = emptyList(),
+    val nextCursor: String = "",
+)
+
+@Serializable
+data class CivitaiInstallRequest(val url: String)
+
+/** One model download InvokeAI is running (or has finished). */
+@Serializable
+data class InstallJob(
+    val id: Long = 0,
+    val status: String = "",
+    val source: String = "",
+    val error: String = "",
+    val bytes: Long = 0,
+    val totalBytes: Long = 0,
+)
+
+@Serializable
+data class InstallJobsResponse(val jobs: List<InstallJob> = emptyList())
+
+// ── Libby outfits ────────────────────────────────────────────────────────────
+
+/** A Libby outfit: a name plus which emotions have art uploaded. */
+@Serializable
+data class LibbyOutfit(
+    val id: String,
+    val name: String = "",
+    val emotions: List<String> = emptyList(),
+)
+
+@Serializable
+data class LibbyOutfitsResponse(val outfits: List<LibbyOutfit> = emptyList())
+
+@Serializable
+data class LibbyOutfitSaveRequest(val id: String? = null, val name: String)
+
+/** [imageData] is a data URL or bare base64 image, same as the web client sends. */
+@Serializable
+data class LibbyEmotionRequest(val imageData: String)
 
 @Serializable
 data class GenLora(val name: String, val alias: String = "")

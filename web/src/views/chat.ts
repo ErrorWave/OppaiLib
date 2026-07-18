@@ -2,13 +2,16 @@ import { LitElement, css, html, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { api, type ChatMessage, type ChatStatus } from "../api.js";
 import { iconStyles, motionStyles } from "../theme.js";
-import { loadHideLibby } from "../libby.js";
+import { defaultLibbyArt, libbyEmotionSrc, loadHideLibby } from "../libby.js";
 
+// Each chat mode maps to one of Libby's emotions; the artwork for an emotion
+// comes from the worn outfit when one is selected (see libby.ts), falling back
+// to the bundled art via the image's error handler.
 const MODES = [
-  { id: "sweet", label: "Sweet", reaction: "/mascot-happy.png" },
-  { id: "playful", label: "Playful", reaction: "/mascot-mischievous.png" },
-  { id: "bold", label: "Bold", reaction: "/mascot-surprised.png" },
-  { id: "roleplay", label: "Roleplay", reaction: "/mascot-thinking.png" },
+  { id: "sweet", label: "Sweet", emotion: "happy" },
+  { id: "playful", label: "Playful", emotion: "mischievous" },
+  { id: "bold", label: "Bold", emotion: "surprised" },
+  { id: "roleplay", label: "Roleplay", emotion: "thinking" },
 ] as const;
 
 @customElement("oppai-chat")
@@ -77,7 +80,9 @@ export class OppaiChat extends LitElement {
     finally { this.busy = false; }
   }
   render() {
-    const reaction = MODES.find((m) => m.id === this.mode)?.reaction ?? "/mascot.png";
+    const emotion = MODES.find((m) => m.id === this.mode)?.emotion ?? "neutral";
+    const reaction = libbyEmotionSrc(emotion);
+    const fallback = defaultLibbyArt(emotion);
     // Hiding Libby drops her portrait; the mode picker stays, since modes change how
     // the assistant answers, not how it looks.
     const hideLibby = loadHideLibby();
@@ -87,7 +92,12 @@ export class OppaiChat extends LitElement {
         <div class="modes">${MODES.map((m) => html`<button class="mode ${m.id === this.mode ? "on" : ""}"
           @click=${() => this.setMode(m.id)}>${m.label}</button>`)}</div></div>
         ${hideLibby ? nothing : html`<img src=${reaction} alt="Libby"
-          @error=${(e: Event) => ((e.target as HTMLImageElement).src = "/mascot.png")} />`}
+          @error=${(e: Event) => {
+            // An outfit without this emotion (or a stale outfit id) falls back to
+            // the bundled art; guard against looping if that somehow fails too.
+            const img = e.target as HTMLImageElement;
+            if (!img.src.endsWith(fallback)) img.src = fallback;
+          }} />`}
       </aside>
       <section class="chat"><div class="messages">
         ${!this.status?.enabled ? html`<div class="empty">Configure a local OpenAI-compatible URL and model in Settings to chat with Libby.</div>` : nothing}

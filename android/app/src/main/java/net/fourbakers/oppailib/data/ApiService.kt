@@ -9,6 +9,7 @@ import retrofit2.http.GET
 import retrofit2.http.Multipart
 import retrofit2.http.PATCH
 import retrofit2.http.POST
+import retrofit2.http.PUT
 import retrofit2.http.Part
 import retrofit2.http.Path
 import retrofit2.http.Query
@@ -122,6 +123,70 @@ interface ApiService {
 
     @GET("api/imagegen/characters")
     suspend fun imageGenCharacters(): GenCharacterListResponse
+
+    /** The generator's own model record: name, description, triggers, defaults. */
+    @GET("api/imagegen/model")
+    suspend fun modelMeta(@Query("name") name: String): GenModelMeta
+
+    /** Writes the record back — the same edit InvokeAI's model manager would make. */
+    @PATCH("api/imagegen/model")
+    suspend fun patchModelMeta(@Body body: GenModelMetaPatch): GenModelMeta
+
+    // ── InvokeAI gallery ─────────────────────────────────────────────────
+    // The generator keeps every finished image in its own gallery; these browse
+    // and prune it. Images stream via Repository.galleryThumbUrl/galleryFullUrl.
+
+    @GET("api/imagegen/gallery/boards")
+    suspend fun galleryBoards(): GalleryBoardsResponse
+
+    @GET("api/imagegen/gallery/images")
+    suspend fun galleryImages(
+        @Query("board") board: String,
+        @Query("offset") offset: Int = 0,
+        @Query("limit") limit: Int = 60,
+    ): GalleryPageResponse
+
+    @DELETE("api/imagegen/gallery/image/{name}")
+    suspend fun deleteGalleryImage(@Path("name") name: String)
+
+    /** Copies one gallery image into the library (the only crossing point). */
+    @POST("api/imagegen/gallery/save")
+    suspend fun saveGalleryImage(@Body body: GallerySaveRequest): GenSaveResponse
+
+    // ── Civitai catalogue (proxied through the server) ───────────────────
+
+    @GET("api/imagegen/civitai/search")
+    suspend fun civitaiSearch(
+        @Query("q") q: String? = null,
+        @Query("type") type: String? = null,
+        @Query("sort") sort: String? = null,
+        @Query("cursor") cursor: String? = null,
+    ): CivitaiSearchResponse
+
+    /** Hands a Civitai download URL to InvokeAI; the box downloads it itself. */
+    @POST("api/imagegen/civitai/install")
+    suspend fun civitaiInstall(@Body body: CivitaiInstallRequest): InstallJob
+
+    @GET("api/imagegen/civitai/installs")
+    suspend fun civitaiInstalls(): InstallJobsResponse
+
+    // ── Libby outfits ────────────────────────────────────────────────────
+
+    @GET("api/libby/outfits")
+    suspend fun libbyOutfits(): LibbyOutfitsResponse
+
+    @POST("api/libby/outfits")
+    suspend fun saveLibbyOutfit(@Body body: LibbyOutfitSaveRequest): LibbyOutfit
+
+    @DELETE("api/libby/outfits/{id}")
+    suspend fun deleteLibbyOutfit(@Path("id") id: String)
+
+    @PUT("api/libby/outfits/{id}/emotions/{emotion}")
+    suspend fun setLibbyEmotion(
+        @Path("id") id: String,
+        @Path("emotion") emotion: String,
+        @Body body: LibbyEmotionRequest,
+    )
 
     @POST("api/scrape")
     suspend fun scrape(@Body body: UrlRequest): ScrapeResult
