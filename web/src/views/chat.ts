@@ -2,6 +2,7 @@ import { LitElement, css, html, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { api, type ChatMessage, type ChatStatus } from "../api.js";
 import { iconStyles, motionStyles } from "../theme.js";
+import { loadHideLibby } from "../libby.js";
 
 const MODES = [
   { id: "sweet", label: "Sweet", reaction: "/mascot-happy.png" },
@@ -77,12 +78,16 @@ export class OppaiChat extends LitElement {
   }
   render() {
     const reaction = MODES.find((m) => m.id === this.mode)?.reaction ?? "/mascot.png";
+    // Hiding Libby drops her portrait; the mode picker stays, since modes change how
+    // the assistant answers, not how it looks.
+    const hideLibby = loadHideLibby();
     return html`<div class="layout">
       <aside class="libby"><div><div class="name">Libby</div>
         <div class="model">${this.status?.enabled ? this.status.model : "Local LLM not configured"}</div>
         <div class="modes">${MODES.map((m) => html`<button class="mode ${m.id === this.mode ? "on" : ""}"
           @click=${() => this.setMode(m.id)}>${m.label}</button>`)}</div></div>
-        <img src=${reaction} alt="Libby" @error=${(e: Event) => ((e.target as HTMLImageElement).src = "/mascot.png")} />
+        ${hideLibby ? nothing : html`<img src=${reaction} alt="Libby"
+          @error=${(e: Event) => ((e.target as HTMLImageElement).src = "/mascot.png")} />`}
       </aside>
       <section class="chat"><div class="messages">
         ${!this.status?.enabled ? html`<div class="empty">Configure a local OpenAI-compatible URL and model in Settings to chat with Libby.</div>` : nothing}

@@ -1,6 +1,7 @@
 import { LitElement, html, css } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { api, getToken, setToken, type User } from "./api.js";
+import { loadHideLibby } from "./libby.js";
 import "./views/login.js";
 import "./views/library.js";
 
@@ -58,6 +59,8 @@ export class OppaiApp extends LitElement {
       font: 500 14px/1.4 Roboto, system-ui, sans-serif;
     }
     .mascot-talk.error .speech { border-color: var(--md-sys-color-error); }
+    /* Libby hidden: the bubble alone, tucked to the corner without the mascot's footprint. */
+    .mascot-talk.plain .speech { margin: 0 0 18px 0; }
     .libby-name { display: block; color: var(--md-sys-color-error); font-size: 11px; font-weight: 700; }
     @keyframes pop-in { from { opacity: 0; transform: translateY(24px) scale(.94); } }
     @keyframes libby-talk { from { transform: rotate(-.5deg); } to { transform: translateY(-5px) rotate(.65deg); } }
@@ -71,6 +74,7 @@ export class OppaiApp extends LitElement {
     super.connectedCallback();
     window.addEventListener("oppai-logout", this.onLogout);
     window.addEventListener("oppai-mascot", this.onMascot as EventListener);
+    window.addEventListener("oppai-libby-pref", this.onLibbyPref);
     // A tab that was in the background while the session died should find out the
     // moment it's looked at again, rather than on the next tick.
     document.addEventListener("visibilitychange", this.onVisible);
@@ -80,6 +84,7 @@ export class OppaiApp extends LitElement {
     super.disconnectedCallback();
     window.removeEventListener("oppai-logout", this.onLogout);
     window.removeEventListener("oppai-mascot", this.onMascot as EventListener);
+    window.removeEventListener("oppai-libby-pref", this.onLibbyPref);
     document.removeEventListener("visibilitychange", this.onVisible);
     this.stopProbe();
     if (this.mascotTimer) clearTimeout(this.mascotTimer);
@@ -94,6 +99,10 @@ export class OppaiApp extends LitElement {
     if (this.mascotTimer) clearTimeout(this.mascotTimer);
     this.mascotTimer = window.setTimeout(() => (this.mascotMessage = ""), 5000);
   };
+
+  // The Settings toggle fires this; re-render so a popup that's on screen right now
+  // sheds (or regains) the mascot immediately.
+  private onLibbyPref = () => this.requestUpdate();
 
   private onLogout = () => {
     this.user = null;
@@ -154,12 +163,15 @@ export class OppaiApp extends LitElement {
   }
 
   render() {
+    // This popup is the app's error surface, so hiding Libby can't hide the message —
+    // it just drops the character: same bubble, no artwork, no name.
+    const hideLibby = loadHideLibby();
     const mascot = this.mascotMessage
-      ? html`<div class="mascot-talk ${this.mascotTone}">
+      ? html`<div class="mascot-talk ${this.mascotTone} ${hideLibby ? "plain" : ""}">
           <div class="speech" role=${this.mascotTone === "error" ? "alert" : "status"}>
-            <span class="libby-name">LIBBY · 😟</span>${this.mascotMessage}
+            ${hideLibby ? null : html`<span class="libby-name">LIBBY · 😟</span>`}${this.mascotMessage}
           </div>
-          <img src="/mascot.png" alt="Libby" />
+          ${hideLibby ? null : html`<img src="/mascot.png" alt="Libby" />`}
         </div>`
       : null;
     if (!this.ready) {

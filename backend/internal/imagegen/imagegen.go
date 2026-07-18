@@ -1,75 +1,85 @@
-// Package imagegen drives a local Automatic1111 / SD.Next-compatible image
-// generation WebUI (the one exposing /sdapi/v1). It is deliberately thin: it speaks
-// that API, decodes the base64 images it returns, and knows nothing about the
-// library. Storage, encryption and the "don't save unless asked" rule all live in the
-// api layer — this package only talks to the generator.
+// Package imagegen drives a local image-generation server. Two API dialects are
+// spoken: the Automatic1111 / SD.Next one (/sdapi/v1, see a1111.go) and InvokeAI's
+// queue-and-graph one (/api/v1 + /api/v2, see invokeai.go). Which dialect a given
+// base URL speaks is detected automatically, so the Settings screen stays a single
+// URL field.
+//
+// The package is deliberately thin: it talks to the generator, decodes the images it
+// returns, and knows nothing about the library. Storage, encryption and the "don't
+// save unless asked" rule all live in the api layer.
 //
 // The generator runs on the user's own network (its base URL is a setting). Nothing
 // here reaches a cloud service, in keeping with the project's no-telemetry design.
 package imagegen
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 )
 
-// Client is a stateless caller of an A1111-style API. The base URL is passed per call
+// Kind is the API dialect a generator speaks.
+type Kind string
+
+const (
+	KindA1111    Kind = "a1111"
+	KindInvokeAI Kind = "invokeai"
+)
+
+// How long a positive detection is trusted before the URL is probed again. Short
+// enough that swapping the software behind an unchanged URL is picked up without a
+// restart, long enough that a busy screen doesn't probe on every request.
+const kindTTL = 5 * time.Minute
+
+type kindEntry struct {
+	kind Kind
+	at   time.Time
+}
+
+// Client is a stateless caller of a generator API. The base URL is passed per call
 // rather than baked in, so it can change at runtime from the Settings screen without
-// rebuilding the client.
+// rebuilding the client. The only state is the detection cache.
 type Client struct {
 	hc *http.Client
+
+	mu    sync.Mutex
+	kinds map[string]kindEntry
 }
 
 // New returns a Client. Generation is slow (tens of seconds on CPU), so the timeout
 // is generous; listing models is quick and bounded by the caller's context.
 func New() *Client {
-	return &Client{hc: &http.Client{Timeout: 10 * time.Minute}}
+	return &Client{
+		hc:    &http.Client{Timeout: 10 * time.Minute},
+		kinds: make(map[string]kindEntry),
+	}
 }
 
-// Model is one checkpoint the generator can load. Title is what the API's
-// override_settings.sd_model_checkpoint expects; the rest is for display.
+// Model is one checkpoint the generator can load. Title is the stable selector value
+// handed back on generate (A1111's checkpoint title, InvokeAI's model key); the rest
+// is for display.
 type Model struct {
-	Title string `json:"title"`      // "revAnimated_v122.safetensors [abc123]" — the selector value
-	Name  string `json:"model_name"` // "revAnimated_v122" — a friendlier label
+	Title string `json:"title"`
+	Name  string `json:"model_name"`
 	Hash  string `json:"hash,omitempty"`
 }
 
-// Lora is one A1111 extra network. Name is the value used in the familiar
-// <lora:name:weight> prompt token; Alias is a friendlier display label when set.
+// Lora is one LoRA network. Name is the selector value handed back on generate;
+// Alias is a friendlier display label when set.
 type Lora struct {
 	Name  string `json:"name"`
 	Alias string `json:"alias,omitempty"`
 	Path  string `json:"path,omitempty"`
 }
 
-// Models lists the checkpoints the generator has available.
-func (c *Client) Models(ctx context.Context, base string) ([]Model, error) {
-	var out []Model
-	if err := c.getJSON(ctx, base+"/sdapi/v1/sd-models", &out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-// Loras lists the LoRA networks registered with the generator.
-func (c *Client) Loras(ctx context.Context, base string) ([]Lora, error) {
-	var out []Lora
-	if err := c.getJSON(ctx, base+"/sdapi/v1/loras", &out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-// Ping confirms the generator is reachable and speaking the expected API. Used by the
-// status endpoint so the UI can say "connected" rather than failing at generate time.
-func (c *Client) Ping(ctx context.Context, base string) error {
-	return c.getJSON(ctx, base+"/sdapi/v1/sd-models", &[]Model{})
+// LoraWeight is one LoRA to apply to a generation, by selector name.
+type LoraWeight struct {
+	Name   string
+	Weight float64
 }
 
 // GenerateRequest is one txt2img job. Zero values are filled with sane defaults by
@@ -77,137 +87,112 @@ func (c *Client) Ping(ctx context.Context, base string) error {
 type GenerateRequest struct {
 	Prompt         string
 	NegativePrompt string
-	Checkpoint     string // Model.Title; empty leaves the generator on its current one
+	Checkpoint     string // Model.Title; empty leaves the choice to the backend
 	Sampler        string
 	Steps          int
 	Width          int
 	Height         int
 	CfgScale       float64
 	Seed           int64 // -1 for random
-	Count          int   // how many images to produce (n_iter)
+	Count          int   // how many images to produce
+	Loras          []LoraWeight
 }
 
-// GenerateResult carries the decoded image bytes (PNG) and the seed actually used, so
-// a good result can be reproduced or nudged.
+// GenerateResult carries the decoded image bytes (PNG) and the seeds actually used,
+// so a good result can be reproduced or nudged. Seeds is index-aligned with Images;
+// Seed is the first one, kept for callers that only track a single value.
 type GenerateResult struct {
 	Images [][]byte
 	Seed   int64
+	Seeds  []int64
 }
 
-// txt2imgPayload is the wire shape A1111 expects. override_settings swaps the
-// checkpoint just for this call, and restore_afterwards puts the generator back so we
-// don't leave someone else's UI on a model they didn't pick.
-type txt2imgPayload struct {
-	Prompt           string         `json:"prompt"`
-	NegativePrompt   string         `json:"negative_prompt"`
-	Steps            int            `json:"steps"`
-	Width            int            `json:"width"`
-	Height           int            `json:"height"`
-	CfgScale         float64        `json:"cfg_scale"`
-	SamplerName      string         `json:"sampler_name,omitempty"`
-	Seed             int64          `json:"seed"`
-	NIter            int            `json:"n_iter"`
-	BatchSize        int            `json:"batch_size"`
-	OverrideSettings map[string]any `json:"override_settings,omitempty"`
-	RestoreAfter     bool           `json:"override_settings_restore_afterwards"`
+// Backend reports which API dialect the generator at base speaks, probing it if the
+// cached answer has expired.
+func (c *Client) Backend(ctx context.Context, base string) (Kind, error) {
+	c.mu.Lock()
+	if e, ok := c.kinds[base]; ok && time.Since(e.at) < kindTTL {
+		c.mu.Unlock()
+		return e.kind, nil
+	}
+	c.mu.Unlock()
+
+	kind, err := c.detect(ctx, base)
+	if err != nil {
+		return "", err
+	}
+	c.mu.Lock()
+	c.kinds[base] = kindEntry{kind: kind, at: time.Now()}
+	c.mu.Unlock()
+	return kind, nil
 }
 
-// txt2imgResponse is the relevant slice of the API's reply. Info is a JSON *string*
-// (A1111 double-encodes it) holding the resolved seed among other things.
-type txt2imgResponse struct {
-	Images []string `json:"images"`
-	Info   string   `json:"info"`
+// detect probes InvokeAI's version endpoint, which an A1111-style server does not
+// serve. A definite "not found" answer means A1111; a network failure is reported
+// rather than cached, so a generator that is merely down isn't mislabelled.
+func (c *Client) detect(ctx context.Context, base string) (Kind, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/v1/app/version", nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("image generator unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		var v struct {
+			Version string `json:"version"`
+		}
+		if json.NewDecoder(io.LimitReader(resp.Body, 4<<10)).Decode(&v) == nil && v.Version != "" {
+			return KindInvokeAI, nil
+		}
+	}
+	return KindA1111, nil
+}
+
+// Models lists the checkpoints the generator has available.
+func (c *Client) Models(ctx context.Context, base string) ([]Model, error) {
+	kind, err := c.Backend(ctx, base)
+	if err != nil {
+		return nil, err
+	}
+	if kind == KindInvokeAI {
+		return c.invokeModels(ctx, base)
+	}
+	return c.a1111Models(ctx, base)
+}
+
+// Loras lists the LoRA networks registered with the generator.
+func (c *Client) Loras(ctx context.Context, base string) ([]Lora, error) {
+	kind, err := c.Backend(ctx, base)
+	if err != nil {
+		return nil, err
+	}
+	if kind == KindInvokeAI {
+		return c.invokeLoras(ctx, base)
+	}
+	return c.a1111Loras(ctx, base)
+}
+
+// Ping confirms the generator is reachable and speaking a supported API. Used by the
+// status endpoint so the UI can say "connected" rather than failing at generate time.
+func (c *Client) Ping(ctx context.Context, base string) error {
+	_, err := c.Models(ctx, base)
+	return err
 }
 
 // Generate runs one txt2img job and returns the decoded images. It does not persist
-// anything — that is the caller's decision.
+// anything in the library — that is the caller's decision.
 func (c *Client) Generate(ctx context.Context, base string, req GenerateRequest) (*GenerateResult, error) {
-	payload := txt2imgPayload{
-		Prompt:         req.Prompt,
-		NegativePrompt: req.NegativePrompt,
-		Steps:          req.Steps,
-		Width:          req.Width,
-		Height:         req.Height,
-		CfgScale:       req.CfgScale,
-		SamplerName:    req.Sampler,
-		Seed:           req.Seed,
-		NIter:          req.Count,
-		BatchSize:      1,
-		RestoreAfter:   true,
-	}
-	if req.Checkpoint != "" {
-		payload.OverrideSettings = map[string]any{"sd_model_checkpoint": req.Checkpoint}
-	}
-
-	body, err := json.Marshal(payload)
+	kind, err := c.Backend(ctx, base)
 	if err != nil {
 		return nil, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/sdapi/v1/txt2img", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
+	if kind == KindInvokeAI {
+		return c.invokeGenerate(ctx, base, req)
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.hc.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("image generator unreachable: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<10))
-		return nil, fmt.Errorf("image generator returned %d: %s", resp.StatusCode, bytes.TrimSpace(msg))
-	}
-
-	var out txt2imgResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("decode generator response: %w", err)
-	}
-	if len(out.Images) == 0 {
-		return nil, fmt.Errorf("generator returned no images")
-	}
-
-	res := &GenerateResult{Seed: req.Seed}
-	for _, s := range out.Images {
-		raw, err := decodeImage(s)
-		if err != nil {
-			return nil, err
-		}
-		res.Images = append(res.Images, raw)
-	}
-	// Best-effort: pull the resolved seed out of the info blob so a random (-1) seed
-	// comes back as the concrete number that produced this image.
-	var info struct {
-		Seed int64 `json:"seed"`
-	}
-	if json.Unmarshal([]byte(out.Info), &info) == nil && info.Seed != 0 {
-		res.Seed = info.Seed
-	}
-	return res, nil
-}
-
-// decodeImage turns one API image string into raw bytes. A1111 returns bare base64,
-// but tolerate a "data:...;base64," prefix in case a variant sends one.
-func decodeImage(s string) ([]byte, error) {
-	if i := bytesIndexComma(s); i >= 0 && hasDataPrefix(s) {
-		s = s[i+1:]
-	}
-	raw, err := base64.StdEncoding.DecodeString(s)
-	if err != nil {
-		return nil, fmt.Errorf("decode generated image: %w", err)
-	}
-	return raw, nil
-}
-
-func hasDataPrefix(s string) bool { return len(s) >= 5 && s[:5] == "data:" }
-
-func bytesIndexComma(s string) int {
-	for i := 0; i < len(s); i++ {
-		if s[i] == ',' {
-			return i
-		}
-	}
-	return -1
+	return c.a1111Generate(ctx, base, req)
 }
 
 // getJSON GETs url and decodes the JSON body into v.

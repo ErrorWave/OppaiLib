@@ -10,6 +10,7 @@ import {
   applyTheme,
 } from "../theme.js";
 import { KIND_META, type Kind, type ComicFit, loadComicFit, saveComicFit } from "../media-meta.js";
+import { loadHideLibby, saveHideLibby } from "../libby.js";
 
 // The Settings screen. Server-side settings (AI tagging, scraping) are loaded
 // from and saved back to /api/settings and only an admin may write them —
@@ -33,6 +34,7 @@ export class OppaiSettings extends LitElement {
 
   @state() private theme: ThemePref = loadTheme();
   @state() private fit: ComicFit = loadComicFit();
+  @state() private hideLibby = loadHideLibby();
 
   @state() private pwCurrent = "";
   @state() private pwNew = "";
@@ -406,7 +408,7 @@ export class OppaiSettings extends LitElement {
               Server settings are read-only — only an admin can change them.
             </div>`
           : nothing}
-        ${this.renderAppearance()} ${this.renderAI()} ${this.renderScraping()}
+        ${this.renderAppearance()} ${this.renderLibby()} ${this.renderAI()} ${this.renderScraping()}
         ${this.dirty || this.saved ? this.renderSaveBar() : nothing} ${this.renderLibrary()}
         ${this.renderAndroid()} ${this.renderAccount()} ${this.renderAbout()}
       </div>
@@ -544,6 +546,43 @@ export class OppaiSettings extends LitElement {
                 <span class="material-symbols-rounded" style="font-size:18px;">${icon}</span>${label}
               </button>`,
             )}
+          </div>
+        </div>
+      </section>
+    `;
+  }
+
+  /**
+   * Libby, the mascot. Per-device like Appearance — whether she's on screen is a
+   * preference of whoever is looking, so no admin rights and no save step. Hiding her
+   * removes the artwork everywhere (login, error popups, chat); the features stay.
+   */
+  private renderLibby() {
+    return html`
+      <section class="card" style="animation-delay:30ms;">
+        <h3><span class="material-symbols-rounded">face_3</span>Libby</h3>
+        <p class="card-sub">Per-device — applies as soon as you pick it.</p>
+
+        <div class="field">
+          <div class="field-text">
+            <div class="field-label">Hide Libby</div>
+            <div class="field-help">
+              Take the mascot off the login screen, error popups, and the Chat tab.
+              Errors still show as plain messages, and Chat keeps working — just without
+              the artwork.
+            </div>
+          </div>
+          <div class="field-control">
+            <button
+              class="switch ${this.hideLibby ? "on" : ""}"
+              role="switch"
+              aria-checked=${this.hideLibby ? "true" : "false"}
+              aria-label="Hide Libby"
+              @click=${() => {
+                this.hideLibby = !this.hideLibby;
+                saveHideLibby(this.hideLibby);
+              }}
+            ></button>
           </div>
         </div>
       </section>
@@ -730,10 +769,12 @@ export class OppaiSettings extends LitElement {
                 <div class="field-text">
                   <div class="field-label">Image generation</div>
                   <div class="field-help">
-                    URL of a local Automatic1111 / SD.Next server on your network (the one that
-                    exposes <code>/sdapi/v1</code>), e.g. <code>http://192.168.1.10:7860</code>.
-                    Set it to turn on the <strong>Create</strong> tab; leave blank to keep it off.
-                    Prompts stay on your own hardware — nothing is sent to a cloud service.
+                    URL of a local image generator on your network — an InvokeAI server
+                    (e.g. <code>http://192.168.1.10:9090</code>) or an Automatic1111 / SD.Next
+                    one (e.g. <code>http://192.168.1.10:7860</code>). Which API it speaks is
+                    detected automatically. Set it to turn on the <strong>Create</strong> tab;
+                    leave blank to keep it off. Prompts stay on your own hardware — nothing is
+                    sent to a cloud service.
                   </div>
                 </div>
                 <div class="field-control">

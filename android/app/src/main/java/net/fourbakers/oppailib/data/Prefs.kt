@@ -42,6 +42,15 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(KEY_BIOMETRIC, false)
         set(v) = sp.edit().putBoolean(KEY_BIOMETRIC, v).apply()
 
+    /**
+     * Whether Libby (the mascot) is hidden. Hiding her drops the artwork — the error
+     * popup becomes a plain bubble and Chat loses her portrait — without touching the
+     * features behind it.
+     */
+    var hideLibby: Boolean
+        get() = sp.getBoolean(KEY_HIDE_LIBBY, false)
+        set(v) = sp.edit().putBoolean(KEY_HIDE_LIBBY, v).apply()
+
     // ── video ────────────────────────────────────────────────────────────
 
     /** How the frame fills the screen. See [VideoFit]. */
@@ -147,6 +156,7 @@ class Prefs(context: Context) {
         private const val KEY_SERVER = "server_url"
         private const val KEY_TOKEN = "token"
         private const val KEY_BIOMETRIC = "biometric_lock"
+        private const val KEY_HIDE_LIBBY = "hide_libby"
         private const val KEY_COMIC_RTL = "comic_rtl"
         private const val KEY_COMIC_PAGE = "comic_page_"
         private const val KEY_VIDEO_FIT = "video_fit"

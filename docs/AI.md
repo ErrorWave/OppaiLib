@@ -18,6 +18,25 @@ Conversation history stays in the current web/Android screen and is sent only to
 that configured endpoint. Libby's Sweet, Playful, Bold, and Roleplay modes change
 the local system prompt; the latter modes permit consensual adult NSFW chat.
 
+Prefer OppaiLib without the mascot? **Settings → Libby → Hide Libby** (per-device;
+the Android app has the same switch in its settings) removes the artwork from the
+login screen, error popups, and Chat. The features stay — errors show as plain
+messages and chat keeps working.
+
+## Image generation
+
+The Create tab drives a local image generator, configured by URL under
+**Settings → Import & scraping → Image generation** (or `OPPAI_IMAGEGEN_URL`).
+Two backends are supported and auto-detected:
+
+- **InvokeAI** (4.0+) — models and LoRAs come from its model manager; generation
+  runs through its session queue with the standard txt2img graph (SD 1.x/2.x and
+  SDXL; LoRAs whose base doesn't match the chosen model are skipped). Finished
+  images are downloaded and then deleted from InvokeAI's gallery, so the only
+  durable copy is the one you explicitly save into the library.
+- **Automatic1111 / SD.Next** — anything exposing `/sdapi/v1`. LoRAs are applied
+  as `<lora:name:weight>` prompt tokens.
+
 ## What gets tagged
 
 | kind | frames tagged | needs ffmpeg |

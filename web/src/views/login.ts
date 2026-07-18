@@ -3,6 +3,7 @@ import { customElement, state, query } from "lit/decorators.js";
 import { api, mascotSay, setToken, type User } from "../api.js";
 import { motionStyles } from "../theme.js";
 import { logoSVG } from "../logo.js";
+import { loadHideLibby } from "../libby.js";
 
 @customElement("oppai-login")
 export class OppaiLogin extends LitElement {
@@ -189,14 +190,19 @@ export class OppaiLogin extends LitElement {
   }
 
   render() {
+    // With Libby hidden the mascot (and her speech) stays off the login screen
+    // entirely; errors still land in the form's own error line below.
+    const libby = loadHideLibby()
+      ? null
+      : html`<div class="libby ${this.libbyMessage ? "talking" : ""} ${this.libbyTone}">
+          ${this.libbyMessage ? html`<div class="libby-speech" role=${this.libbyTone === "error" ? "alert" : "status"}>
+            <span class="libby-name">LIBBY</span>
+            <span class="libby-emotion">${this.libbyTone === "error" ? "😟" : "😊"}</span>${this.libbyMessage}
+          </div>` : null}
+          <img src="/mascot-lg.png" alt="Libby, the OppaiLib mascot" />
+        </div>`;
     return html`
-      <div class="libby ${this.libbyMessage ? "talking" : ""} ${this.libbyTone}">
-        ${this.libbyMessage ? html`<div class="libby-speech" role=${this.libbyTone === "error" ? "alert" : "status"}>
-          <span class="libby-name">LIBBY</span>
-          <span class="libby-emotion">${this.libbyTone === "error" ? "😟" : "😊"}</span>${this.libbyMessage}
-        </div>` : null}
-        <img src="/mascot-lg.png" alt="Libby, the OppaiLib mascot" />
-      </div>
+      ${libby}
       <form class="card" @submit=${this.submit} @keydown=${this.onKeydown}>
         <span class="logo">${logoSVG}</span>
         <h1 class="brand">OppaiLib</h1>
