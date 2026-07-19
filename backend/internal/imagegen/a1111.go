@@ -46,6 +46,7 @@ type txt2imgPayload struct {
 	BatchSize        int            `json:"batch_size"`
 	OverrideSettings map[string]any `json:"override_settings,omitempty"`
 	RestoreAfter     bool           `json:"override_settings_restore_afterwards"`
+	AlwaysOnScripts  map[string]any `json:"alwayson_scripts,omitempty"`
 }
 
 // txt2imgResponse is the relevant slice of the API's reply. Info is a JSON *string*
@@ -80,6 +81,20 @@ func (c *Client) a1111Generate(ctx context.Context, base string, req GenerateReq
 		NIter:          req.Count,
 		BatchSize:      1,
 		RestoreAfter:   true,
+	}
+	if req.Detailer.Enabled {
+		model := strings.TrimSpace(req.Detailer.Model)
+		if model == "" {
+			model = "face_yolov8n.pt"
+		}
+		payload.AlwaysOnScripts = map[string]any{
+			"ADetailer": map[string]any{"args": []any{true, false, map[string]any{
+				"ad_model": model, "ad_tab_enable": true,
+				"ad_prompt": req.Detailer.Prompt, "ad_negative_prompt": req.Detailer.NegativePrompt,
+				"ad_confidence": req.Detailer.Confidence, "ad_denoising_strength": req.Detailer.Denoise,
+				"ad_mask_blur": req.Detailer.MaskBlur,
+			}}},
+		}
 	}
 	if req.Checkpoint != "" || req.VAE != "" {
 		payload.OverrideSettings = map[string]any{}
@@ -148,6 +163,21 @@ func (c *Client) a1111Generate(ctx context.Context, base string, req GenerateReq
 		}
 	}
 	return res, nil
+}
+
+func (c *Client) a1111SupportsADetailer(ctx context.Context, base string) bool {
+	var scripts struct {
+		Txt2Img []string `json:"txt2img"`
+	}
+	if err := c.getJSON(ctx, base+"/sdapi/v1/scripts", &scripts); err != nil {
+		return false
+	}
+	for _, name := range scripts.Txt2Img {
+		if strings.EqualFold(strings.TrimSpace(name), "ADetailer") {
+			return true
+		}
+	}
+	return false
 }
 
 // decodeImage turns one API image string into raw bytes. A1111 returns bare base64,

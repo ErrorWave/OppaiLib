@@ -159,9 +159,13 @@ interface ApiService {
     suspend fun civitaiSearch(
         @Query("q") q: String? = null,
         @Query("type") type: String? = null,
+        @Query("category") category: String? = null,
         @Query("sort") sort: String? = null,
         @Query("cursor") cursor: String? = null,
     ): CivitaiSearchResponse
+
+    @GET("api/imagegen/civitai/categories")
+    suspend fun civitaiCategories(): CivitaiCategoriesResponse
 
     /** Hands a Civitai download URL to InvokeAI; the box downloads it itself. */
     @POST("api/imagegen/civitai/install")

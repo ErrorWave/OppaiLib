@@ -143,7 +143,7 @@ func TestInvokeAdvancedTextToImageGraph(t *testing.T) {
 	for _, want := range []string{
 		`"cfg_rescale_multiplier":0.35`, `"type":"clip_skip"`, `"skipped_layers":2`,
 		`"type":"seamless"`, `"seamless_x":true`, `"use_cpu":true`,
-		`"fp32":false`, `"board_id":"board-1"`,
+		`"fp32":true`, `"board_id":"board-1"`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("advanced graph missing %s: %s", want, s)

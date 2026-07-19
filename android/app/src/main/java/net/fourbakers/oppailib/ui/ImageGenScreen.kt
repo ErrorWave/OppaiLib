@@ -62,6 +62,7 @@ import coil.compose.AsyncImage
 import coil.compose.SubcomposeAsyncImage
 import kotlinx.coroutines.launch
 import net.fourbakers.oppailib.data.GenCharacter
+import net.fourbakers.oppailib.data.DetailerRequest
 import net.fourbakers.oppailib.data.GenLoraPick
 import net.fourbakers.oppailib.data.GenModel
 import net.fourbakers.oppailib.data.GenPreview
@@ -112,6 +113,8 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
     var cfg by remember { mutableStateOf(7.0) }
     var count by remember { mutableStateOf(1) }
     var seedText by remember { mutableStateOf("-1") }
+    var detailerEnabled by remember { mutableStateOf(false) }
+    var detailerModel by remember { mutableStateOf("face_yolov8n.pt") }
 
     var generating by remember { mutableStateOf(false) }
     var shots by remember { mutableStateOf<List<ShotState>>(emptyList()) }
@@ -190,6 +193,9 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
                         seed = seedText.toLongOrNull() ?: -1,
                         count = count,
                         loras = loraWeights.map { (name, weight) -> GenLoraPick(name, weight) },
+                        detailer = if (status?.detailerAvailable == true && detailerEnabled) {
+                            DetailerRequest(enabled = true, model = detailerModel)
+                        } else null,
                     ),
                 )
             }.onSuccess { res ->
@@ -425,6 +431,32 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
                             count = (it.toIntOrNull() ?: 1).coerceIn(1, 8)
                         }
                         NumberField("Seed", seedText, Modifier.weight(1.2f)) { seedText = it }
+                    }
+                    if (st.detailerAvailable) {
+                        Row(
+                            Modifier.horizontalScroll(rememberScrollState()).padding(top = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            FilterChip(
+                                selected = detailerEnabled,
+                                onClick = { detailerEnabled = !detailerEnabled },
+                                label = { Text("ADetailer") },
+                            )
+                            if (detailerEnabled) {
+                                listOf(
+                                    "face_yolov8n.pt" to "Face (fast)",
+                                    "face_yolov8s.pt" to "Face (accurate)",
+                                    "hand_yolov8n.pt" to "Hands",
+                                    "person_yolov8n-seg.pt" to "Person",
+                                ).forEach { (model, label) ->
+                                    FilterChip(
+                                        selected = detailerModel == model,
+                                        onClick = { detailerModel = model },
+                                        label = { Text(label) },
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
 

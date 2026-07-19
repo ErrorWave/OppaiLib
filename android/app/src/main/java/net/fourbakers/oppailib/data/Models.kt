@@ -294,6 +294,12 @@ data class CivitaiSearchResponse(
 )
 
 @Serializable
+data class CivitaiCategory(val name: String, val count: Long = 0)
+
+@Serializable
+data class CivitaiCategoriesResponse(val categories: List<CivitaiCategory> = emptyList())
+
+@Serializable
 data class CivitaiInstallRequest(val url: String)
 
 /** One model download InvokeAI is running (or has finished). */
@@ -367,10 +373,22 @@ data class ImageGenStatus(
     val loras: List<GenLora> = emptyList(),
     val vaes: List<GenVae> = emptyList(),
     val templates: List<GenTemplate> = emptyList(),
+    val detailerAvailable: Boolean = false,
 )
 
 @Serializable
 data class GenLoraPick(val name: String, val weight: Double)
+
+@Serializable
+data class DetailerRequest(
+    val enabled: Boolean = false,
+    val model: String = "face_yolov8n.pt",
+    val prompt: String = "",
+    val negativePrompt: String = "",
+    val confidence: Double = 0.3,
+    val denoise: Double = 0.4,
+    val maskBlur: Int = 4,
+)
 
 @Serializable
 data class GenerateRequest(
@@ -386,6 +404,7 @@ data class GenerateRequest(
     val seed: Long = -1,
     val count: Int = 1,
     val loras: List<GenLoraPick> = emptyList(),
+    val detailer: DetailerRequest? = null,
 )
 
 @Serializable
@@ -499,6 +518,7 @@ data class SourceItem(
     val count: Int = 0,
     val width: Int = 0,
     val height: Int = 0,
+    val tags: List<String> = emptyList(),
 ) {
     val isContainer: Boolean get() = feedId.isNotEmpty()
 

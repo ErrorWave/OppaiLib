@@ -894,6 +894,7 @@ export class OppaiBrowse extends LitElement {
           pageUrl: item.pageUrl,
           title: item.title,
           kind: multiPage ? "comic" : item.kind,
+          tags: item.tags,
         });
         report(1);
         this.dispatchEvent(new CustomEvent("imported", { bubbles: true, composed: true }));

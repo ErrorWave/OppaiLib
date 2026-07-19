@@ -63,6 +63,17 @@ export class OppaiInvokeGallery extends LitElement {
         gap: 6px;
         flex-wrap: wrap;
       }
+      .board-select {
+        width: 100%;
+        box-sizing: border-box;
+        border: 1px solid var(--oppai-border-strong);
+        border-radius: 10px;
+        background: var(--oppai-surface);
+        color: var(--oppai-text);
+        font: inherit;
+        font-size: 12px;
+        padding: 8px 10px;
+      }
       .new-board {
         display: flex;
         gap: 6px;
@@ -314,12 +325,18 @@ export class OppaiInvokeGallery extends LitElement {
           <span class="count">${current ? `${this.total || current.count} images` : ""}</span>
         </div>
         ${this.boards.length
-          ? html`<div class="boards">
-              ${this.boards.map(
-                (b) => html`<button class="board ${b.id === this.board ? "on" : ""}"
-                  @click=${() => this.pickBoard(b.id)}>${b.name}${b.count ? ` · ${b.count}` : ""}</button>`,
-              )}
-            </div>`
+          ? html`
+              <select class="board-select" aria-label="Gallery" .value=${this.board}
+                @change=${(e: Event) => this.pickBoard((e.target as HTMLSelectElement).value)}>
+                ${this.boards.map((b) => html`<option value=${b.id}>${b.name}${b.count ? ` · ${b.count}` : ""}</option>`)}
+              </select>
+              ${this.boards.length <= 6 ? html`<div class="boards">
+                ${this.boards.map(
+                  (b) => html`<button class="board ${b.id === this.board ? "on" : ""}"
+                    @click=${() => this.pickBoard(b.id)}>${b.name}${b.count ? ` · ${b.count}` : ""}</button>`,
+                )}
+              </div>` : nothing}
+            `
           : nothing}
         <div class="new-board">
           <input maxlength="300" placeholder="New Invoke gallery" .value=${this.newBoard}

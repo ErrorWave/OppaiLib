@@ -47,6 +47,13 @@ type Config struct {
 	// reaches a cloud service. Settable at runtime from the Settings screen.
 	ImageGenURL string
 
+	// Optional catalogue credentials. They are startup defaults; Settings can
+	// replace them live and never returns the secret values to clients.
+	CivitaiAPIURL string
+	CivitaiAPIKey string
+	Rule34UserID  string
+	Rule34APIKey  string
+
 	// ChatURL is an OpenAI-compatible local LLM endpoint (LM Studio, Ollama's
 	// OpenAI bridge, llama.cpp server, etc.). ChatModel is the model name sent to
 	// /v1/chat/completions. Both are runtime-editable in Settings.
@@ -88,6 +95,10 @@ func Load() *Config {
 		F95Username:         env("OPPAI_F95_USERNAME", ""),
 		F95Password:         env("OPPAI_F95_PASSWORD", ""),
 		ImageGenURL:         env("OPPAI_IMAGEGEN_URL", ""),
+		CivitaiAPIURL:       env("OPPAI_CIVITAI_API_URL", "https://civitai.red/api/v1"),
+		CivitaiAPIKey:       env("OPPAI_CIVITAI_API_KEY", ""),
+		Rule34UserID:        env("OPPAI_RULE34_USER_ID", ""),
+		Rule34APIKey:        env("OPPAI_RULE34_API_KEY", ""),
 		ChatURL:             env("OPPAI_CHAT_URL", ""),
 		ChatModel:           env("OPPAI_CHAT_MODEL", ""),
 		APKPath:             env("OPPAI_APK_PATH", "/app/apk/oppailib.apk"),

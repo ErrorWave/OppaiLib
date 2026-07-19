@@ -49,6 +49,7 @@ import androidx.compose.ui.window.Dialog
 import coil.compose.AsyncImage
 import kotlinx.coroutines.launch
 import net.fourbakers.oppailib.data.CivitaiInstallRequest
+import net.fourbakers.oppailib.data.CivitaiCategory
 import net.fourbakers.oppailib.data.CivitaiModel
 import net.fourbakers.oppailib.data.CivitaiVersion
 import net.fourbakers.oppailib.data.InstallJob
@@ -63,6 +64,8 @@ import net.fourbakers.oppailib.data.Repository
 fun CivitaiTab(repo: Repository) {
     var query by remember { mutableStateOf("") }
     var type by remember { mutableStateOf("") }
+    var category by remember { mutableStateOf("") }
+    var categories by remember { mutableStateOf<List<CivitaiCategory>>(emptyList()) }
     var items by remember { mutableStateOf<List<CivitaiModel>>(emptyList()) }
     var cursor by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
@@ -78,6 +81,7 @@ fun CivitaiTab(repo: Repository) {
             repo.api.civitaiSearch(
                 q = query.ifBlank { null },
                 type = type.ifBlank { null },
+                category = category.ifBlank { null },
                 cursor = if (reset) null else cursor.ifBlank { null },
             )
         }.onSuccess { res ->
@@ -93,6 +97,7 @@ fun CivitaiTab(repo: Repository) {
     }
 
     LaunchedEffect(Unit) {
+        runCatching { repo.api.civitaiCategories() }.onSuccess { categories = it.categories.take(20) }
         search(reset = true)
         pollJobs()
     }
@@ -131,6 +136,25 @@ fun CivitaiTab(repo: Repository) {
                     onClick = { type = id; scope.launch { search(reset = true) } },
                     label = { Text(label) },
                 )
+            }
+        }
+        if (categories.isNotEmpty()) {
+            Row(
+                Modifier.horizontalScroll(rememberScrollState()).padding(bottom = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FilterChip(
+                    selected = category.isEmpty(),
+                    onClick = { category = ""; scope.launch { search(reset = true) } },
+                    label = { Text("All categories") },
+                )
+                categories.forEach { c ->
+                    FilterChip(
+                        selected = category == c.name,
+                        onClick = { category = c.name; scope.launch { search(reset = true) } },
+                        label = { Text(c.name) },
+                    )
+                }
             }
         }
         jobs.forEach { j ->

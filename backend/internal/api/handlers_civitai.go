@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,8 +20,6 @@ import (
 // sources work everywhere else in the app. "Install" hands a download URL to
 // InvokeAI, which fetches and registers the file itself — the server never
 // stores model weights.
-
-const civitaiAPIBase = "https://civitai.red/api/v1"
 
 // civitaiHTTP is separate from the imagegen client: that one carries a 10-minute
 // timeout sized for generation, far too patient for a catalogue browse.
@@ -78,7 +77,8 @@ type civitaiListing struct {
 	Metadata struct {
 		// Sometimes a string ("10|…"), sometimes a bare number, depending on the
 		// endpoint variant — normalize below rather than failing the decode.
-		NextCursor any `json:"nextCursor"`
+		NextCursor any    `json:"nextCursor"`
+		NextPage   string `json:"nextPage"`
 	} `json:"metadata"`
 }
 
@@ -114,6 +114,27 @@ type civitaiModelOut struct {
 	Versions  []civitaiVersionOut `json:"versions"`
 }
 
+type civitaiCategoryOut struct {
+	Name  string `json:"name"`
+	Count int64  `json:"count"`
+}
+
+// civitaiRequest builds an authenticated catalogue request from the live Settings.
+// The key is header-only, so it never lands in URLs, logs or browser history.
+func (s *Server) civitaiRequest(ctx context.Context, endpoint string, params url.Values) (*http.Response, error) {
+	set := s.settings.Get()
+	base := strings.TrimRight(set.CivitaiAPIURL, "/")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+endpoint+"?"+params.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "OppaiLib")
+	if set.CivitaiAPIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+set.CivitaiAPIKey)
+	}
+	return civitaiHTTP.Do(req)
+}
+
 // handleCivitaiSearch proxies one page of Civitai's model search.
 func (s *Server) handleCivitaiSearch(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -123,6 +144,10 @@ func (s *Server) handleCivitaiSearch(w http.ResponseWriter, r *http.Request) {
 	if term := strings.TrimSpace(q.Get("q")); term != "" {
 		params.Set("query", term)
 	}
+	if tag := strings.TrimSpace(q.Get("category")); tag != "" {
+		params.Set("tag", tag)
+	}
+	params.Set("primaryFileOnly", "true")
 	switch q.Get("type") {
 	case "checkpoint":
 		params.Set("types", "Checkpoint")
@@ -138,16 +163,14 @@ func (s *Server) handleCivitaiSearch(w http.ResponseWriter, r *http.Request) {
 		params.Set("sort", "Most Downloaded")
 	}
 	if cursor := q.Get("cursor"); cursor != "" {
-		params.Set("cursor", cursor)
+		if page, ok := strings.CutPrefix(cursor, "page:"); ok {
+			params.Set("page", page)
+		} else {
+			params.Set("cursor", cursor)
+		}
 	}
 
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, civitaiAPIBase+"/models?"+params.Encode(), nil)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "bad request")
-		return
-	}
-	req.Header.Set("User-Agent", "OppaiLib")
-	resp, err := civitaiHTTP.Do(req)
+	resp, err := s.civitaiRequest(r.Context(), "/models", params)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, fmt.Sprintf("Civitai is unreachable: %v", err))
 		return
@@ -203,10 +226,52 @@ func (s *Server) handleCivitaiSearch(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, model)
 	}
+	next := cursorString(listing.Metadata.NextCursor)
+	if next == "" && listing.Metadata.NextPage != "" {
+		if u, err := url.Parse(listing.Metadata.NextPage); err == nil {
+			if page := u.Query().Get("page"); page != "" {
+				next = "page:" + page
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items":      out,
-		"nextCursor": cursorString(listing.Metadata.NextCursor),
+		"nextCursor": next,
 	})
+}
+
+// handleCivitaiCategories returns Civitai's most-used model tags. They are the
+// catalogue's category system and can be passed back as the model endpoint's tag
+// filter without maintaining a stale hard-coded taxonomy.
+func (s *Server) handleCivitaiCategories(w http.ResponseWriter, r *http.Request) {
+	params := url.Values{"limit": {"100"}}
+	resp, err := s.civitaiRequest(r.Context(), "/tags", params)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "Civitai is unreachable")
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		writeErr(w, http.StatusBadGateway, fmt.Sprintf("Civitai returned %d", resp.StatusCode))
+		return
+	}
+	var listing struct {
+		Items []struct {
+			Name       string `json:"name"`
+			ModelCount int64  `json:"modelCount"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(&listing); err != nil {
+		writeErr(w, http.StatusBadGateway, "Civitai sent an unreadable category list")
+		return
+	}
+	out := make([]civitaiCategoryOut, 0, len(listing.Items))
+	for _, tag := range listing.Items {
+		if name := strings.TrimSpace(tag.Name); name != "" {
+			out = append(out, civitaiCategoryOut{Name: name, Count: tag.ModelCount})
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"categories": out})
 }
 
 // handleCivitaiImage streams one Civitai preview image through the server, so the

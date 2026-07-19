@@ -1,7 +1,7 @@
 import { LitElement, html, css, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { iconStyles, motionStyles } from "../theme.js";
-import { api, type CivitaiModel, type CivitaiVersion, type InstallJob } from "../api.js";
+import { api, type CivitaiCategory, type CivitaiModel, type CivitaiVersion, type InstallJob } from "../api.js";
 
 /**
  * A full-screen browser over the Civitai catalogue (reached via the civitai.red
@@ -16,6 +16,8 @@ export class OppaiCivitai extends LitElement {
   @state() private q = "";
   @state() private type = "";
   @state() private sort = "";
+  @state() private category = "";
+  @state() private categories: CivitaiCategory[] = [];
   @state() private items: CivitaiModel[] = [];
   @state() private cursor = "";
   @state() private loading = false;
@@ -343,8 +345,18 @@ export class OppaiCivitai extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     void this.search(true);
+    void this.loadCategories();
     void this.pollJobs();
     this.jobTimer = window.setInterval(() => void this.pollJobs(), 5000);
+  }
+
+  private async loadCategories() {
+    try {
+      this.categories = (await api.civitaiCategories()).categories;
+    } catch {
+      // Searching still works when an older mirror does not expose /tags.
+      this.categories = [];
+    }
   }
 
   disconnectedCallback() {
@@ -369,6 +381,7 @@ export class OppaiCivitai extends LitElement {
       const res = await api.civitaiSearch({
         q: this.q || undefined,
         type: this.type || undefined,
+        category: this.category || undefined,
         sort: this.sort || undefined,
         cursor: reset ? undefined : this.cursor || undefined,
       });
@@ -446,6 +459,17 @@ export class OppaiCivitai extends LitElement {
             <option value="">Most downloaded</option>
             <option value="rated">Highest rated</option>
             <option value="newest">Newest</option>
+          </select>
+          <select
+            aria-label="Category"
+            .value=${this.category}
+            @change=${(e: Event) => {
+              this.category = (e.target as HTMLSelectElement).value;
+              void this.search(true);
+            }}
+          >
+            <option value="">All categories</option>
+            ${this.categories.map((c) => html`<option value=${c.name}>${c.name} (${fmtCount(c.count)})</option>`)}
           </select>
         </div>
         ${this.jobs.length

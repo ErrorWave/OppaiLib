@@ -42,6 +42,15 @@ type Settings struct {
 	ImageGenURL     string `json:"imageGenUrl"`
 	ImageGenEnabled bool   `json:"imageGenEnabled"`
 
+	// External catalogue APIs. Secret keys are write-only; the Set flags let the
+	// Settings screen distinguish "configured" from "blank" after redaction.
+	CivitaiAPIURL   string `json:"civitaiApiUrl"`
+	CivitaiAPIKey   string `json:"civitaiApiKey"`
+	CivitaiKeySet   bool   `json:"civitaiKeySet"`
+	Rule34UserID    string `json:"rule34UserId"`
+	Rule34APIKey    string `json:"rule34ApiKey"`
+	Rule34APIKeySet bool   `json:"rule34ApiKeySet"`
+
 	// Local OpenAI-compatible chat backend. No cloud service is contacted by
 	// OppaiLib; the operator explicitly chooses this URL and model.
 	ChatURL     string `json:"chatUrl"`
@@ -61,6 +70,10 @@ const (
 	keyF95Username         = "f95.username"
 	keyF95Password         = "f95.password"
 	keyImageGenURL         = "imagegen.url"
+	keyCivitaiAPIURL       = "civitai.api_url"
+	keyCivitaiAPIKey       = "civitai.api_key"
+	keyRule34UserID        = "rule34.user_id"
+	keyRule34APIKey        = "rule34.api_key"
 	keyChatURL             = "chat.url"
 	keyChatModel           = "chat.model"
 )
@@ -78,6 +91,10 @@ func Defaults(cfg *config.Config) Settings {
 		F95Username:         cfg.F95Username,
 		F95Password:         cfg.F95Password,
 		ImageGenURL:         cfg.ImageGenURL,
+		CivitaiAPIURL:       cfg.CivitaiAPIURL,
+		CivitaiAPIKey:       cfg.CivitaiAPIKey,
+		Rule34UserID:        cfg.Rule34UserID,
+		Rule34APIKey:        cfg.Rule34APIKey,
 		ChatURL:             cfg.ChatURL,
 		ChatModel:           cfg.ChatModel,
 	}
@@ -122,6 +139,18 @@ func Merge(base Settings, stored map[string]string) Settings {
 	if v, ok := stored[keyImageGenURL]; ok {
 		s.ImageGenURL = v
 	}
+	if v, ok := stored[keyCivitaiAPIURL]; ok {
+		s.CivitaiAPIURL = v
+	}
+	if v, ok := stored[keyCivitaiAPIKey]; ok {
+		s.CivitaiAPIKey = v
+	}
+	if v, ok := stored[keyRule34UserID]; ok {
+		s.Rule34UserID = v
+	}
+	if v, ok := stored[keyRule34APIKey]; ok {
+		s.Rule34APIKey = v
+	}
 	if v, ok := stored[keyChatURL]; ok {
 		s.ChatURL = v
 	}
@@ -145,6 +174,10 @@ func (s Settings) Map() map[string]string {
 		keyF95Username:         s.F95Username,
 		keyF95Password:         s.F95Password,
 		keyImageGenURL:         s.ImageGenURL,
+		keyCivitaiAPIURL:       s.CivitaiAPIURL,
+		keyCivitaiAPIKey:       s.CivitaiAPIKey,
+		keyRule34UserID:        s.Rule34UserID,
+		keyRule34APIKey:        s.Rule34APIKey,
 		keyChatURL:             s.ChatURL,
 		keyChatModel:           s.ChatModel,
 	}
@@ -156,6 +189,10 @@ func (s Settings) Map() map[string]string {
 func (s Settings) Redacted() Settings {
 	s.F95PasswordSet = s.F95Password != ""
 	s.F95Password = ""
+	s.CivitaiKeySet = s.CivitaiAPIKey != ""
+	s.CivitaiAPIKey = ""
+	s.Rule34APIKeySet = s.Rule34APIKey != ""
+	s.Rule34APIKey = ""
 	return s
 }
 
@@ -189,6 +226,13 @@ func (s *Settings) Clamp() {
 	// enabled flag simply tracks whether a URL is configured.
 	s.ImageGenURL = strings.TrimRight(strings.TrimSpace(s.ImageGenURL), "/")
 	s.ImageGenEnabled = s.ImageGenURL != ""
+	s.CivitaiAPIURL = strings.TrimRight(strings.TrimSpace(s.CivitaiAPIURL), "/")
+	if s.CivitaiAPIURL == "" {
+		s.CivitaiAPIURL = "https://civitai.red/api/v1"
+	}
+	s.CivitaiAPIKey = strings.TrimSpace(s.CivitaiAPIKey)
+	s.Rule34UserID = strings.TrimSpace(s.Rule34UserID)
+	s.Rule34APIKey = strings.TrimSpace(s.Rule34APIKey)
 	s.ChatURL = strings.TrimRight(strings.TrimSpace(s.ChatURL), "/")
 	s.ChatModel = strings.TrimSpace(s.ChatModel)
 	s.ChatEnabled = s.ChatURL != "" && s.ChatModel != ""

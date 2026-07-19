@@ -13,9 +13,14 @@
 package imagegen
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"net/http"
 	"sync"
@@ -197,6 +202,20 @@ type GenerateRequest struct {
 	Seed           int64  // -1 for random
 	Count          int    // how many images to produce
 	Loras          []LoraWeight
+	Detailer       Detailer
+}
+
+// Detailer configures the ADetailer Automatic1111 extension. InvokeAI has no
+// compatible node, so callers only expose this when Backend reports A1111 and the
+// extension is present.
+type Detailer struct {
+	Enabled        bool
+	Model          string
+	Prompt         string
+	NegativePrompt string
+	Confidence     float64
+	Denoise        float64
+	MaskBlur       int
 }
 
 // GenerateResult carries the decoded image bytes (PNG) and the seeds actually used,
@@ -436,9 +455,73 @@ func (c *Client) Generate(ctx context.Context, base string, req GenerateRequest)
 		return nil, err
 	}
 	if kind == KindInvokeAI {
-		return c.invokeGenerate(ctx, base, req)
+		res, err := c.invokeGenerate(ctx, base, req)
+		return rejectBlackGeneration(res, err)
 	}
-	return c.a1111Generate(ctx, base, req)
+	res, err := c.a1111Generate(ctx, base, req)
+	if err == nil && containsBlackImage(res) && req.VAE != "" {
+		// A mismatched or half-precision external VAE is the common A1111 cause.
+		// Retry the exact seed once with the checkpoint's built-in VAE.
+		req.VAE = ""
+		res, err = c.a1111Generate(ctx, base, req)
+	}
+	return rejectBlackGeneration(res, err)
+}
+
+func rejectBlackGeneration(res *GenerateResult, err error) (*GenerateResult, error) {
+	if err != nil {
+		return nil, err
+	}
+	if containsBlackImage(res) {
+		return nil, fmt.Errorf("generator produced an all-black image; use an fp32 VAE decode (A1111: start with --no-half-vae) and verify the selected VAE matches the checkpoint")
+	}
+	return res, nil
+}
+
+func containsBlackImage(res *GenerateResult) bool {
+	if res == nil {
+		return false
+	}
+	for _, data := range res.Images {
+		img, _, err := image.Decode(bytes.NewReader(data))
+		if err != nil {
+			continue // Some compatible servers return WebP; the browser can still show it.
+		}
+		b := img.Bounds()
+		if b.Empty() {
+			continue
+		}
+		// Sample at most roughly 16k pixels. A true NaN/overflow decode is uniformly
+		// black; a dark photograph still has highlights and texture.
+		step := 1
+		for b.Dx()*b.Dy()/(step*step) > 16_384 {
+			step++
+		}
+		black := true
+		for y := b.Min.Y; y < b.Max.Y && black; y += step {
+			for x := b.Min.X; x < b.Max.X; x += step {
+				r, g, bl, _ := img.At(x, y).RGBA()
+				if r > 514 || g > 514 || bl > 514 { // > 2/255 in 16-bit color space
+					black = false
+					break
+				}
+			}
+		}
+		if black {
+			return true
+		}
+	}
+	return false
+}
+
+// SupportsADetailer reports whether an A1111-compatible backend exposes the
+// extension as an always-on txt2img script.
+func (c *Client) SupportsADetailer(ctx context.Context, base string) bool {
+	kind, err := c.Backend(ctx, base)
+	if err != nil || kind != KindA1111 {
+		return false
+	}
+	return c.a1111SupportsADetailer(ctx, base)
 }
 
 // getJSON GETs url and decodes the JSON body into v.

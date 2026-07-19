@@ -207,6 +207,7 @@ fun RemoteViewerScreen(
                                             pageUrl = settled.pageUrl.ifEmpty { null },
                                             title = settled.title.ifEmpty { null },
                                             kind = settled.kind,
+                                            tags = settled.tags,
                                         ),
                                     )
                                 }.onSuccess {

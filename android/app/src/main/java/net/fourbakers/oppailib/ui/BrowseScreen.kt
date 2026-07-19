@@ -337,6 +337,7 @@ fun BrowseScreen(repo: Repository, openAt: PinnedFeed? = null, onBack: () -> Uni
                                         pageUrl = thread.pageUrl.ifEmpty { null },
                                         title = thread.title.ifEmpty { null },
                                         kind = "comic",
+                                        tags = thread.tags,
                                     ),
                                     label = thread.title.ifEmpty { "Thread" },
                                 )

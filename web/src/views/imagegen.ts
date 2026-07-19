@@ -150,6 +150,13 @@ export class OppaiImageGen extends LitElement {
   @state() private scheduler = "";
   @state() private count = 1;
   @state() private seed = -1;
+  @state() private detailerEnabled = false;
+  @state() private detailerModel = "face_yolov8n.pt";
+  @state() private detailerPrompt = "";
+  @state() private detailerNegative = "";
+  @state() private detailerConfidence = 0.3;
+  @state() private detailerDenoise = 0.4;
+  @state() private detailerMaskBlur = 4;
 
   @state() private generating = false;
   @state() private shots: Shot[] = [];
@@ -856,7 +863,9 @@ export class OppaiImageGen extends LitElement {
     if (d.width) this.width = d.width;
     if (d.height) this.height = d.height;
     if (d.vae) this.vae = d.vae;
-    if (d.vaePrecision) this.vaePrecision = d.vaePrecision;
+    // fp16 VAE decoding can yield valid but all-black PNGs. The server now always
+    // uses fp32, even when an older InvokeAI model default recommends fp16.
+    this.vaePrecision = "fp32";
   }
 
   // ── speech ────────────────────────────────────────────────────────────────
@@ -986,6 +995,17 @@ export class OppaiImageGen extends LitElement {
         count: this.count,
         seed: this.seed,
         loras: Object.entries(this.selectedLoras).map(([name, weight]) => ({ name, weight })),
+        detailer: this.status?.backend === "a1111" && this.detailerEnabled
+          ? {
+              enabled: true,
+              model: this.detailerModel,
+              prompt: this.detailerPrompt || undefined,
+              negativePrompt: this.detailerNegative || undefined,
+              confidence: this.detailerConfidence,
+              denoise: this.detailerDenoise,
+              maskBlur: this.detailerMaskBlur,
+            }
+          : undefined,
       });
       // Newest batch first, kept above earlier ones so a session builds a roll.
       this.shots = [...res.images.map((g: GenPreview) => ({ ...g, saved: false })), ...this.shots];
@@ -1576,20 +1596,54 @@ export class OppaiImageGen extends LitElement {
               ${boards.map((b) => html`<option value=${b.id}>${b.name}</option>`)}
             </select>
           </div>
-          <div>
-            <label class="field">VAE precision</label>
-            <select class="num" .value=${this.vaePrecision}
-              @change=${(e: Event) => (this.vaePrecision = (e.target as HTMLSelectElement).value as "fp32" | "fp16")}>
-              <option value="fp32">fp32 (safe)</option>
-              <option value="fp16">fp16 (faster)</option>
-            </select>
-          </div>
           <label class="switch-row"><input type="checkbox" .checked=${this.cpuNoise}
             @change=${(e: Event) => (this.cpuNoise = (e.target as HTMLInputElement).checked)} /> CPU noise</label>
           <label class="switch-row"><input type="checkbox" .checked=${this.seamlessX}
             @change=${(e: Event) => (this.seamlessX = (e.target as HTMLInputElement).checked)} /> Seamless X</label>
           <label class="switch-row"><input type="checkbox" .checked=${this.seamlessY}
             @change=${(e: Event) => (this.seamlessY = (e.target as HTMLInputElement).checked)} /> Seamless Y</label>
+        ` : this.status?.detailerAvailable ? html`
+          <label class="switch-row full"><input type="checkbox" .checked=${this.detailerEnabled}
+            @change=${(e: Event) => (this.detailerEnabled = (e.target as HTMLInputElement).checked)} />
+            ADetailer face/hand pass</label>
+          ${this.detailerEnabled ? html`
+            <div class="full">
+              <label class="field">ADetailer detector</label>
+              <select class="num" .value=${this.detailerModel}
+                @change=${(e: Event) => (this.detailerModel = (e.target as HTMLSelectElement).value)}>
+                <option value="face_yolov8n.pt">Face (fast)</option>
+                <option value="face_yolov8s.pt">Face (accurate)</option>
+                <option value="hand_yolov8n.pt">Hands</option>
+                <option value="person_yolov8n-seg.pt">Person</option>
+                <option value="mediapipe_face_full">MediaPipe face</option>
+              </select>
+            </div>
+            <div class="full">
+              <label class="field">Detail prompt (blank reuses prompt)</label>
+              <input class="num" .value=${this.detailerPrompt}
+                @input=${(e: Event) => (this.detailerPrompt = (e.target as HTMLInputElement).value)} />
+            </div>
+            <div class="full">
+              <label class="field">Detail negative prompt</label>
+              <input class="num" .value=${this.detailerNegative}
+                @input=${(e: Event) => (this.detailerNegative = (e.target as HTMLInputElement).value)} />
+            </div>
+            <div>
+              <label class="field">Confidence</label>
+              <input class="num" type="number" min="0.05" max="1" step="0.05" .value=${String(this.detailerConfidence)}
+                @input=${(e: Event) => (this.detailerConfidence = clampFloat((e.target as HTMLInputElement).value, 0.05, 1, 0.3))} />
+            </div>
+            <div>
+              <label class="field">Denoise</label>
+              <input class="num" type="number" min="0.05" max="1" step="0.05" .value=${String(this.detailerDenoise)}
+                @input=${(e: Event) => (this.detailerDenoise = clampFloat((e.target as HTMLInputElement).value, 0.05, 1, 0.4))} />
+            </div>
+            <div>
+              <label class="field">Mask blur</label>
+              <input class="num" type="number" min="0" max="64" .value=${String(this.detailerMaskBlur)}
+                @input=${(e: Event) => (this.detailerMaskBlur = clampNum((e.target as HTMLInputElement).value, 0, 64, 4))} />
+            </div>
+          ` : nothing}
         ` : nothing}
       </div>
     `;

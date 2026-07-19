@@ -91,9 +91,10 @@ type Item struct {
 	// mark which post the open file came from.
 	PostNo int64 `json:"postNo,omitempty"`
 	// Count is how many files a container holds, for the tile's caption.
-	Count  int `json:"count,omitempty"`
-	Width  int `json:"width,omitempty"`
-	Height int `json:"height,omitempty"`
+	Count  int      `json:"count,omitempty"`
+	Width  int      `json:"width,omitempty"`
+	Height int      `json:"height,omitempty"`
+	Tags   []string `json:"tags,omitempty"`
 }
 
 // Comment is one post in a source's discussion thread.
@@ -182,6 +183,19 @@ type Source interface {
 type Registry struct {
 	mu   sync.RWMutex
 	srcs []Source
+}
+
+// SetRule34Credentials updates the built-in source without rebuilding the registry,
+// so Settings changes take effect immediately.
+func (r *Registry) SetRule34Credentials(userID, apiKey string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, src := range r.srcs {
+		if rule34, ok := src.(*Rule34); ok {
+			rule34.SetCredentials(userID, apiKey)
+			return
+		}
+	}
 }
 
 // NewRegistry builds the standard set: the Go-coded sources, the source definitions

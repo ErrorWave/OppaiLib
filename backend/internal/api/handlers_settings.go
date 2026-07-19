@@ -68,6 +68,12 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	if next.F95Password == "" {
 		next.F95Password = current.F95Password
 	}
+	if next.CivitaiAPIKey == "" && next.CivitaiKeySet {
+		next.CivitaiAPIKey = current.CivitaiAPIKey
+	}
+	if next.Rule34APIKey == "" && next.Rule34APIKeySet {
+		next.Rule34APIKey = current.Rule34APIKey
+	}
 	next.Clamp()
 	if err := s.db.PutSettings(r.Context(), next.Map()); err != nil {
 		s.log.Error("settings: save failed", "err", err)
@@ -94,6 +100,7 @@ func (s *Server) ApplySettings(cur settings.Settings) {
 	})
 	s.scraper.SetOptions(cur.ScrapeUserAgent, cur.ScrapeDelay(), cur.ScrapeRespectRobots)
 	s.scraper.SetF95Credentials(cur.F95Username, cur.F95Password)
+	s.sources.SetRule34Credentials(cur.Rule34UserID, cur.Rule34APIKey)
 }
 
 // handleStats summarizes the library for the Settings screen.

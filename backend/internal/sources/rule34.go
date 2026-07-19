@@ -2,12 +2,15 @@ package sources
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/PuerkitoBio/goquery"
 )
@@ -20,10 +23,26 @@ import (
 type Rule34 struct {
 	client  *http.Client
 	baseURL string
+	mu      sync.RWMutex
+	userID  string
+	apiKey  string
 }
 
 func NewRule34(client *http.Client) *Rule34 {
 	return &Rule34{client: client, baseURL: "https://rule34.xxx"}
+}
+
+func (s *Rule34) SetCredentials(userID, apiKey string) {
+	s.mu.Lock()
+	s.userID = strings.TrimSpace(userID)
+	s.apiKey = strings.TrimSpace(apiKey)
+	s.mu.Unlock()
+}
+
+func (s *Rule34) credentials() (string, string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.userID, s.apiKey
 }
 
 func (*Rule34) ID() string   { return "rule34" }
@@ -35,7 +54,11 @@ func (*Rule34) Hosts() []string {
 func (*Rule34) Feeds() []Feed {
 	return []Feed{
 		{ID: "recent", Label: "Recent"},
-		{ID: "search", Label: "Tag search", Query: true},
+		{ID: "popular", Label: "Popular"},
+		{ID: "videos", Label: "Videos"},
+		{ID: "search", Label: "Tag search", Query: true, Sorts: []Sort{
+			{ID: "newest", Label: "Newest"}, {ID: "score", Label: "Top score"},
+		}},
 	}
 }
 
@@ -50,22 +73,129 @@ func (s *Rule34) Browse(ctx context.Context, p BrowseParams) (*Listing, error) {
 	if p.Feed == "" {
 		p.Feed = "recent"
 	}
-	if p.Feed != "recent" && p.Feed != "search" {
+	if p.Feed != "recent" && p.Feed != "popular" && p.Feed != "videos" && p.Feed != "search" {
 		return nil, fmt.Errorf("unknown feed %q", p.Feed)
 	}
 	tags := "all"
-	if p.Feed == "search" {
+	switch p.Feed {
+	case "popular":
+		tags = "sort:score"
+	case "videos":
+		tags = "video"
+	case "search":
 		tags = strings.TrimSpace(p.Query)
 		if tags == "" {
 			return nil, fmt.Errorf("tag search needs a term")
 		}
 	}
-	offset := 0
-	if p.Cursor != "" {
+	if p.Sort == "score" && !strings.Contains(tags, "sort:") {
+		tags += " sort:score"
+	}
+	if userID, apiKey := s.credentials(); userID != "" && apiKey != "" {
+		return s.browseAPI(ctx, p.Cursor, tags, userID, apiKey)
+	}
+	return s.browseHTML(ctx, p.Cursor, tags)
+}
+
+// browseAPI uses Rule34's authenticated DAPI. Unlike the HTML grid it includes the
+// original media URL, kind and dimensions, so opening a tile needs no second page
+// scrape and video cards are identified reliably.
+func (s *Rule34) browseAPI(ctx context.Context, cursor, tags, userID, apiKey string) (*Listing, error) {
+	page := 0
+	if cursor != "" {
 		var err error
-		offset, err = strconv.Atoi(p.Cursor)
+		page, err = strconv.Atoi(cursor)
+		if err != nil || page < 0 {
+			return nil, fmt.Errorf("bad cursor %q", cursor)
+		}
+	}
+	params := url.Values{
+		"page": {"dapi"}, "s": {"post"}, "q": {"index"}, "json": {"1"},
+		"limit": {"100"}, "pid": {strconv.Itoa(page)}, "user_id": {userID}, "api_key": {apiKey},
+	}
+	if tags != "all" {
+		params.Set("tags", tags)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.baseURL+"/index.php?"+params.Encode(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("build Rule34 API request: %w", err)
+	}
+	s.Decorate(req)
+	req.Header.Set("User-Agent", sourceUserAgent)
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("Rule34 API is unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return nil, fmt.Errorf("Rule34 API credentials were rejected; update them in Settings")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Rule34 API returned %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read Rule34 API response: %w", err)
+	}
+	var posts []rule34Post
+	if err := json.Unmarshal(body, &posts); err != nil {
+		var wrapped struct {
+			Posts   []rule34Post `json:"post"`
+			Success *bool        `json:"success"`
+			Reason  string       `json:"reason"`
+		}
+		if err2 := json.Unmarshal(body, &wrapped); err2 != nil {
+			return nil, fmt.Errorf("parse Rule34 API response: %w", err)
+		}
+		if wrapped.Success != nil && !*wrapped.Success {
+			return nil, fmt.Errorf("Rule34 API credentials were rejected: %s", strings.TrimSpace(wrapped.Reason))
+		}
+		posts = wrapped.Posts
+	}
+	out := &Listing{Items: make([]Item, 0, len(posts))}
+	for _, post := range posts {
+		id := strconv.FormatInt(post.ID, 10)
+		if post.ID <= 0 || post.FileURL == "" {
+			continue
+		}
+		kind := kindForExt(path.Ext(mediaPath(post.FileURL)))
+		thumb := post.PreviewURL
+		if thumb == "" {
+			thumb = post.SampleURL
+		}
+		if thumb == "" && kind != "video" {
+			thumb = post.FileURL
+		}
+		out.Items = append(out.Items, Item{
+			ID: id, Title: rule34Title(id, post.Tags), Kind: kind,
+			ThumbURL: thumb, MediaURL: post.FileURL, PageURL: s.postURL(id),
+			Width: post.Width, Height: post.Height,
+			Tags: strings.Fields(post.Tags),
+		})
+	}
+	if len(posts) == 100 {
+		out.Cursor = strconv.Itoa(page + 1)
+	}
+	return out, nil
+}
+
+type rule34Post struct {
+	ID         int64  `json:"id"`
+	Tags       string `json:"tags"`
+	FileURL    string `json:"file_url"`
+	PreviewURL string `json:"preview_url"`
+	SampleURL  string `json:"sample_url"`
+	Width      int    `json:"width"`
+	Height     int    `json:"height"`
+}
+
+func (s *Rule34) browseHTML(ctx context.Context, cursor, tags string) (*Listing, error) {
+	offset := 0
+	if cursor != "" {
+		var err error
+		offset, err = strconv.Atoi(cursor)
 		if err != nil || offset < 0 {
-			return nil, fmt.Errorf("bad cursor %q", p.Cursor)
+			return nil, fmt.Errorf("bad cursor %q", cursor)
 		}
 	}
 	target := s.baseURL + "/index.php?page=post&s=list&tags=" + url.QueryEscape(tags)
@@ -102,6 +232,7 @@ func (s *Rule34) Browse(ctx context.Context, p BrowseParams) (*Listing, error) {
 			ID: id, Title: rule34Title(id, tags), Kind: kindThread,
 			ThumbURL: absoluteURL(s.baseURL, thumb),
 			PageURL:  s.postURL(id), FeedID: "post:" + id, Count: 1,
+			Tags: strings.Fields(tags),
 		})
 	})
 	if len(out.Items) > 0 {
@@ -147,6 +278,7 @@ func (s *Rule34) post(ctx context.Context, id string) (*Listing, error) {
 	item := Item{
 		ID: id, Title: rule34Title(id, tags), Kind: kind,
 		ThumbURL: absoluteURL(s.baseURL, thumb), MediaURL: media, PageURL: s.postURL(id),
+		Tags: strings.Fields(tags),
 	}
 	return &Listing{Items: []Item{item}}, nil
 }

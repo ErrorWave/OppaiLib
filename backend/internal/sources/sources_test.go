@@ -384,6 +384,34 @@ func TestRule34TagSearchRequiresTerm(t *testing.T) {
 	}
 }
 
+func TestRule34AuthenticatedAPIReturnsDirectMedia(t *testing.T) {
+	var gotCredentials bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		gotCredentials = q.Get("page") == "dapi" && q.Get("user_id") == "42" && q.Get("api_key") == "secret"
+		_, _ = io.WriteString(w, `[{
+			"id":123,"tags":"animated blue_hair score:9","file_url":"https://nymp4.rule34.xxx/a/hash.mp4",
+			"preview_url":"https://wimg.rule34.xxx/a/hash.jpg","width":1280,"height":720
+		}]`)
+	}))
+	defer srv.Close()
+
+	src := NewRule34(srv.Client())
+	src.baseURL = srv.URL
+	src.SetCredentials("42", "secret")
+	listing, err := src.Browse(context.Background(), BrowseParams{Feed: "search", Query: "blue_hair"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gotCredentials || len(listing.Items) != 1 {
+		t.Fatalf("credentials=%v listing=%+v", gotCredentials, listing)
+	}
+	item := listing.Items[0]
+	if item.Kind != "video" || item.MediaURL == "" || item.FeedID != "" || item.Width != 1280 || item.Height != 720 {
+		t.Fatalf("direct API item = %+v", item)
+	}
+}
+
 // An empty feed id means "lead with something", not "error".
 func TestFourChanDefaultsToFirstBoard(t *testing.T) {
 	f, srv := newFourChanStub(t)

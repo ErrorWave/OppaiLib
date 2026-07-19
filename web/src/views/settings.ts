@@ -267,6 +267,16 @@ export class OppaiSettings extends LitElement {
         opacity: 0.5;
         cursor: default;
       }
+      .btn-inline {
+        border: 1px solid var(--oppai-border-strong);
+        border-radius: 10px;
+        background: transparent;
+        color: var(--oppai-text-dim);
+        font: inherit;
+        font-size: 12px;
+        padding: 7px 10px;
+        cursor: pointer;
+      }
 
       .banner {
         display: flex;
@@ -1061,6 +1071,58 @@ export class OppaiSettings extends LitElement {
                       this.edit({ scrapeUserAgent: (e.target as HTMLInputElement).value })}
                   />
                 </div>
+              </div>
+
+              <div class="field stack">
+                <div class="field-text">
+                  <div class="field-label">Civitai API</div>
+                  <div class="field-help">
+                    Catalogue API base and optional token. The public mirror works without a token;
+                    use <code>https://civitai.com/api/v1</code> with your key for authenticated access.
+                    The key is stored on this server and is never sent back to the browser.
+                  </div>
+                </div>
+                <div class="field-control">
+                  <input type="text" autocomplete="off" placeholder="https://civitai.red/api/v1"
+                    .value=${s.civitaiApiUrl} ?disabled=${!this.canEdit}
+                    @change=${(e: Event) => this.edit({ civitaiApiUrl: (e.target as HTMLInputElement).value })} />
+                </div>
+                <div class="field-control">
+                  <input type="password" autocomplete="new-password"
+                    placeholder=${s.civitaiKeySet ? "•••••••• (unchanged)" : "Civitai API key (optional)"}
+                    ?disabled=${!this.canEdit}
+                    @change=${(e: Event) => this.edit({ civitaiApiKey: (e.target as HTMLInputElement).value })} />
+                </div>
+                ${s.civitaiKeySet ? html`<div class="field-control">
+                  <button type="button" class="btn-inline" ?disabled=${!this.canEdit}
+                    @click=${() => this.edit({ civitaiApiKey: "", civitaiKeySet: false })}>Clear saved key</button>
+                </div>` : nothing}
+              </div>
+
+              <div class="field stack">
+                <div class="field-text">
+                  <div class="field-label">Rule34.xxx API</div>
+                  <div class="field-help">
+                    The authenticated JSON API makes browsing faster and supplies original media URLs,
+                    dimensions, and reliable video types. Find the user id and API key in your Rule34 account options.
+                    The key is write-only.
+                  </div>
+                </div>
+                <div class="field-control">
+                  <input type="text" inputmode="numeric" autocomplete="off" placeholder="Rule34 user id"
+                    .value=${s.rule34UserId} ?disabled=${!this.canEdit}
+                    @change=${(e: Event) => this.edit({ rule34UserId: (e.target as HTMLInputElement).value })} />
+                </div>
+                <div class="field-control">
+                  <input type="password" autocomplete="new-password"
+                    placeholder=${s.rule34ApiKeySet ? "•••••••• (unchanged)" : "Rule34 API key"}
+                    ?disabled=${!this.canEdit}
+                    @change=${(e: Event) => this.edit({ rule34ApiKey: (e.target as HTMLInputElement).value })} />
+                </div>
+                ${s.rule34ApiKeySet ? html`<div class="field-control">
+                  <button type="button" class="btn-inline" ?disabled=${!this.canEdit}
+                    @click=${() => this.edit({ rule34ApiKey: "", rule34ApiKeySet: false })}>Clear saved key</button>
+                </div>` : nothing}
               </div>
 
               <div class="field stack">

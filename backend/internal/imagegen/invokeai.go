@@ -726,12 +726,12 @@ func buildInvokeGraph(main invokeModelRecord, vae *invokeModelRecord, loras []in
 	}
 	edge(unetNode, "unet", "denoise", "unet")
 
-	// fp32 decode: fp16 VAEs (SDXL's stock one especially, and SD 1.5 on some cards)
-	// overflow to NaN during decode, which comes out as an all-black image. Decoding
-	// in fp32 costs a moment and never blacks out.
+	// Always decode in fp32. fp16 VAEs (SDXL's stock one especially, and SD 1.5 on
+	// some cards) can overflow to NaN and InvokeAI then saves a valid but all-black
+	// PNG. This is a correctness setting, not a performance preference.
 	nodes["l2i"] = map[string]any{
 		"id": "l2i", "type": "l2i",
-		"fp32":            req.VAEPrecision != "fp16",
+		"fp32":            true,
 		"is_intermediate": false,
 	}
 	if req.Board != "" && req.Board != "none" {

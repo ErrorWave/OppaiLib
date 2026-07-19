@@ -101,6 +101,12 @@ export interface Settings {
   // disables the feature; imageGenEnabled is a derived, read-only mirror of "URL set".
   imageGenUrl: string;
   imageGenEnabled: boolean;
+  civitaiApiUrl: string;
+  civitaiApiKey: string;
+  civitaiKeySet: boolean;
+  rule34UserId: string;
+  rule34ApiKey: string;
+  rule34ApiKeySet: boolean;
   chatUrl: string;
   chatModel: string;
   chatEnabled: boolean;
@@ -219,6 +225,7 @@ export interface SourceItem {
   count?: number;
   width?: number;
   height?: number;
+  tags?: string[];
 }
 
 /**
@@ -342,6 +349,7 @@ export interface ImageGenStatus {
   vaes?: GenVae[];
   templates?: GenTemplate[];
   boards?: GalleryBoard[];
+  detailerAvailable?: boolean;
 }
 
 /** A just-generated image, held server-side in memory until saved. `id` streams it. */
@@ -371,6 +379,15 @@ export interface GenerateParams {
   seed?: number;
   count?: number;
   loras?: { name: string; weight: number }[];
+  detailer?: {
+    enabled: boolean;
+    model?: string;
+    prompt?: string;
+    negativePrompt?: string;
+    confidence?: number;
+    denoise?: number;
+    maskBlur?: number;
+  };
 }
 
 /** The full editable record of a model or LoRA, mirrored from InvokeAI. */
@@ -422,6 +439,11 @@ export interface CivitaiVersion {
   downloadUrl: string;
   sizeMB?: number;
   images: string[];
+}
+
+export interface CivitaiCategory {
+  name: string;
+  count: number;
 }
 
 /** One model download InvokeAI is running (or has finished). */
@@ -773,10 +795,11 @@ export const api = {
   // The public catalogue via civitai.red, proxied through the server. Install
   // hands a download URL to InvokeAI, which fetches the file itself.
 
-  civitaiSearch: (opts: { q?: string; type?: string; sort?: string; cursor?: string } = {}) => {
+  civitaiSearch: (opts: { q?: string; type?: string; category?: string; sort?: string; cursor?: string } = {}) => {
     const p = new URLSearchParams();
     if (opts.q) p.set("q", opts.q);
     if (opts.type) p.set("type", opts.type);
+    if (opts.category) p.set("category", opts.category);
     if (opts.sort) p.set("sort", opts.sort);
     if (opts.cursor) p.set("cursor", opts.cursor);
     return request<{ items: CivitaiModel[]; nextCursor?: string }>(
@@ -785,6 +808,8 @@ export const api = {
       45_000,
     );
   },
+  civitaiCategories: () =>
+    request<{ categories: CivitaiCategory[] }>("/api/imagegen/civitai/categories", {}, 30_000),
   civitaiImageURL: (u: string) => `/api/imagegen/civitai/image?url=${encodeURIComponent(u)}`,
   civitaiInstall: (url: string) =>
     request<InstallJob>("/api/imagegen/civitai/install", {

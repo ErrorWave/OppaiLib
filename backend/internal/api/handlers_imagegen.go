@@ -147,6 +147,8 @@ func (s *Server) handleImageGenStatus(w http.ResponseWriter, r *http.Request) {
 		if boards, err := s.imagegen.Boards(ctx, set.ImageGenURL); err == nil {
 			out["boards"] = boards
 		}
+	} else if backend == imagegen.KindA1111 {
+		out["detailerAvailable"] = s.imagegen.SupportsADetailer(ctx, set.ImageGenURL)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -173,25 +175,36 @@ func (s *Server) handleImageGenPrompt(w http.ResponseWriter, r *http.Request) {
 // ── generate ─────────────────────────────────────────────────────────────────
 
 type generateReq struct {
-	Prompt         string    `json:"prompt"`
-	NegativePrompt string    `json:"negativePrompt"`
-	Checkpoint     string    `json:"checkpoint"`
-	VAE            string    `json:"vae"`
-	Sampler        string    `json:"sampler"`
-	Steps          int       `json:"steps"`
-	Width          int       `json:"width"`
-	Height         int       `json:"height"`
-	CfgScale       float64   `json:"cfgScale"`
-	CfgRescale     float64   `json:"cfgRescale"`
-	ClipSkip       int       `json:"clipSkip"`
-	SeamlessX      bool      `json:"seamlessX"`
-	SeamlessY      bool      `json:"seamlessY"`
-	VAEPrecision   string    `json:"vaePrecision"`
-	CPUNoise       *bool     `json:"cpuNoise"`
-	Board          string    `json:"board"`
-	Seed           int64     `json:"seed"`
-	Count          int       `json:"count"`
-	Loras          []loraReq `json:"loras"`
+	Prompt         string      `json:"prompt"`
+	NegativePrompt string      `json:"negativePrompt"`
+	Checkpoint     string      `json:"checkpoint"`
+	VAE            string      `json:"vae"`
+	Sampler        string      `json:"sampler"`
+	Steps          int         `json:"steps"`
+	Width          int         `json:"width"`
+	Height         int         `json:"height"`
+	CfgScale       float64     `json:"cfgScale"`
+	CfgRescale     float64     `json:"cfgRescale"`
+	ClipSkip       int         `json:"clipSkip"`
+	SeamlessX      bool        `json:"seamlessX"`
+	SeamlessY      bool        `json:"seamlessY"`
+	VAEPrecision   string      `json:"vaePrecision"`
+	CPUNoise       *bool       `json:"cpuNoise"`
+	Board          string      `json:"board"`
+	Seed           int64       `json:"seed"`
+	Count          int         `json:"count"`
+	Loras          []loraReq   `json:"loras"`
+	Detailer       detailerReq `json:"detailer"`
+}
+
+type detailerReq struct {
+	Enabled        bool    `json:"enabled"`
+	Model          string  `json:"model"`
+	Prompt         string  `json:"prompt"`
+	NegativePrompt string  `json:"negativePrompt"`
+	Confidence     float64 `json:"confidence"`
+	Denoise        float64 `json:"denoise"`
+	MaskBlur       int     `json:"maskBlur"`
 }
 
 type loraReq struct {
@@ -259,6 +272,12 @@ func (s *Server) handleImageGenGenerate(w http.ResponseWriter, r *http.Request) 
 		Seed:           req.Seed,
 		Count:          req.Count,
 		Loras:          loras,
+		Detailer: imagegen.Detailer{
+			Enabled: req.Detailer.Enabled, Model: req.Detailer.Model,
+			Prompt: req.Detailer.Prompt, NegativePrompt: req.Detailer.NegativePrompt,
+			Confidence: req.Detailer.Confidence, Denoise: req.Detailer.Denoise,
+			MaskBlur: req.Detailer.MaskBlur,
+		},
 	}
 	res, err := s.imagegen.Generate(r.Context(), set.ImageGenURL, gen)
 	if err != nil {
@@ -317,9 +336,22 @@ func clampGenerate(req *generateReq) {
 		req.CfgRescale = 0.99
 	}
 	req.ClipSkip = clampInt(req.ClipSkip, 0, 12)
-	if req.VAEPrecision != "fp16" {
-		req.VAEPrecision = "fp32"
+	// InvokeAI's fp16 VAE decode can produce valid all-black PNGs. Keep accepting
+	// the old field for client compatibility, but generation is now always safe.
+	req.VAEPrecision = "fp32"
+	if req.Detailer.Confidence <= 0 {
+		req.Detailer.Confidence = 0.3
 	}
+	if req.Detailer.Confidence > 1 {
+		req.Detailer.Confidence = 1
+	}
+	if req.Detailer.Denoise <= 0 {
+		req.Detailer.Denoise = 0.4
+	}
+	if req.Detailer.Denoise > 1 {
+		req.Detailer.Denoise = 1
+	}
+	req.Detailer.MaskBlur = clampInt(req.Detailer.MaskBlur, 0, 64)
 	if req.Count <= 0 {
 		req.Count = 1
 	}

@@ -192,6 +192,7 @@ func (s *Server) Handler() http.Handler {
 	// Civitai catalogue (via the civitai.red mirror), proxied like every other
 	// remote source; install hands a download URL to InvokeAI.
 	mux.HandleFunc("GET /api/imagegen/civitai/search", s.requireAuth(s.handleCivitaiSearch))
+	mux.HandleFunc("GET /api/imagegen/civitai/categories", s.requireAuth(s.handleCivitaiCategories))
 	mux.HandleFunc("GET /api/imagegen/civitai/image", s.requireAuth(s.handleCivitaiImage))
 	mux.HandleFunc("POST /api/imagegen/civitai/install", s.requireAuth(s.handleCivitaiInstall))
 	mux.HandleFunc("GET /api/imagegen/civitai/installs", s.requireAuth(s.handleCivitaiInstalls))
