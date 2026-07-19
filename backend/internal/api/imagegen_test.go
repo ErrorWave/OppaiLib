@@ -158,20 +158,13 @@ func TestImageGenAppliesLorasToPrompt(t *testing.T) {
 	}
 }
 
-func TestImageGenLoraThumbnail(t *testing.T) {
+func TestImageGenRejectsCustomLoraThumbnail(t *testing.T) {
 	s, token := newTestServer(t)
 	h := s.Handler()
 	rec := do(t, h, token, "PUT", "/api/imagegen/lora-thumb",
 		`{"model":"detail-tweaker","imageData":"`+onePixelPNG+`"}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("set LoRA thumbnail: %d %s", rec.Code, rec.Body)
-	}
-	rec = do(t, h, token, "GET", "/api/imagegen/lora-thumb?name=detail-tweaker", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("get LoRA thumbnail: %d %s", rec.Code, rec.Body)
-	}
-	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "image/") {
-		t.Fatalf("LoRA thumbnail Content-Type = %q", ct)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "custom thumbnail uploads are disabled") {
+		t.Fatalf("custom LoRA thumbnail = %d %s", rec.Code, rec.Body)
 	}
 }
 

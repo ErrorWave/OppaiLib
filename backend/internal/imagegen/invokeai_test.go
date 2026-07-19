@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -29,14 +30,16 @@ func (st *stubInvoke) server(t *testing.T) *httptest.Server {
 		case r.URL.Path == "/api/v2/models/":
 			fmt.Fprint(w, `{"models":[
 				{"key":"key-main","hash":"h1","name":"AnimeThing","base":"sd-1","type":"main",
-					"default_settings":{"steps":30,"cfg_scale":6.5,"width":512,"height":768}},
+					"default_settings":{"steps":30,"cfg_scale":6.5,"cfg_rescale_multiplier":0.25,
+					"width":512,"height":768,"vae_precision":"fp16"}},
 				{"key":"key-flux","hash":"h3","name":"FluxThing","base":"flux","type":"main"},
-				{"key":"key-lora","hash":"h2","name":"detail-tweaker","base":"sd-1","type":"lora"},
+				{"key":"key-lora","hash":"h2","name":"detail-tweaker","base":"sd-1","type":"lora",
+					"trigger_phrases":["fine detail","sharp eyes"]},
 				{"key":"key-lora-xl","hash":"h4","name":"xl-only","base":"sdxl","type":"lora"},
 				{"key":"key-vae","hash":"h5","name":"fixed-vae","base":"sd-1","type":"vae"}
 			]}`)
 		case r.URL.Path == "/api/v1/style_presets/":
-			fmt.Fprint(w, `[{"id":"sp1","name":"Anime","type":"default",
+			fmt.Fprint(w, `[{"id":"sp1","name":"My Anime","type":"user",
 				"preset_data":{"positive_prompt":"{prompt}, anime style","negative_prompt":"photo"}}]`)
 		case r.URL.Path == "/api/v2/models/i/key-main/image":
 			w.Header().Set("Content-Type", "image/png")
@@ -98,7 +101,8 @@ func TestInvokeModelsAndLoras(t *testing.T) {
 		t.Fatalf("models = %+v", models)
 	}
 	// Per-model defaults ride along so pickers can apply them on selection.
-	if models[0].Base != "sd-1" || models[0].Defaults == nil || models[0].Defaults.Steps != 30 || models[0].Defaults.Width != 512 {
+	if models[0].Base != "sd-1" || models[0].Defaults == nil || models[0].Defaults.Steps != 30 ||
+		models[0].Defaults.Width != 512 || models[0].Defaults.CfgRescale != 0.25 || models[0].Defaults.VaePrecision != "fp16" {
 		t.Fatalf("model defaults = %+v", models[0])
 	}
 	if models[1].Defaults != nil {
@@ -108,7 +112,7 @@ func TestInvokeModelsAndLoras(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loras: %v", err)
 	}
-	if len(loras) != 2 || loras[0].Name != "detail-tweaker" {
+	if len(loras) != 2 || loras[0].Name != "detail-tweaker" || len(loras[0].TriggerPhrases) != 2 {
 		t.Fatalf("loras = %+v", loras)
 	}
 	vaes, err := c.Vaes(context.Background(), srv.URL)
@@ -122,8 +126,68 @@ func TestInvokeModelsAndLoras(t *testing.T) {
 	if err != nil {
 		t.Fatalf("templates: %v", err)
 	}
-	if len(templates) != 1 || templates[0].Name != "Anime" || !strings.Contains(templates[0].Prompt, "{prompt}") {
+	if len(templates) != 1 || templates[0].Name != "My Anime" || !strings.Contains(templates[0].Prompt, "{prompt}") {
 		t.Fatalf("templates = %+v", templates)
+	}
+}
+
+func TestInvokeAdvancedTextToImageGraph(t *testing.T) {
+	main := invokeModelRecord{Key: "main", Hash: "h", Name: "Main", Base: "sd-1", Type: "main"}
+	graph := buildInvokeGraph(main, nil, nil, GenerateRequest{
+		Prompt: "tile", Steps: 20, Width: 512, Height: 512, CfgScale: 7,
+		CfgRescale: 0.35, ClipSkip: 2, SeamlessX: true, VAEPrecision: "fp16",
+		CPUNoise: true, Board: "board-1",
+	}, "euler_a")
+	raw, _ := json.Marshal(graph)
+	s := string(raw)
+	for _, want := range []string{
+		`"cfg_rescale_multiplier":0.35`, `"type":"clip_skip"`, `"skipped_layers":2`,
+		`"type":"seamless"`, `"seamless_x":true`, `"use_cpu":true`,
+		`"fp32":false`, `"board_id":"board-1"`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("advanced graph missing %s: %s", want, s)
+		}
+	}
+}
+
+func TestInvokeCreatesBoardAndUpdatesCover(t *testing.T) {
+	var gotCover, gotBoard bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v1/app/version":
+			fmt.Fprint(w, `{"version":"6.0.0"}`)
+		case r.URL.Path == "/api/v2/models/":
+			fmt.Fprint(w, `{"models":[{"key":"key-main","name":"Main","base":"sd-1","type":"main"}]}`)
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/v2/models/i/key-main/image":
+			file, _, err := r.FormFile("image")
+			if err == nil {
+				defer file.Close()
+				var b strings.Builder
+				_, _ = io.Copy(&b, file)
+				gotCover = b.String() == "PNG"
+			}
+			fmt.Fprint(w, `{}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/boards/":
+			gotBoard = r.URL.Query().Get("board_name") == "Favorites"
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"board_id":"b1","board_name":"Favorites","image_count":0}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c := New()
+	if err := c.UpdateCover(context.Background(), srv.URL, "Main", []byte("PNG"), "image/png"); err != nil {
+		t.Fatalf("update cover: %v", err)
+	}
+	board, err := c.CreateBoard(context.Background(), srv.URL, "Favorites")
+	if err != nil || board.ID != "b1" {
+		t.Fatalf("create board = %+v, %v", board, err)
+	}
+	if !gotCover || !gotBoard {
+		t.Fatalf("round trip cover=%v board=%v", gotCover, gotBoard)
 	}
 }
 

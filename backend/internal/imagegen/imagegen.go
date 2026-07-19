@@ -74,12 +74,14 @@ type Model struct {
 // (InvokeAI stores these per model). Zero fields mean "no opinion"; the UI applies
 // them when the model is picked, and the user can still override everything.
 type ModelDefaults struct {
-	Steps     int     `json:"steps,omitempty"`
-	CfgScale  float64 `json:"cfgScale,omitempty"`
-	Scheduler string  `json:"scheduler,omitempty"`
-	Width     int     `json:"width,omitempty"`
-	Height    int     `json:"height,omitempty"`
-	Vae       string  `json:"vae,omitempty"`
+	Steps        int     `json:"steps,omitempty"`
+	CfgScale     float64 `json:"cfgScale,omitempty"`
+	CfgRescale   float64 `json:"cfgRescale,omitempty"`
+	Scheduler    string  `json:"scheduler,omitempty"`
+	Width        int     `json:"width,omitempty"`
+	Height       int     `json:"height,omitempty"`
+	Vae          string  `json:"vae,omitempty"`
+	VaePrecision string  `json:"vaePrecision,omitempty"`
 	// Weight is a LoRA's recommended strength (InvokeAI stores just this for LoRAs).
 	Weight float64 `json:"weight,omitempty"`
 }
@@ -105,9 +107,12 @@ type Template struct {
 // Lora is one LoRA network. Name is the selector value handed back on generate;
 // Alias is a friendlier display label when set.
 type Lora struct {
-	Name  string `json:"name"`
-	Alias string `json:"alias,omitempty"`
-	Path  string `json:"path,omitempty"`
+	Name           string   `json:"name"`
+	Alias          string   `json:"alias,omitempty"`
+	Path           string   `json:"path,omitempty"`
+	Base           string   `json:"base,omitempty"`
+	Weight         float64  `json:"weight,omitempty"`
+	TriggerPhrases []string `json:"triggerPhrases,omitempty"`
 }
 
 // ModelDetail is the full editable record for one model or LoRA, as InvokeAI's
@@ -182,8 +187,15 @@ type GenerateRequest struct {
 	Width          int
 	Height         int
 	CfgScale       float64
-	Seed           int64 // -1 for random
-	Count          int   // how many images to produce
+	CfgRescale     float64
+	ClipSkip       int
+	SeamlessX      bool
+	SeamlessY      bool
+	VAEPrecision   string // fp32 (safe default) or fp16
+	CPUNoise       bool
+	Board          string // InvokeAI board id; empty/"none" means uncategorized
+	Seed           int64  // -1 for random
+	Count          int    // how many images to produce
 	Loras          []LoraWeight
 }
 
@@ -333,12 +345,29 @@ func (c *Client) UpdateModel(ctx context.Context, base, key string, ch ModelChan
 	return c.invokeUpdateModel(ctx, base, key, ch)
 }
 
+// UpdateCover writes a model or LoRA preview into InvokeAI's own model manager.
+// Keeping InvokeAI as the only source of truth means every client sees the same art.
+func (c *Client) UpdateCover(ctx context.Context, base, name string, data []byte, contentType string) error {
+	if err := c.requireInvoke(ctx, base, "updating model cover art"); err != nil {
+		return err
+	}
+	return c.invokeUpdateCover(ctx, base, name, data, contentType)
+}
+
 // Boards lists the InvokeAI gallery's boards, with "none" (Uncategorized) first.
 func (c *Client) Boards(ctx context.Context, base string) ([]Board, error) {
 	if err := c.requireInvoke(ctx, base, "the generator gallery"); err != nil {
 		return nil, err
 	}
 	return c.invokeBoards(ctx, base)
+}
+
+// CreateBoard creates an InvokeAI gallery board and returns its server-assigned id.
+func (c *Client) CreateBoard(ctx context.Context, base, name string) (*Board, error) {
+	if err := c.requireInvoke(ctx, base, "creating gallery boards"); err != nil {
+		return nil, err
+	}
+	return c.invokeCreateBoard(ctx, base, name)
 }
 
 // BoardImages lists one board's images, newest first. boardID "none" is the

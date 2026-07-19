@@ -284,16 +284,21 @@ export interface GenModel {
 export interface GenModelDefaults {
   steps?: number;
   cfgScale?: number;
+  cfgRescale?: number;
   scheduler?: string;
   width?: number;
   height?: number;
   vae?: string;
+  vaePrecision?: "fp32" | "fp16";
 }
 
 export interface GenLora {
   name: string;
   alias?: string;
   path?: string;
+  base?: string;
+  weight?: number;
+  triggerPhrases?: string[];
 }
 
 /** A standalone VAE. `key` is the selector value the generate call wants. */
@@ -336,6 +341,7 @@ export interface ImageGenStatus {
   loraError?: string;
   vaes?: GenVae[];
   templates?: GenTemplate[];
+  boards?: GalleryBoard[];
 }
 
 /** A just-generated image, held server-side in memory until saved. `id` streams it. */
@@ -355,6 +361,13 @@ export interface GenerateParams {
   width?: number;
   height?: number;
   cfgScale?: number;
+  cfgRescale?: number;
+  clipSkip?: number;
+  seamlessX?: boolean;
+  seamlessY?: boolean;
+  vaePrecision?: "fp32" | "fp16";
+  cpuNoise?: boolean;
+  board?: string;
   seed?: number;
   count?: number;
   loras?: { name: string; weight: number }[];
@@ -672,9 +685,9 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
-  // A checkpoint's preview image, set from a generated preview or an uploaded data URL.
+  // Cover art is read from and written to InvokeAI's model manager.
   modelThumbURL: (model: string) => `/api/imagegen/model-thumb?model=${encodeURIComponent(model)}`,
-  setModelThumb: (body: { model: string; previewId?: string; imageData?: string }) =>
+  setModelThumb: (body: { model: string; previewId: string }) =>
     request<{ status: string }>("/api/imagegen/model-thumb", {
       method: "PUT",
       body: JSON.stringify(body),
@@ -687,11 +700,6 @@ export const api = {
       body: JSON.stringify({ mode, messages }),
     }, 125_000),
   loraThumbURL: (name: string) => `/api/imagegen/lora-thumb?name=${encodeURIComponent(name)}`,
-  setLoraThumb: (body: { model: string; previewId?: string; imageData?: string }) =>
-    request<{ status: string }>("/api/imagegen/lora-thumb", {
-      method: "PUT",
-      body: JSON.stringify(body),
-    }),
 
   // ── character library ──────────────────────────────────────────────────────
   // Reusable prompt fragments with a name and a face; stored encrypted server-side.
@@ -738,6 +746,11 @@ export const api = {
   // pruned from here. Save copies one image into the library.
 
   galleryBoards: () => request<{ boards: GalleryBoard[] }>("/api/imagegen/gallery/boards", {}, 20_000),
+  createGalleryBoard: (name: string) =>
+    request<GalleryBoard>("/api/imagegen/gallery/boards", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }, 20_000),
   galleryImages: (board: string, offset = 0, limit = 60) =>
     request<GalleryPage>(
       `/api/imagegen/gallery/images?board=${encodeURIComponent(board)}&offset=${offset}&limit=${limit}`,

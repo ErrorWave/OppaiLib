@@ -38,12 +38,11 @@ type Server struct {
 	// Image generation. The client is stateless (the A1111 URL is read from settings
 	// per call); genCache holds just-generated images in memory so they can be
 	// previewed and saved without ever touching disk — the "don't save unless asked"
-	// rule. modelThumbDir holds the (encrypted) checkpoint preview images.
-	imagegen      *imagegen.Client
-	genCache      *genCache
-	modelThumbDir string
-	characterDir  string // encrypted character-library records + thumbnails
-	libbyDir      string // encrypted Libby outfit records + emotion art
+	// rule. Model and LoRA cover art always lives in InvokeAI itself.
+	imagegen     *imagegen.Client
+	genCache     *genCache
+	characterDir string // encrypted character-library records + thumbnails
+	libbyDir     string // encrypted Libby outfit records + emotion art
 
 	thumbSem  chan struct{} // bounds concurrent ffmpeg thumbnail jobs
 	thumbWarn sync.Once     // warn once if ffmpeg is missing
@@ -83,11 +82,10 @@ func NewServer(cfg *config.Config, database *db.DB, store *storage.Store, sc *sc
 		thumbSem: make(chan struct{}, workers),
 		login:    newLoginGuard(),
 
-		imagegen:      imagegen.New(),
-		genCache:      newGenCache(),
-		modelThumbDir: filepath.Join(cfg.ConfigDir, "model_thumbs"),
-		characterDir:  filepath.Join(cfg.ConfigDir, "characters"),
-		libbyDir:      filepath.Join(cfg.ConfigDir, "libby"),
+		imagegen:     imagegen.New(),
+		genCache:     newGenCache(),
+		characterDir: filepath.Join(cfg.ConfigDir, "characters"),
+		libbyDir:     filepath.Join(cfg.ConfigDir, "libby"),
 
 		pageCache:    newResolveCache[[]string](sourcePagesTTL),
 		commentCache: newResolveCache[[]sources.Comment](sourceCommentsTTL),
@@ -185,6 +183,7 @@ func (s *Server) Handler() http.Handler {
 	// The InvokeAI gallery: browse the generator's own boards and images, stream
 	// them through the server, delete from them, or copy one into the library.
 	mux.HandleFunc("GET /api/imagegen/gallery/boards", s.requireAuth(s.handleGalleryBoards))
+	mux.HandleFunc("POST /api/imagegen/gallery/boards", s.requireAuth(s.handleGalleryCreateBoard))
 	mux.HandleFunc("GET /api/imagegen/gallery/images", s.requireAuth(s.handleGalleryImages))
 	mux.HandleFunc("GET /api/imagegen/gallery/image/{name}", s.requireAuth(s.handleGalleryFull))
 	mux.HandleFunc("GET /api/imagegen/gallery/image/{name}/thumb", s.requireAuth(s.handleGalleryThumb))

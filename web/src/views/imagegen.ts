@@ -10,6 +10,7 @@ import {
   type GenPreview,
   type GenTemplate,
   type GenVae,
+  type GalleryBoard,
   type ImageGenStatus,
 } from "../api.js";
 import "./imagegen-gallery.js";
@@ -68,11 +69,20 @@ const RESOLUTIONS: { label: string; hint: string; w: number; h: number }[] = [
 // InvokeAI ids, so the same values work against either backend.
 const SCHEDULERS: { id: string; label: string }[] = [
   { id: "", label: "Default (Euler a)" },
-  { id: "euler a", label: "Euler a" },
-  { id: "dpm++ 2m", label: "DPM++ 2M" },
-  { id: "dpm++ 2m karras", label: "DPM++ 2M Karras" },
-  { id: "dpm++ 2m sde karras", label: "DPM++ 2M SDE Karras" },
-  { id: "dpm++ sde karras", label: "DPM++ SDE Karras" },
+  ...[
+    ["ddim", "DDIM"], ["ddpm", "DDPM"], ["deis", "DEIS"], ["deis_k", "DEIS Karras"],
+    ["dpmpp_2s", "DPM++ 2S"], ["dpmpp_2s_k", "DPM++ 2S Karras"],
+    ["dpmpp_2m", "DPM++ 2M"], ["dpmpp_2m_k", "DPM++ 2M Karras"],
+    ["dpmpp_2m_sde", "DPM++ 2M SDE"], ["dpmpp_2m_sde_k", "DPM++ 2M SDE Karras"],
+    ["dpmpp_3m", "DPM++ 3M"], ["dpmpp_3m_k", "DPM++ 3M Karras"],
+    ["dpmpp_sde", "DPM++ SDE"], ["dpmpp_sde_k", "DPM++ SDE Karras"],
+    ["er_sde", "ER-SDE"], ["euler", "Euler"], ["euler_k", "Euler Karras"],
+    ["euler_a", "Euler Ancestral"], ["heun", "Heun"], ["heun_k", "Heun Karras"],
+    ["kdpm_2", "KDPM 2"], ["kdpm_2_k", "KDPM 2 Karras"],
+    ["kdpm_2_a", "KDPM 2 Ancestral"], ["kdpm_2_a_k", "KDPM 2 Ancestral Karras"],
+    ["lcm", "LCM"], ["lms", "LMS"], ["lms_k", "LMS Karras"],
+    ["pndm", "PNDM"], ["tcd", "TCD"], ["unipc", "UniPC"], ["unipc_k", "UniPC Karras"],
+  ].map(([id, label]) => ({ id, label })),
 ];
 
 // A character being edited (or created — id undefined until saved).
@@ -107,6 +117,8 @@ export class OppaiImageGen extends LitElement {
   @state() private vae = "";
   @state() private templateId = "";
   @state() private selectedLoras: Record<string, number> = {};
+  @state() private selectedTriggers: string[] = [];
+  @state() private loraPage = 0;
   @state() private characters: GenCharacter[] = [];
   @state() private selectedChars: string[] = [];
   @state() private charDraft: CharDraft | null = null;
@@ -128,6 +140,13 @@ export class OppaiImageGen extends LitElement {
   @state() private height = 768;
   @state() private steps = 25;
   @state() private cfg = 7;
+  @state() private cfgRescale = 0;
+  @state() private clipSkip = 0;
+  @state() private seamlessX = false;
+  @state() private seamlessY = false;
+  @state() private vaePrecision: "fp32" | "fp16" = "fp32";
+  @state() private cpuNoise = true;
+  @state() private board = "none";
   @state() private scheduler = "";
   @state() private count = 1;
   @state() private seed = -1;
@@ -255,11 +274,13 @@ export class OppaiImageGen extends LitElement {
       /* Picker cards (models, LoRAs, characters) — a 2-up grid in the sidebar. */
       .cards {
         display: grid;
-        grid-template-columns: repeat(2, 1fr);
+        grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 10px;
       }
       .card-wrap {
         position: relative;
+        min-width: 0;
+        max-width: 100%;
       }
       .card {
         width: 100%;
@@ -271,6 +292,8 @@ export class OppaiImageGen extends LitElement {
         padding: 0;
         text-align: left;
         transition: transform 0.18s var(--oppai-ease-spring), border-color 0.18s ease;
+        min-width: 0;
+        max-width: 100%;
       }
       .card:hover {
         transform: translateY(-2px);
@@ -327,6 +350,32 @@ export class OppaiImageGen extends LitElement {
         border-radius: 8px;
         background: var(--oppai-surface);
         color: var(--oppai-text);
+      }
+      .pager {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-top: 10px;
+        font-size: 12px;
+        color: var(--oppai-text-muted);
+      }
+      .pager button {
+        border: 1px solid var(--oppai-border-strong);
+        border-radius: 8px;
+        background: var(--oppai-surface);
+        color: var(--oppai-text);
+        padding: 6px 9px;
+        cursor: pointer;
+      }
+      .pager button:disabled { opacity: 0.4; cursor: default; }
+      .switch-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 34px;
+        font-size: 12px;
+        color: var(--oppai-text-dim);
       }
 
       /* Compact settings rows in the sidebar. */
@@ -774,6 +823,9 @@ export class OppaiImageGen extends LitElement {
       if (!this.checkpoint && st.models && st.models.length) {
         this.pickModel(st.models[0]);
       }
+      if (st.boards?.length && !st.boards.some((b) => b.id === this.board)) {
+        this.board = st.boards[0].id;
+      }
     } catch (e) {
       this.status = { enabled: true, reachable: false, error: (e as Error).message };
     }
@@ -799,10 +851,12 @@ export class OppaiImageGen extends LitElement {
     if (!d) return;
     if (d.steps) this.steps = d.steps;
     if (d.cfgScale) this.cfg = d.cfgScale;
+    if (d.cfgRescale !== undefined) this.cfgRescale = d.cfgRescale;
     if (d.scheduler) this.scheduler = d.scheduler;
     if (d.width) this.width = d.width;
     if (d.height) this.height = d.height;
     if (d.vae) this.vae = d.vae;
+    if (d.vaePrecision) this.vaePrecision = d.vaePrecision;
   }
 
   // ── speech ────────────────────────────────────────────────────────────────
@@ -881,7 +935,7 @@ export class OppaiImageGen extends LitElement {
    * characters' fragments, threaded through the selected template's "{prompt}" slot.
    */
   private assemblePrompts(): { prompt: string; negative: string } {
-    const parts = [this.prompt.trim()];
+    const parts = [this.prompt.trim(), ...this.selectedTriggers];
     const negParts = [this.negative.trim()];
     for (const id of this.selectedChars) {
       const c = this.characters.find((ch) => ch.id === id);
@@ -896,7 +950,9 @@ export class OppaiImageGen extends LitElement {
     if (tpl) {
       if (tpl.prompt.includes("{prompt}")) prompt = tpl.prompt.replaceAll("{prompt}", prompt);
       else if (tpl.prompt.trim()) prompt = `${prompt}, ${tpl.prompt.trim()}`;
-      if (tpl.negativePrompt.trim()) {
+      if (tpl.negativePrompt.includes("{prompt}")) {
+        negative = tpl.negativePrompt.replaceAll("{prompt}", negative);
+      } else if (tpl.negativePrompt.trim()) {
         negative = negative ? `${negative}, ${tpl.negativePrompt.trim()}` : tpl.negativePrompt.trim();
       }
     }
@@ -920,6 +976,13 @@ export class OppaiImageGen extends LitElement {
         width: this.width,
         height: this.height,
         cfgScale: this.cfg,
+        cfgRescale: this.cfgRescale,
+        clipSkip: this.clipSkip,
+        seamlessX: this.seamlessX,
+        seamlessY: this.seamlessY,
+        vaePrecision: this.vaePrecision,
+        cpuNoise: this.cpuNoise,
+        board: this.board,
         count: this.count,
         seed: this.seed,
         loras: Object.entries(this.selectedLoras).map(([name, weight]) => ({ name, weight })),
@@ -985,46 +1048,10 @@ export class OppaiImageGen extends LitElement {
     try {
       await api.setModelThumb({ model: this.checkpoint, previewId: shot.id });
       this.bumpThumbs();
-      this.showToast("Set as model preview");
+      this.showToast("Model preview synced to InvokeAI");
     } catch (e) {
       this.showToast((e as Error).message);
     }
-  }
-
-  private onUploadThumb(model: string, e: Event) {
-    const input = e.target as HTMLInputElement;
-    const file = input.files?.[0];
-    input.value = ""; // let the same file be chosen again later
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async () => {
-      try {
-        await api.setModelThumb({ model, imageData: String(reader.result) });
-        this.bumpThumbs();
-        this.showToast("Model preview updated");
-      } catch (err) {
-        this.showToast((err as Error).message);
-      }
-    };
-    reader.readAsDataURL(file);
-  }
-
-  private onUploadLoraThumb(name: string, e: Event) {
-    const input = e.target as HTMLInputElement;
-    const file = input.files?.[0];
-    input.value = "";
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async () => {
-      try {
-        await api.setLoraThumb({ model: name, imageData: String(reader.result) });
-        this.bumpThumbs();
-        this.showToast("LoRA preview updated");
-      } catch (err) {
-        this.showToast((err as Error).message);
-      }
-    };
-    reader.readAsDataURL(file);
   }
 
   // ── model / LoRA metadata editor ────────────────────────────────────────────
@@ -1078,9 +1105,28 @@ export class OppaiImageGen extends LitElement {
 
   private toggleLora(name: string) {
     const next = { ...this.selectedLoras };
-    if (name in next) delete next[name];
-    else next[name] = 1;
+    if (name in next) {
+      delete next[name];
+      const phrases = new Set(
+        (this.status?.loras ?? []).find((l) => l.name === name)?.triggerPhrases ?? [],
+      );
+      const remaining = new Set(
+        (this.status?.loras ?? [])
+          .filter((l) => l.name in next)
+          .flatMap((l) => l.triggerPhrases ?? []),
+      );
+      this.selectedTriggers = this.selectedTriggers.filter((p) => !phrases.has(p) || remaining.has(p));
+    } else {
+      const preferred = (this.status?.loras ?? []).find((l) => l.name === name)?.weight;
+      next[name] = preferred && Number.isFinite(preferred) ? preferred : 1;
+    }
     this.selectedLoras = next;
+  }
+
+  private toggleTrigger(phrase: string) {
+    this.selectedTriggers = this.selectedTriggers.includes(phrase)
+      ? this.selectedTriggers.filter((p) => p !== phrase)
+      : [...this.selectedTriggers, phrase];
   }
 
   private toggleCharacter(id: string) {
@@ -1172,9 +1218,9 @@ export class OppaiImageGen extends LitElement {
             <span class="material-symbols-rounded" style="font-size:17px;">${current.saved ? "check" : "save"}</span>
             ${current.saved ? "Saved" : "Save to library"}
           </button>
-          <button class="btn" @click=${() => this.useAsModelThumb(current)}>
-            <span class="material-symbols-rounded" style="font-size:17px;">photo_camera</span> Model preview
-          </button>
+          ${this.status?.backend === "invokeai" ? html`<button class="btn" @click=${() => this.useAsModelThumb(current)}>
+            <span class="material-symbols-rounded" style="font-size:17px;">photo_camera</span> Sync model preview
+          </button>` : nothing}
           <button class="btn" @click=${() => (this.expandedShot = null)}>
             <span class="material-symbols-rounded" style="font-size:17px;">close</span> Close
           </button>
@@ -1228,6 +1274,13 @@ export class OppaiImageGen extends LitElement {
                         this.setMetaDefaults({ cfgScale: Number((e.target as HTMLInputElement).value) || 0 })} />
                   </div>
                   <div>
+                    <label class="field">CFG rescale</label>
+                    <input class="num" type="number" min="0" max="0.99" step="0.05"
+                      .value=${String(defaults.cfgRescale ?? "")}
+                      @input=${(e: Event) =>
+                        this.setMetaDefaults({ cfgRescale: Number((e.target as HTMLInputElement).value) || 0 })} />
+                  </div>
+                  <div>
                     <label class="field">Width</label>
                     <input class="num" type="number" min="64" max="2048" step="8" .value=${String(defaults.width ?? "")}
                       @input=${(e: Event) =>
@@ -1258,6 +1311,17 @@ export class OppaiImageGen extends LitElement {
                       ${(this.status?.vaes ?? []).map(
                         (v) => html`<option value=${v.key} ?selected=${v.key === defaults.vae}>${v.name}</option>`,
                       )}
+                    </select>
+                  </div>
+                  <div class="full">
+                    <label class="field">VAE precision</label>
+                    <select class="num" .value=${defaults.vaePrecision ?? ""}
+                      @change=${(e: Event) => this.setMetaDefaults({
+                        vaePrecision: (e.target as HTMLSelectElement).value as "fp32" | "fp16",
+                      })}>
+                      <option value="">No preference</option>
+                      <option value="fp32">fp32</option>
+                      <option value="fp16">fp16</option>
                     </select>
                   </div>
                 </div>
@@ -1304,7 +1368,7 @@ export class OppaiImageGen extends LitElement {
           ${this.renderModelSection(st.models ?? [])}
           ${this.renderLoraSection(st.loras ?? [], st.loraError)}
           ${this.renderVaeSection(st.vaes ?? [])}
-          ${this.renderSettingsSection()}
+          ${this.renderSettingsSection(invoke, st.boards ?? [])}
           ${this.renderTemplateSection(st.templates ?? [])}
           ${this.renderCharacterSection()}
         </aside>
@@ -1318,13 +1382,13 @@ export class OppaiImageGen extends LitElement {
                 </button>
               </div>`
             : nothing}
-          ${this.renderPrompt()}
-          ${this.error ? html`<div class="banner">${this.error}</div>` : nothing}
           ${this.renderResults()}
+          ${this.error ? html`<div class="banner">${this.error}</div>` : nothing}
+          ${this.renderPrompt()}
         </div>
         ${invoke
           ? html`<aside class="right">
-              <oppai-invoke-gallery></oppai-invoke-gallery>
+              <oppai-invoke-gallery @boards-changed=${() => this.loadStatus()}></oppai-invoke-gallery>
             </aside>`
           : nothing}
       </div>
@@ -1377,15 +1441,6 @@ export class OppaiImageGen extends LitElement {
                 ${this.renderArt(thumb, m.model_name, "texture")}
                 <div class="card-name">${m.model_name}${m.base ? html`<span class="row-sub">${m.base}</span>` : nothing}</div>
               </button>
-              <label class="card-edit" title="Upload a preview for this model">
-                <span class="material-symbols-rounded" style="font-size:15px;">photo_camera</span>
-                <input
-                  class="hidden-file"
-                  type="file"
-                  accept="image/*"
-                  @change=${(e: Event) => this.onUploadThumb(m.title, e)}
-                />
-              </label>
               <button class="card-edit left" title="Edit model settings" @click=${() => this.openMetaEditor(m.title)}>
                 <span class="material-symbols-rounded" style="font-size:15px;">edit</span>
               </button>
@@ -1408,9 +1463,12 @@ export class OppaiImageGen extends LitElement {
         </div>`,
       );
     }
+    const pages = Math.ceil(loras.length / 6);
+    const page = Math.min(this.loraPage, pages - 1);
+    const visible = loras.slice(page * 6, page * 6 + 6);
     const body = html`
       <div class="cards">
-        ${loras.map((lora) => {
+        ${visible.map((lora) => {
           const on = lora.name in this.selectedLoras;
           const thumb = `${api.loraThumbURL(lora.name)}&v=${this.thumbVersion}`;
           return html`
@@ -1419,11 +1477,6 @@ export class OppaiImageGen extends LitElement {
                 ${this.renderArt(thumb, lora.alias || lora.name, "style")}
                 <div class="card-name">${lora.alias || lora.name}</div>
               </button>
-              <label class="card-edit" title="Upload a preview for this LoRA">
-                <span class="material-symbols-rounded" style="font-size:15px;">photo_camera</span>
-                <input class="hidden-file" type="file" accept="image/*"
-                  @change=${(e: Event) => this.onUploadLoraThumb(lora.name, e)} />
-              </label>
               <button class="card-edit left" title="Edit LoRA settings" @click=${() => this.openMetaEditor(lora.name)}>
                 <span class="material-symbols-rounded" style="font-size:15px;">edit</span>
               </button>
@@ -1439,6 +1492,11 @@ export class OppaiImageGen extends LitElement {
           `;
         })}
       </div>
+      ${pages > 1 ? html`<div class="pager">
+        <button ?disabled=${page === 0} @click=${() => (this.loraPage = page - 1)}>Previous</button>
+        <span>${page + 1} / ${pages}</span>
+        <button ?disabled=${page >= pages - 1} @click=${() => (this.loraPage = page + 1)}>Next</button>
+      </div>` : nothing}
     `;
     return this.section("loras", "LoRAs", String(Object.keys(this.selectedLoras).length || loras.length), body);
   }
@@ -1465,7 +1523,7 @@ export class OppaiImageGen extends LitElement {
     return this.section("vaes", "VAEs", this.vae ? "1 picked" : "default", body);
   }
 
-  private renderSettingsSection() {
+  private renderSettingsSection(invoke: boolean, boards: GalleryBoard[]) {
     const body = html`
       <div class="settings">
         <div class="full">
@@ -1488,6 +1546,18 @@ export class OppaiImageGen extends LitElement {
           <input class="num" type="number" min="1" max="30" step="0.5" .value=${String(this.cfg)}
             @input=${(e: Event) => (this.cfg = clampFloat((e.target as HTMLInputElement).value, 1, 30, 7))} />
         </div>
+        ${invoke ? html`
+          <div>
+            <label class="field">CFG rescale</label>
+            <input class="num" type="number" min="0" max="0.99" step="0.05" .value=${String(this.cfgRescale)}
+              @input=${(e: Event) => (this.cfgRescale = clampFloat((e.target as HTMLInputElement).value, 0, 0.99, 0))} />
+          </div>
+          <div>
+            <label class="field">CLIP skip</label>
+            <input class="num" type="number" min="0" max="12" .value=${String(this.clipSkip)}
+              @input=${(e: Event) => (this.clipSkip = clampNum((e.target as HTMLInputElement).value, 0, 12, 0))} />
+          </div>
+        ` : nothing}
         <div>
           <label class="field">Count</label>
           <input class="num" type="number" min="1" max="8" .value=${String(this.count)}
@@ -1498,6 +1568,29 @@ export class OppaiImageGen extends LitElement {
           <input class="num" type="number" .value=${String(this.seed)}
             @input=${(e: Event) => (this.seed = clampNum((e.target as HTMLInputElement).value, -1, 2 ** 31, -1))} />
         </div>
+        ${invoke ? html`
+          <div class="full">
+            <label class="field">Add generations to gallery</label>
+            <select class="num" .value=${this.board}
+              @change=${(e: Event) => (this.board = (e.target as HTMLSelectElement).value)}>
+              ${boards.map((b) => html`<option value=${b.id}>${b.name}</option>`)}
+            </select>
+          </div>
+          <div>
+            <label class="field">VAE precision</label>
+            <select class="num" .value=${this.vaePrecision}
+              @change=${(e: Event) => (this.vaePrecision = (e.target as HTMLSelectElement).value as "fp32" | "fp16")}>
+              <option value="fp32">fp32 (safe)</option>
+              <option value="fp16">fp16 (faster)</option>
+            </select>
+          </div>
+          <label class="switch-row"><input type="checkbox" .checked=${this.cpuNoise}
+            @change=${(e: Event) => (this.cpuNoise = (e.target as HTMLInputElement).checked)} /> CPU noise</label>
+          <label class="switch-row"><input type="checkbox" .checked=${this.seamlessX}
+            @change=${(e: Event) => (this.seamlessX = (e.target as HTMLInputElement).checked)} /> Seamless X</label>
+          <label class="switch-row"><input type="checkbox" .checked=${this.seamlessY}
+            @change=${(e: Event) => (this.seamlessY = (e.target as HTMLInputElement).checked)} /> Seamless Y</label>
+        ` : nothing}
       </div>
     `;
     return this.section("settings", "Model settings", `${this.steps} steps`, body);
@@ -1627,6 +1720,11 @@ export class OppaiImageGen extends LitElement {
   }
 
   private renderPrompt() {
+    const triggerPhrases = [...new Set(
+      (this.status?.loras ?? [])
+        .filter((lora) => lora.name in this.selectedLoras)
+        .flatMap((lora) => lora.triggerPhrases ?? []),
+    )];
     return html`
       <div class="prompt-card">
         <div class="speech-row">
@@ -1657,6 +1755,15 @@ export class OppaiImageGen extends LitElement {
             placeholder="masterpiece, best quality, …"
             @input=${(e: Event) => (this.prompt = (e.target as HTMLTextAreaElement).value)}
           ></textarea>
+          ${triggerPhrases.length ? html`
+            <div class="sec-note" style="margin-top:8px;">LoRA trigger phrases</div>
+            <div class="chips">
+              ${triggerPhrases.map((phrase) => html`<button
+                class="chip ${this.selectedTriggers.includes(phrase) ? "on" : ""}"
+                title="Add or remove this trigger from the generated prompt"
+                @click=${() => this.toggleTrigger(phrase)}>${phrase}</button>`)}
+            </div>
+          ` : nothing}
         </div>
 
         <button class="adv-toggle" @click=${() => (this.showOptions = !this.showOptions)}>
@@ -1741,9 +1848,10 @@ export class OppaiImageGen extends LitElement {
                   >
                   ${shot.saved ? "Saved" : "Save"}
                 </button>
-                <button class="act" title="Use as this model's preview" @click=${() => this.useAsModelThumb(shot)}>
+                ${this.status?.backend === "invokeai" ? html`<button class="act"
+                  title="Set as this model's preview in InvokeAI" @click=${() => this.useAsModelThumb(shot)}>
                   <span class="material-symbols-rounded" style="font-size:16px;">photo_camera</span>
-                </button>
+                </button>` : nothing}
               </div>
             </div>
           `,

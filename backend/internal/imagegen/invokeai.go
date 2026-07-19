@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"strings"
 	"time"
@@ -43,13 +45,15 @@ type invokeModelRecord struct {
 // field is nullable there, hence the pointers. Main models carry the generation
 // settings; a LoRA's blob holds only a recommended weight.
 type invokeDefaultSettings struct {
-	Vae       *string  `json:"vae"`
-	Scheduler *string  `json:"scheduler"`
-	Steps     *int     `json:"steps"`
-	CfgScale  *float64 `json:"cfg_scale"`
-	Width     *int     `json:"width"`
-	Height    *int     `json:"height"`
-	Weight    *float64 `json:"weight"`
+	Vae          *string  `json:"vae"`
+	Scheduler    *string  `json:"scheduler"`
+	Steps        *int     `json:"steps"`
+	CfgScale     *float64 `json:"cfg_scale"`
+	CfgRescale   *float64 `json:"cfg_rescale_multiplier"`
+	Width        *int     `json:"width"`
+	Height       *int     `json:"height"`
+	Weight       *float64 `json:"weight"`
+	VaePrecision *string  `json:"vae_precision"`
 }
 
 func (d *invokeDefaultSettings) toModelDefaults() *ModelDefaults {
@@ -64,6 +68,9 @@ func (d *invokeDefaultSettings) toModelDefaults() *ModelDefaults {
 	if d.CfgScale != nil && *d.CfgScale > 0 {
 		out.CfgScale, any = *d.CfgScale, true
 	}
+	if d.CfgRescale != nil && *d.CfgRescale >= 0 {
+		out.CfgRescale, any = *d.CfgRescale, true
+	}
 	if d.Scheduler != nil && *d.Scheduler != "" {
 		out.Scheduler, any = *d.Scheduler, true
 	}
@@ -75,6 +82,9 @@ func (d *invokeDefaultSettings) toModelDefaults() *ModelDefaults {
 	}
 	if d.Vae != nil && *d.Vae != "" {
 		out.Vae, any = *d.Vae, true
+	}
+	if d.VaePrecision != nil && *d.VaePrecision != "" {
+		out.VaePrecision, any = *d.VaePrecision, true
 	}
 	if d.Weight != nil && *d.Weight != 0 {
 		out.Weight, any = *d.Weight, true
@@ -197,6 +207,58 @@ func (c *Client) invokeCover(ctx context.Context, base, name string) ([]byte, st
 	return data, resp.Header.Get("Content-Type"), nil
 }
 
+func (c *Client) invokeUpdateCover(ctx context.Context, base, name string, data []byte, contentType string) error {
+	records, err := c.invokeModelList(ctx, base)
+	if err != nil {
+		return err
+	}
+	key := ""
+	for _, r := range records {
+		if r.Key == name || (key == "" && r.Name == name) {
+			key = r.Key
+			if r.Key == name {
+				break
+			}
+		}
+	}
+	if key == "" {
+		return fmt.Errorf("no such model")
+	}
+	if contentType == "" {
+		contentType = http.DetectContentType(data)
+	}
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	h := make(textproto.MIMEHeader)
+	h.Set("Content-Disposition", `form-data; name="image"; filename="cover.png"`)
+	h.Set("Content-Type", contentType)
+	part, err := mw.CreatePart(h)
+	if err != nil {
+		return err
+	}
+	if _, err := part.Write(data); err != nil {
+		return err
+	}
+	if err := mw.Close(); err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch,
+		base+"/api/v2/models/i/"+url.PathEscape(key)+"/image", &body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return fmt.Errorf("image generator unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("InvokeAI returned %d while updating cover art", resp.StatusCode)
+	}
+	return nil
+}
+
 func recordToDetail(r invokeModelRecord) *ModelDetail {
 	d := &ModelDetail{
 		Key: r.Key, Name: r.Name, Base: r.Base, Type: r.Type,
@@ -273,6 +335,9 @@ func (c *Client) invokeUpdateModel(ctx context.Context, base, key string, ch Mod
 			if d.CfgScale > 0 {
 				settings["cfg_scale"] = d.CfgScale
 			}
+			if d.CfgRescale >= 0 {
+				settings["cfg_rescale_multiplier"] = d.CfgRescale
+			}
 			if d.Scheduler != "" {
 				settings["scheduler"] = d.Scheduler
 			}
@@ -284,6 +349,9 @@ func (c *Client) invokeUpdateModel(ctx context.Context, base, key string, ch Mod
 			}
 			if d.Vae != "" {
 				settings["vae"] = d.Vae
+			}
+			if d.VaePrecision != "" {
+				settings["vae_precision"] = d.VaePrecision
 			}
 			body["default_settings"] = settings
 		}
@@ -320,6 +388,22 @@ func (c *Client) invokeBoards(ctx context.Context, base string) ([]Board, error)
 		boards = append(boards, Board{ID: b.BoardID, Name: b.BoardName, Count: b.ImageCount})
 	}
 	return boards, nil
+}
+
+func (c *Client) invokeCreateBoard(ctx context.Context, base, name string) (*Board, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, fmt.Errorf("board name is required")
+	}
+	var raw struct {
+		BoardID    string `json:"board_id"`
+		BoardName  string `json:"board_name"`
+		ImageCount int    `json:"image_count"`
+	}
+	if err := c.postJSON(ctx, base+"/api/v1/boards/?board_name="+url.QueryEscape(name), map[string]any{}, &raw); err != nil {
+		return nil, err
+	}
+	return &Board{ID: raw.BoardID, Name: raw.BoardName, Count: raw.ImageCount}, nil
 }
 
 func (c *Client) invokeUncategorizedNames(ctx context.Context, base string) ([]string, error) {
@@ -454,7 +538,11 @@ func (c *Client) invokeLoras(ctx context.Context, base string) ([]Lora, error) {
 		if r.Type != "lora" {
 			continue
 		}
-		out = append(out, Lora{Name: r.Name, Alias: r.Name, Path: r.Key})
+		lora := Lora{Name: r.Name, Alias: r.Name, Path: r.Key, Base: r.Base, TriggerPhrases: r.TriggerPhrases}
+		if r.DefaultSettings != nil && r.DefaultSettings.Weight != nil {
+			lora.Weight = *r.DefaultSettings.Weight
+		}
+		out = append(out, lora)
 	}
 	return out, nil
 }
@@ -558,6 +646,18 @@ func buildInvokeGraph(main invokeModelRecord, vae *invokeModelRecord, loras []in
 		unetNode, clipNode = id, id
 	}
 
+	// Invoke's CLIP-skip control is available to SD1/SD2. It belongs after the
+	// LoRA chain so both positive and negative conditioning see the same CLIP.
+	if !sdxl && req.ClipSkip > 0 {
+		nodes["clip_skip"] = map[string]any{
+			"id": "clip_skip", "type": "clip_skip",
+			"skipped_layers":  req.ClipSkip,
+			"is_intermediate": true,
+		}
+		edge(clipNode, "clip", "clip_skip", "clip")
+		clipNode = "clip_skip"
+	}
+
 	if sdxl {
 		for id, prompt := range map[string]string{"pos": req.Prompt, "neg": req.NegativePrompt} {
 			// style == prompt mirrors InvokeAI's own linear UI, which concatenates
@@ -588,19 +688,42 @@ func buildInvokeGraph(main invokeModelRecord, vae *invokeModelRecord, loras []in
 	nodes["noise"] = map[string]any{
 		"id": "noise", "type": "noise",
 		"seed": 0, "width": req.Width, "height": req.Height,
-		"use_cpu":         true,
+		"use_cpu":         req.CPUNoise,
 		"is_intermediate": true,
 	}
 	nodes["denoise"] = map[string]any{
 		"id": "denoise", "type": "denoise_latents",
 		"steps": req.Steps, "cfg_scale": req.CfgScale,
-		"denoising_start": 0.0, "denoising_end": 1.0,
+		"cfg_rescale_multiplier": req.CfgRescale,
+		"denoising_start":        0.0, "denoising_end": 1.0,
 		"scheduler":       scheduler,
 		"is_intermediate": true,
 	}
 	edge("pos", "conditioning", "denoise", "positive_conditioning")
 	edge("neg", "conditioning", "denoise", "negative_conditioning")
 	edge("noise", "noise", "denoise", "noise")
+
+	// Seamless tiling patches the UNet and VAE as a pair, just like Invoke's
+	// advanced text-to-image panel. A selected standalone VAE enters the same node.
+	vaeNode := "model"
+	if vae != nil {
+		nodes["vae"] = map[string]any{
+			"id": "vae", "type": "vae_loader",
+			"vae_model":       invokeModelIdent(*vae),
+			"is_intermediate": true,
+		}
+		vaeNode = "vae"
+	}
+	if req.SeamlessX || req.SeamlessY {
+		nodes["seamless"] = map[string]any{
+			"id": "seamless", "type": "seamless",
+			"seamless_x": req.SeamlessX, "seamless_y": req.SeamlessY,
+			"is_intermediate": true,
+		}
+		edge(unetNode, "unet", "seamless", "unet")
+		edge(vaeNode, "vae", "seamless", "vae")
+		unetNode, vaeNode = "seamless", "seamless"
+	}
 	edge(unetNode, "unet", "denoise", "unet")
 
 	// fp32 decode: fp16 VAEs (SDXL's stock one especially, and SD 1.5 on some cards)
@@ -608,20 +731,46 @@ func buildInvokeGraph(main invokeModelRecord, vae *invokeModelRecord, loras []in
 	// in fp32 costs a moment and never blacks out.
 	nodes["l2i"] = map[string]any{
 		"id": "l2i", "type": "l2i",
-		"fp32":            true,
+		"fp32":            req.VAEPrecision != "fp16",
 		"is_intermediate": false,
 	}
-	edge("denoise", "latents", "l2i", "latents")
-	if vae != nil {
-		nodes["vae"] = map[string]any{
-			"id": "vae", "type": "vae_loader",
-			"vae_model":       invokeModelIdent(*vae),
-			"is_intermediate": true,
-		}
-		edge("vae", "vae", "l2i", "vae")
-	} else {
-		edge("model", "vae", "l2i", "vae")
+	if req.Board != "" && req.Board != "none" {
+		nodes["l2i"].(map[string]any)["board"] = map[string]any{"board_id": req.Board}
 	}
+	edge("denoise", "latents", "l2i", "latents")
+	edge(vaeNode, "vae", "l2i", "vae")
+
+	// Keep Invoke's gallery metadata as complete as its native text-to-image UI.
+	// Besides making generations reproducible, this is what lets gallery saves retain
+	// the prompt as library notes.
+	generationMode := "txt2img"
+	if sdxl {
+		generationMode = "sdxl_txt2img"
+	}
+	metadata := map[string]any{
+		"id": "metadata", "type": "core_metadata",
+		"generation_mode": generationMode,
+		"positive_prompt": req.Prompt, "negative_prompt": req.NegativePrompt,
+		"width": req.Width, "height": req.Height, "seed": 0,
+		"rand_device": map[bool]string{true: "cpu", false: "cuda"}[req.CPUNoise],
+		"cfg_scale":   req.CfgScale, "cfg_rescale_multiplier": req.CfgRescale,
+		"steps": req.Steps, "scheduler": scheduler,
+		"seamless_x": req.SeamlessX, "seamless_y": req.SeamlessY,
+		"clip_skip": req.ClipSkip, "model": invokeModelIdent(main),
+		"is_intermediate": true,
+	}
+	if vae != nil {
+		metadata["vae"] = invokeModelIdent(*vae)
+	}
+	if len(loras) > 0 {
+		picked := make([]map[string]any, 0, len(loras))
+		for _, lora := range loras {
+			picked = append(picked, map[string]any{"model": invokeModelIdent(lora.rec), "weight": lora.weight})
+		}
+		metadata["loras"] = picked
+	}
+	nodes["metadata"] = metadata
+	edge("metadata", "metadata", "l2i", "metadata")
 
 	return map[string]any{"id": "oppailib_txt2img", "nodes": nodes, "edges": edges}
 }
@@ -751,6 +900,7 @@ func (c *Client) invokeGenerate(ctx context.Context, base string, req GenerateRe
 			"runs":  1,
 			"data": [][]map[string]any{{
 				{"node_path": "noise", "field_name": "seed", "items": seeds},
+				{"node_path": "metadata", "field_name": "seed", "items": seeds},
 			}},
 		},
 	}

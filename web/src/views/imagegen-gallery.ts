@@ -24,6 +24,7 @@ export class OppaiInvokeGallery extends LitElement {
   @state() private error = "";
   @state() private expanded: GalleryImage | null = null;
   @state() private busy = false;
+  @state() private newBoard = "";
   /** Names saved to the library this session, so the button can say "Saved". */
   @state() private savedNames = new Set<string>();
 
@@ -61,6 +62,30 @@ export class OppaiInvokeGallery extends LitElement {
         display: flex;
         gap: 6px;
         flex-wrap: wrap;
+      }
+      .new-board {
+        display: flex;
+        gap: 6px;
+      }
+      .new-board input {
+        min-width: 0;
+        flex: 1;
+        border: 1px solid var(--oppai-border-strong);
+        border-radius: 9px;
+        background: var(--oppai-surface);
+        color: var(--oppai-text);
+        font: inherit;
+        font-size: 12px;
+        padding: 7px 9px;
+      }
+      .new-board button {
+        border: none;
+        border-radius: 9px;
+        background: var(--oppai-primary);
+        color: var(--oppai-on-primary);
+        font: inherit;
+        padding: 7px 10px;
+        cursor: pointer;
       }
       .board {
         border: 1px solid var(--oppai-border-strong);
@@ -228,6 +253,24 @@ export class OppaiInvokeGallery extends LitElement {
     void this.loadPage(true);
   }
 
+  private async createBoard() {
+    const name = this.newBoard.trim();
+    if (!name || this.busy) return;
+    this.busy = true;
+    this.error = "";
+    try {
+      const created = await api.createGalleryBoard(name);
+      this.newBoard = "";
+      await this.refresh();
+      this.pickBoard(created.id);
+      this.dispatchEvent(new CustomEvent("boards-changed", { bubbles: true, composed: true }));
+    } catch (e) {
+      this.error = (e as Error).message;
+    } finally {
+      this.busy = false;
+    }
+  }
+
   private async deleteImage(img: GalleryImage) {
     if (this.busy) return;
     if (!confirm("Delete this image from InvokeAI's gallery?")) return;
@@ -270,7 +313,7 @@ export class OppaiInvokeGallery extends LitElement {
           Invoke gallery
           <span class="count">${current ? `${this.total || current.count} images` : ""}</span>
         </div>
-        ${this.boards.length > 1
+        ${this.boards.length
           ? html`<div class="boards">
               ${this.boards.map(
                 (b) => html`<button class="board ${b.id === this.board ? "on" : ""}"
@@ -278,6 +321,12 @@ export class OppaiInvokeGallery extends LitElement {
               )}
             </div>`
           : nothing}
+        <div class="new-board">
+          <input maxlength="300" placeholder="New Invoke gallery" .value=${this.newBoard}
+            @input=${(e: Event) => (this.newBoard = (e.target as HTMLInputElement).value)}
+            @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter") void this.createBoard(); }} />
+          <button ?disabled=${this.busy || !this.newBoard.trim()} @click=${() => this.createBoard()}>Create</button>
+        </div>
         ${this.error ? html`<div class="err">${this.error}</div>` : nothing}
         ${this.items.length
           ? html`<div class="grid">

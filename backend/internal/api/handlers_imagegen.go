@@ -4,14 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -146,6 +143,11 @@ func (s *Server) handleImageGenStatus(w http.ResponseWriter, r *http.Request) {
 	if templates, err := s.imagegen.Templates(ctx, set.ImageGenURL); err == nil {
 		out["templates"] = templates
 	}
+	if backend == imagegen.KindInvokeAI {
+		if boards, err := s.imagegen.Boards(ctx, set.ImageGenURL); err == nil {
+			out["boards"] = boards
+		}
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -180,6 +182,13 @@ type generateReq struct {
 	Width          int       `json:"width"`
 	Height         int       `json:"height"`
 	CfgScale       float64   `json:"cfgScale"`
+	CfgRescale     float64   `json:"cfgRescale"`
+	ClipSkip       int       `json:"clipSkip"`
+	SeamlessX      bool      `json:"seamlessX"`
+	SeamlessY      bool      `json:"seamlessY"`
+	VAEPrecision   string    `json:"vaePrecision"`
+	CPUNoise       *bool     `json:"cpuNoise"`
+	Board          string    `json:"board"`
 	Seed           int64     `json:"seed"`
 	Count          int       `json:"count"`
 	Loras          []loraReq `json:"loras"`
@@ -226,6 +235,10 @@ func (s *Server) handleImageGenGenerate(w http.ResponseWriter, r *http.Request) 
 		promptRecord += fmt.Sprintf(" <lora:%s:%.2g>", name, weight)
 	}
 
+	cpuNoise := true // preserve Invoke's safe existing default for older clients
+	if req.CPUNoise != nil {
+		cpuNoise = *req.CPUNoise
+	}
 	gen := imagegen.GenerateRequest{
 		Prompt:         req.Prompt,
 		NegativePrompt: req.NegativePrompt,
@@ -236,6 +249,13 @@ func (s *Server) handleImageGenGenerate(w http.ResponseWriter, r *http.Request) 
 		Width:          req.Width,
 		Height:         req.Height,
 		CfgScale:       req.CfgScale,
+		CfgRescale:     req.CfgRescale,
+		ClipSkip:       req.ClipSkip,
+		SeamlessX:      req.SeamlessX,
+		SeamlessY:      req.SeamlessY,
+		VAEPrecision:   req.VAEPrecision,
+		CPUNoise:       cpuNoise,
+		Board:          req.Board,
 		Seed:           req.Seed,
 		Count:          req.Count,
 		Loras:          loras,
@@ -290,6 +310,15 @@ func clampGenerate(req *generateReq) {
 	}
 	if req.CfgScale > 30 {
 		req.CfgScale = 30
+	}
+	if req.CfgRescale < 0 {
+		req.CfgRescale = 0
+	} else if req.CfgRescale > 0.99 {
+		req.CfgRescale = 0.99
+	}
+	req.ClipSkip = clampInt(req.ClipSkip, 0, 12)
+	if req.VAEPrecision != "fp16" {
+		req.VAEPrecision = "fp32"
 	}
 	if req.Count <= 0 {
 		req.Count = 1
@@ -495,6 +524,34 @@ func (s *Server) handleGalleryBoards(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"boards": boards})
 }
 
+type galleryCreateBoardReq struct {
+	Name string `json:"name"`
+}
+
+func (s *Server) handleGalleryCreateBoard(w http.ResponseWriter, r *http.Request) {
+	base, ok := s.galleryBase(w)
+	if !ok {
+		return
+	}
+	var req galleryCreateBoardReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Name) == "" {
+		writeErr(w, http.StatusBadRequest, "board name is required")
+		return
+	}
+	if len([]rune(req.Name)) > 300 {
+		writeErr(w, http.StatusBadRequest, "board name is too long")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	board, err := s.imagegen.CreateBoard(ctx, base, req.Name)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, board)
+}
+
 func (s *Server) handleGalleryImages(w http.ResponseWriter, r *http.Request) {
 	base, ok := s.galleryBase(w)
 	if !ok {
@@ -658,27 +715,9 @@ func (s *Server) handleGallerySave(w http.ResponseWriter, r *http.Request) {
 
 // ── model (checkpoint) thumbnails ────────────────────────────────────────────
 //
-// A checkpoint is just a name in a picker; a preview image makes it recognisable. The
-// user sets one from a generated image (or an upload); it's stored encrypted, keyed by
-// the checkpoint name, under /config/model_thumbs. Not a library item — it's chrome
-// for the picker, so it lives beside the config rather than in the media table.
-
-// pickerThumbPath maps a resource name to its on-disk (encrypted) preview file. The
-// name is hashed so an arbitrary checkpoint title can't escape the directory or
-// collide with a control character.
-func (s *Server) pickerThumbPath(kind, name string) string {
-	sum := sha256.Sum256([]byte(kind + ":" + name))
-	return filepath.Join(s.modelThumbDir, hex.EncodeToString(sum[:])+".enc")
-}
-
-func (s *Server) modelThumbPath(model string) string {
-	// Preserve the original checkpoint hash scheme so existing user thumbnails keep
-	// working after LoRA thumbnails are introduced.
-	sum := sha256.Sum256([]byte(model))
-	return filepath.Join(s.modelThumbDir, hex.EncodeToString(sum[:])+".enc")
-}
-
-func (s *Server) loraThumbPath(name string) string { return s.pickerThumbPath("lora", name) }
+// These endpoints proxy InvokeAI's own model-manager cover art. A generated preview
+// may be promoted to cover art, but it is written back to InvokeAI rather than kept
+// in a separate OppaiLib thumbnail store.
 
 func (s *Server) handleGetModelThumb(w http.ResponseWriter, r *http.Request) {
 	model := r.URL.Query().Get("model")
@@ -686,7 +725,7 @@ func (s *Server) handleGetModelThumb(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "model is required")
 		return
 	}
-	s.servePickerThumb(w, r, s.modelThumbPath(model), "model-thumb", model)
+	s.servePickerThumb(w, r, model)
 }
 
 func (s *Server) handleGetLoraThumb(w http.ResponseWriter, r *http.Request) {
@@ -695,26 +734,13 @@ func (s *Server) handleGetLoraThumb(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "LoRA name is required")
 		return
 	}
-	s.servePickerThumb(w, r, s.loraThumbPath(name), "lora-thumb", name)
+	s.servePickerThumb(w, r, name)
 }
 
-// servePickerThumb serves a user-set (encrypted) preview if one exists, and otherwise
-// falls back to the cover art the generator itself keeps for that model — InvokeAI
-// lets users attach one to every model, and those should show up here without being
-// re-uploaded.
-func (s *Server) servePickerThumb(w http.ResponseWriter, r *http.Request, path, aad, name string) {
-	if blob, err := os.ReadFile(path); err == nil {
-		data, err := crypto.OpenBytes(s.kek, blob, []byte(aad))
-		if err != nil {
-			writeErr(w, http.StatusInternalServerError, "thumbnail unreadable")
-			return
-		}
-		w.Header().Set("Content-Type", safeInlineContentType(http.DetectContentType(data)))
-		w.Header().Set("Cache-Control", "private, max-age=60")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(data)
-		return
-	}
+// servePickerThumb always reads the generator's cover art. InvokeAI is the source of
+// truth for model and LoRA previews; OppaiLib no longer keeps an independent custom
+// thumbnail that can drift from Invoke's model manager.
+func (s *Server) servePickerThumb(w http.ResponseWriter, r *http.Request, name string) {
 	set := s.settings.Get()
 	if set.ImageGenEnabled {
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -735,8 +761,8 @@ func (s *Server) servePickerThumb(w http.ResponseWriter, r *http.Request, path, 
 
 type setModelThumbReq struct {
 	Model string `json:"model"`
-	// Exactly one source: PreviewID reuses a just-generated image; ImageData is a
-	// base64 image (a "data:...;base64," prefix is tolerated) for an upload.
+	// PreviewID reuses a just-generated image and pushes it into InvokeAI. ImageData
+	// remains only to return a clear error to older clients that try a local upload.
 	PreviewID string `json:"previewId"`
 	ImageData string `json:"imageData"`
 }
@@ -754,7 +780,7 @@ func (s *Server) handleSetModelThumb(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.setPickerThumb(w, req, s.modelThumbPath(req.Model), "model-thumb")
+	s.setPickerThumb(w, r, req)
 }
 
 func (s *Server) handleSetLoraThumb(w http.ResponseWriter, r *http.Request) {
@@ -767,46 +793,38 @@ func (s *Server) handleSetLoraThumb(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "LoRA name is required")
 		return
 	}
-	s.setPickerThumb(w, req, s.loraThumbPath(req.Model), "lora-thumb")
+	s.setPickerThumb(w, r, req)
 }
 
-func (s *Server) setPickerThumb(w http.ResponseWriter, req setModelThumbReq, path, aad string) {
-	var data []byte
-	switch {
-	case req.PreviewID != "":
-		p, ok := s.genCache.get(req.PreviewID)
-		if !ok {
-			writeErr(w, http.StatusNotFound, "preview expired or not found")
-			return
-		}
-		data = p.data
-	case req.ImageData != "":
-		raw, err := decodeDataImage(req.ImageData)
-		if err != nil {
-			writeErr(w, http.StatusBadRequest, "bad image data")
-			return
-		}
-		data = raw
-	default:
-		writeErr(w, http.StatusBadRequest, "need a previewId or imageData")
+func (s *Server) setPickerThumb(w http.ResponseWriter, r *http.Request, req setModelThumbReq) {
+	if req.ImageData != "" {
+		writeErr(w, http.StatusBadRequest, "custom thumbnail uploads are disabled; choose an InvokeAI-generated preview")
 		return
 	}
+	if req.PreviewID == "" {
+		writeErr(w, http.StatusBadRequest, "previewId is required")
+		return
+	}
+	p, ok := s.genCache.get(req.PreviewID)
+	if !ok {
+		writeErr(w, http.StatusNotFound, "preview expired or not found")
+		return
+	}
+	data := p.data
 	if len(data) == 0 || len(data) > maxModelThumbBytes {
 		writeErr(w, http.StatusBadRequest, "image is empty or too large")
 		return
 	}
 
-	blob, err := crypto.SealBytes(s.kek, data, []byte(aad))
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "encrypt failed")
+	set := s.settings.Get()
+	if !set.ImageGenEnabled {
+		writeErr(w, http.StatusServiceUnavailable, "image generation is not configured")
 		return
 	}
-	if err := os.MkdirAll(s.modelThumbDir, 0o755); err != nil {
-		writeErr(w, http.StatusInternalServerError, "storage error")
-		return
-	}
-	if err := os.WriteFile(path, blob, 0o600); err != nil {
-		writeErr(w, http.StatusInternalServerError, "write failed")
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	if err := s.imagegen.UpdateCover(ctx, set.ImageGenURL, req.Model, data, http.DetectContentType(data)); err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
