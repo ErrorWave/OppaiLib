@@ -95,6 +95,7 @@ fun LoginScreen(repo: Repository, onAuthed: () -> Unit, onMascot: (String) -> Un
                     try {
                         val res = repo.api.login(LoginRequest(username, password))
                         repo.saveSession(res.token)
+                        repo.saveReauthCredential(username, password)
                         onMascot("Welcome back, ${res.user.username}!")
                         onAuthed()
                     } catch (e: Exception) {

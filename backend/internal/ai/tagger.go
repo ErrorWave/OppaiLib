@@ -30,6 +30,7 @@ import (
 	"os"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,6 +41,55 @@ import (
 	"github.com/youruser/oppailib/internal/storage"
 	"github.com/youruser/oppailib/internal/thumbnail"
 )
+
+// AnalyzeAppearance tags an uploaded character reference without adding it to the
+// media library. Only person/appearance descriptors survive: scene metadata,
+// character identities, ratings, actions and photographed objects are deliberately
+// excluded so using the result in image generation doesn't recreate the source scene.
+func (m *Manager) AnalyzeAppearance(ctx context.Context, r io.Reader) ([]Suggestion, error) {
+	img, _, err := image.Decode(r)
+	if err != nil {
+		return nil, err
+	}
+	tags, err := m.tagger.Tag(ctx, img)
+	if err != nil {
+		return nil, err
+	}
+	tags = m.filter(tags)
+	out := make([]Suggestion, 0, len(tags))
+	for _, s := range tags {
+		if isAppearanceSuggestion(s) {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
+func isAppearanceSuggestion(s Suggestion) bool {
+	if s.Category != catGeneral {
+		return false
+	}
+	n := strings.ToLower(strings.ReplaceAll(s.Name, "_", " "))
+	// Appearance vocabulary is intentionally positive/allow-listed. This is much
+	// safer than trying to enumerate every possible object and action in Danbooru.
+	appearanceWords := []string{
+		"hair", "eyes", "eye", "skin", "face", "facial", "freckles", "mole", "makeup",
+		"lip", "lips", "mouth", "teeth", "fang", "fangs", "ear", "ears", "nose", "eyebrow", "eyebrows", "eyelash", "eyelashes",
+		"breast", "breasts", "chest", "waist", "hips", "thigh", "thighs", "legs", "arms", "muscular",
+		"slender", "curvy", "chubby", "tall", "short", "body", "tan", "pale",
+		"glasses", "tattoo", "tattoos", "piercing", "piercings", "scar", "scars", "beard", "mustache", "androgynous",
+		"female", "male", "woman", "man", "girl", "boy", "adult", "elf", "kemonomimi",
+		"shirt", "dress", "skirt", "pants", "shorts", "jacket", "coat", "uniform",
+		"swimsuit", "bikini", "lingerie", "underwear", "stockings", "gloves", "boots",
+		"shoes", "hat", "ribbon", "necklace", "earrings", "outfit", "clothes", "clothing",
+	}
+	for _, word := range appearanceWords {
+		if strings.Contains(" "+n+" ", " "+word+" ") {
+			return true
+		}
+	}
+	return false
+}
 
 // DefaultVideoFrames is how many frames a video is sampled at when the config
 // leaves it unset. Five spans a clip well without making a bulk import crawl.

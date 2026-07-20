@@ -1,7 +1,7 @@
 import { LitElement, html, css } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { api, getToken, setToken, type User } from "./api.js";
-import { libbyEmotionSrc, loadHideLibby } from "./libby.js";
+import { applyImageFallback, emotionEmoji, inferErrorEmotion, libbyAssetCandidates, loadHideLibby } from "./libby.js";
 import "./views/login.js";
 import "./views/library.js";
 
@@ -45,7 +45,6 @@ export class OppaiApp extends LitElement {
       object-fit: contain;
       object-position: bottom;
       transform-origin: 55% 100%;
-      animation: libby-talk .34s ease-in-out infinite alternate;
     }
     .speech {
       max-width: min(300px, 58vw);
@@ -63,7 +62,6 @@ export class OppaiApp extends LitElement {
     .mascot-talk.plain .speech { margin: 0 0 18px 0; }
     .libby-name { display: block; color: var(--md-sys-color-error); font-size: 11px; font-weight: 700; }
     @keyframes pop-in { from { opacity: 0; transform: translateY(24px) scale(.94); } }
-    @keyframes libby-talk { from { transform: rotate(-.5deg); } to { transform: translateY(-5px) rotate(.65deg); } }
     @media (max-width: 600px) {
       .mascot-talk img { width: 150px; }
       .speech { margin-bottom: 100px; }
@@ -166,18 +164,17 @@ export class OppaiApp extends LitElement {
     // This popup is the app's error surface, so hiding Libby can't hide the message —
     // it just drops the character: same bubble, no artwork, no name.
     const hideLibby = loadHideLibby();
+    const cue = inferErrorEmotion(this.mascotMessage);
+    const assets = libbyAssetCandidates(cue.emotion, cue.intensity);
     const mascot = this.mascotMessage
       ? html`<div class="mascot-talk ${this.mascotTone} ${hideLibby ? "plain" : ""}">
           <div class="speech" role=${this.mascotTone === "error" ? "alert" : "status"}>
-            ${hideLibby ? null : html`<span class="libby-name">LIBBY · 😟</span>`}${this.mascotMessage}
+            ${hideLibby ? null : html`<span class="libby-name">LIBBY · ${emotionEmoji(cue.emotion)} · ${cue.emotion} ${cue.intensity}</span>`}${this.mascotMessage}
           </div>
           ${hideLibby
             ? null
-            : html`<img src=${libbyEmotionSrc("neutral")} alt="Libby"
-                @error=${(e: Event) => {
-                  const img = e.target as HTMLImageElement;
-                  if (!img.src.endsWith("/mascot.png")) img.src = "/mascot.png";
-                }} />`}
+            : html`<img src=${assets[0]} data-fallback-index="0" alt=${`Libby feeling ${cue.emotion}`}
+              @error=${(e: Event) => applyImageFallback(e.target as HTMLImageElement, assets)} />`}
         </div>`
       : null;
     if (!this.ready) {

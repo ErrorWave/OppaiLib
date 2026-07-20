@@ -63,3 +63,73 @@ export function defaultLibbyArt(emotion: string): string {
     default: return "/mascot.png";
   }
 }
+
+export const LIBBY_EMOTIONS = [
+  "default", "happy", "sad", "worried", "surprised", "thinking", "mischievous", "horniness",
+] as const;
+
+export type LibbyEmotion = (typeof LIBBY_EMOTIONS)[number];
+export type LibbyTone = "success" | "error";
+
+export interface LibbyCue {
+  message: string;
+  tone: LibbyTone;
+  emotion: LibbyEmotion;
+  intensity: number;
+  outfit?: string;
+}
+
+const emoji: Record<LibbyEmotion, string> = {
+  default: "🙂", happy: "😊", sad: "😢", worried: "😟", surprised: "😮",
+  thinking: "🤔", mischievous: "😏", horniness: "🥵",
+};
+
+export function normalizeEmotion(value?: string): LibbyEmotion {
+  const emotion = (value ?? "").trim().toLowerCase();
+  return (LIBBY_EMOTIONS as readonly string[]).includes(emotion)
+    ? emotion as LibbyEmotion
+    : "default";
+}
+
+export function normalizeIntensity(value?: number): number {
+  return Math.max(1, Math.min(5, Math.round(Number(value) || 1)));
+}
+
+export function emotionEmoji(value?: string): string {
+  return emoji[normalizeEmotion(value)];
+}
+
+/** Outfit uploads may be GIF or PNG; the server preserves their media type. */
+export function libbyAssetCandidates(emotion?: string, intensity?: number, outfit = loadLibbyOutfit()): string[] {
+  const mood = normalizeEmotion(emotion);
+  const level = normalizeIntensity(intensity);
+  const paths: string[] = [];
+  if (outfit && outfit !== "default") {
+    paths.push(`/api/libby/outfits/${encodeURIComponent(outfit)}/emotions/${encodeURIComponent(mood)}`);
+  }
+  paths.push(
+    `/libby/default/${mood}-${level}.gif`,
+    `/libby/default/${mood}-${level}.png`,
+    `/libby/default/${mood}.gif`,
+    `/libby/default/${mood}.png`,
+    defaultLibbyArt(mood),
+    "/mascot.png",
+  );
+  return [...new Set(paths)];
+}
+
+export function inferErrorEmotion(message: string): Pick<LibbyCue, "emotion" | "intensity"> {
+  const text = message.toLowerCase();
+  if (/timed? out|unreachable|network|offline|couldn.t reach|connection/.test(text)) return { emotion: "worried", intensity: 4 };
+  if (/unauthori[sz]ed|session ended|sign in|password|login/.test(text)) return { emotion: "sad", intensity: 3 };
+  if (/invalid|missing|required|not found|doesn.t exist/.test(text)) return { emotion: "thinking", intensity: 2 };
+  if (/failed|error|couldn.t|can.t/.test(text)) return { emotion: "surprised", intensity: 3 };
+  return { emotion: "worried", intensity: 2 };
+}
+
+export function applyImageFallback(img: HTMLImageElement, candidates: string[]) {
+  const next = Number(img.dataset.fallbackIndex || "0") + 1;
+  if (next >= candidates.length) return;
+  img.dataset.fallbackIndex = String(next);
+  img.src = candidates[next];
+}

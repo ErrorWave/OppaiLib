@@ -2,7 +2,8 @@ import { LitElement, css, html, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { api, type ChatMessage, type ChatStatus } from "../api.js";
 import { iconStyles, motionStyles } from "../theme.js";
-import { defaultLibbyArt, libbyEmotionSrc, loadHideLibby } from "../libby.js";
+import { LIBBY_EMOTIONS, applyImageFallback, libbyAssetCandidates, loadHideLibby,
+  loadLibbyOutfit, normalizeEmotion, normalizeIntensity, type LibbyEmotion } from "../libby.js";
 
 // Each chat mode maps to one of Libby's emotions; the artwork for an emotion
 // comes from the worn outfit when one is selected (see libby.ts), falling back
@@ -18,6 +19,8 @@ const MODES = [
 export class OppaiChat extends LitElement {
   @state() private status: ChatStatus | null = null;
   @state() private mode = "sweet";
+  @state() private emotion: LibbyEmotion = "happy";
+  @state() private intensity = 1;
   @state() private messages: ChatMessage[] = [];
   @state() private draft = "";
   @state() private busy = false;
@@ -33,6 +36,8 @@ export class OppaiChat extends LitElement {
     .libby img { width:100%; min-height:0; flex:1; object-fit:contain; object-position:bottom; }
     .name { font-size:20px; font-weight:650; }
     .model { font-size:12px; color:var(--oppai-text-muted); margin-top:3px; overflow:hidden; text-overflow:ellipsis; }
+    .emotion-row { display:grid; gap:5px; margin-top:12px; }
+    select, input[type="range"] { width:100%; box-sizing:border-box; accent-color:var(--oppai-primary); }
     .modes { display:grid; grid-template-columns:1fr 1fr; gap:7px; margin-top:14px; }
     button { font:inherit; cursor:pointer; }
     .mode { border:1px solid var(--oppai-border-strong); border-radius:999px; padding:7px;
@@ -72,7 +77,9 @@ export class OppaiChat extends LitElement {
     const next: ChatMessage[] = [...this.messages, { role: "user", content }];
     this.messages = next; this.draft = ""; this.busy = true; this.error = "";
     try {
-      const result = await api.chat(this.mode, next);
+      const result = await api.chat(this.mode, next, this.emotion, this.intensity);
+      this.emotion = normalizeEmotion(result.emotion ?? this.emotion);
+      this.intensity = normalizeIntensity(result.intensity ?? this.intensity);
       this.messages = [...next, { role: "assistant", content: result.message }];
       await this.updateComplete;
       this.renderRoot.querySelector(".messages")?.scrollTo({ top: 1e9, behavior: "smooth" });
@@ -80,9 +87,7 @@ export class OppaiChat extends LitElement {
     finally { this.busy = false; }
   }
   render() {
-    const emotion = MODES.find((m) => m.id === this.mode)?.emotion ?? "neutral";
-    const reaction = libbyEmotionSrc(emotion);
-    const fallback = defaultLibbyArt(emotion);
+    const assets = libbyAssetCandidates(this.emotion, this.intensity, loadLibbyOutfit());
     // Hiding Libby drops her portrait; the mode picker stays, since modes change how
     // the assistant answers, not how it looks.
     const hideLibby = loadHideLibby();
@@ -91,13 +96,17 @@ export class OppaiChat extends LitElement {
         <div class="model">${this.status?.enabled ? this.status.model : "Local LLM not configured"}</div>
         <div class="modes">${MODES.map((m) => html`<button class="mode ${m.id === this.mode ? "on" : ""}"
           @click=${() => this.setMode(m.id)}>${m.label}</button>`)}</div></div>
-        ${hideLibby ? nothing : html`<img src=${reaction} alt="Libby"
-          @error=${(e: Event) => {
-            // An outfit without this emotion (or a stale outfit id) falls back to
-            // the bundled art; guard against looping if that somehow fails too.
-            const img = e.target as HTMLImageElement;
-            if (!img.src.endsWith(fallback)) img.src = fallback;
-          }} />`}
+        <div class="emotion-row">
+          <label>Emotion</label>
+          <select .value=${this.emotion} @change=${(e: Event) => (this.emotion = normalizeEmotion((e.target as HTMLSelectElement).value))}>
+            ${LIBBY_EMOTIONS.map((m) => html`<option value=${m}>${m === "horniness" ? "Horniness" : m[0].toUpperCase() + m.slice(1)}</option>`)}
+          </select>
+          <label>Intensity ${this.intensity}/5</label>
+          <input type="range" min="1" max="5" .value=${String(this.intensity)}
+            @input=${(e: Event) => (this.intensity = normalizeIntensity(Number((e.target as HTMLInputElement).value)))} />
+        </div>
+        ${hideLibby ? nothing : html`<img src=${assets[0]} data-fallback-index="0" alt=${`Libby feeling ${this.emotion}`}
+          @error=${(e: Event) => applyImageFallback(e.target as HTMLImageElement, assets)} />`}
       </aside>
       <section class="chat"><div class="messages">
         ${!this.status?.enabled ? html`<div class="empty">Configure a local OpenAI-compatible URL and model in Settings to chat with Libby.</div>` : nothing}

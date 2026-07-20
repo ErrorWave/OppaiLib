@@ -133,6 +133,8 @@ export class OppaiImageGen extends LitElement {
   @state() private optimizing = false;
 
   @state() private prompt = "";
+  @state() private tagSuggestions: string[] = [];
+  @state() private tagCorrection = "";
   @state() private negative = "";
   @state() private showOptions = false;
 
@@ -1807,8 +1809,17 @@ export class OppaiImageGen extends LitElement {
           <textarea
             .value=${this.prompt}
             placeholder="masterpiece, best quality, …"
-            @input=${(e: Event) => (this.prompt = (e.target as HTMLTextAreaElement).value)}
+            @input=${(e: Event) => {
+              this.prompt = (e.target as HTMLTextAreaElement).value;
+              void this.updateTagSuggestions();
+            }}
           ></textarea>
+          ${this.tagCorrection ? html`<div class="sec-note">Did you mean
+            <button class="chip" @click=${() => this.applySuggestedTag(this.tagCorrection)}>${this.tagCorrection}</button>?
+          </div>` : nothing}
+          ${this.tagSuggestions.length ? html`<div class="chips">
+            ${this.tagSuggestions.map((tag) => html`<button class="chip" @click=${() => this.applySuggestedTag(tag)}>${tag}</button>`)}
+          </div>` : nothing}
           ${triggerPhrases.length ? html`
             <div class="sec-note" style="margin-top:8px;">LoRA trigger phrases</div>
             <div class="chips">
@@ -1836,6 +1847,24 @@ export class OppaiImageGen extends LitElement {
           : html`<span class="material-symbols-rounded">auto_awesome</span> Generate`}
       </button>
     `;
+  }
+
+  private async updateTagSuggestions() {
+    const query = this.prompt.split(",").at(-1)?.trim() ?? "";
+    if (query.length < 2) { this.tagSuggestions = []; this.tagCorrection = ""; return; }
+    try {
+      const result = await api.booruTags(query);
+      this.tagSuggestions = result.suggestions;
+      this.tagCorrection = result.correction ?? "";
+    } catch { this.tagSuggestions = []; this.tagCorrection = ""; }
+  }
+
+  private applySuggestedTag(tag: string) {
+    const parts = this.prompt.split(",");
+    parts[parts.length - 1] = ` ${tag}`;
+    this.prompt = parts.join(",").trimStart() + ", ";
+    this.tagSuggestions = [];
+    this.tagCorrection = "";
   }
 
   private renderPromptOptions() {

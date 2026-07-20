@@ -61,6 +61,26 @@ class Prefs(context: Context) {
         get() = sp.getString(KEY_LIBBY_OUTFIT, "") ?: ""
         set(v) = sp.edit().putString(KEY_LIBBY_OUTFIT, v).apply()
 
+    var reauthUsername: String?
+        get() = sp.getString(KEY_REAUTH_USER, null)
+        private set(v) = sp.edit().putString(KEY_REAUTH_USER, v).apply()
+
+    var reauthPassword: String?
+        get() = sp.getString(KEY_REAUTH_PASSWORD, null)
+        private set(v) = sp.edit().putString(KEY_REAUTH_PASSWORD, v).apply()
+
+    val hasReauthCredential: Boolean
+        get() = !reauthUsername.isNullOrBlank() && !reauthPassword.isNullOrBlank()
+
+    fun saveReauthCredential(username: String, password: String) {
+        sp.edit().putString(KEY_REAUTH_USER, username).putString(KEY_REAUTH_PASSWORD, password).apply()
+    }
+
+    /** End only the active server session while retaining encrypted reauth credentials. */
+    fun clearActiveToken() {
+        sp.edit().remove(KEY_TOKEN).commit()
+    }
+
     // ── video ────────────────────────────────────────────────────────────
 
     /** How the frame fills the screen. See [VideoFit]. */
@@ -155,7 +175,7 @@ class Prefs(context: Context) {
     }
 
     fun clearSession() {
-        sp.edit().remove(KEY_TOKEN).commit()
+        sp.edit().remove(KEY_TOKEN).remove(KEY_REAUTH_USER).remove(KEY_REAUTH_PASSWORD).commit()
     }
 
     companion object {
@@ -168,6 +188,8 @@ class Prefs(context: Context) {
         private const val KEY_BIOMETRIC = "biometric_lock"
         private const val KEY_HIDE_LIBBY = "hide_libby"
         private const val KEY_LIBBY_OUTFIT = "libby_outfit"
+        private const val KEY_REAUTH_USER = "reauth_username"
+        private const val KEY_REAUTH_PASSWORD = "reauth_password"
         private const val KEY_COMIC_RTL = "comic_rtl"
         private const val KEY_COMIC_PAGE = "comic_page_"
         private const val KEY_VIDEO_FIT = "video_fit"

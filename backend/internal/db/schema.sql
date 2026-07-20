@@ -64,6 +64,25 @@ CREATE TABLE IF NOT EXISTS media (
 CREATE INDEX IF NOT EXISTS idx_media_kind    ON media(kind);
 CREATE INDEX IF NOT EXISTS idx_media_created ON media(created_at);
 
+CREATE TABLE IF NOT EXISTS game_gallery (
+    game_id  INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+    media_id INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (game_id, media_id)
+);
+CREATE INDEX IF NOT EXISTS idx_game_gallery_game ON game_gallery(game_id, position);
+
+-- Reusable image-generation character references. The original reference and the
+-- derived appearance-only prompt tags are encrypted at rest like media metadata.
+CREATE TABLE IF NOT EXISTS characters (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name_enc   BLOB NOT NULL,
+    tags_enc   BLOB NOT NULL,
+    image_enc  BLOB NOT NULL,
+    mime       TEXT NOT NULL DEFAULT 'image/jpeg',
+    created_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS tags (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     name     TEXT NOT NULL,

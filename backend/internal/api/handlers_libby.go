@@ -25,7 +25,9 @@ import (
 
 // libbyEmotions is the fixed emotion vocabulary — the five poses the clients
 // actually render (neutral is the popup/login pose; the rest map to chat modes).
-var libbyEmotions = []string{"neutral", "happy", "mischievous", "surprised", "thinking"}
+var libbyEmotions = []string{
+	"neutral", "default", "happy", "sad", "worried", "surprised", "thinking", "mischievous", "horniness",
+}
 
 func libbyEmotionValid(e string) bool {
 	for _, known := range libbyEmotions {

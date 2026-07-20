@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -35,6 +36,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -57,12 +59,22 @@ private val libbyModes = listOf(
     LibbyMode("bold", "Bold", "surprised", "mascot-surprised.png"),
     LibbyMode("roleplay", "Roleplay", "thinking", "mascot-thinking.png"),
 )
+private val libbyEmotions = listOf("default", "happy", "sad", "worried", "surprised", "thinking", "mischievous", "horniness")
+private fun libbyAsset(emotion: String) = when (emotion) {
+    "happy" -> "mascot-happy.png"
+    "mischievous", "horniness" -> "mascot-mischievous.png"
+    "surprised" -> "mascot-surprised.png"
+    "thinking", "worried" -> "mascot-thinking.png"
+    else -> "mascot.png"
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(repo: Repository, onBack: () -> Unit) {
     var status by remember { mutableStateOf<ChatStatus?>(null) }
     var mode by remember { mutableStateOf(libbyModes.first()) }
+    var emotion by remember { mutableStateOf(mode.emotion) }
+    var intensity by remember { mutableStateOf(1) }
     var messages by remember { mutableStateOf<List<ChatMessage>>(emptyList()) }
     var draft by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
@@ -90,8 +102,12 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
         busy = true
         error = ""
         scope.launch {
-            runCatching { repo.api.chat(ChatRequest(mode.id, next)) }
-                .onSuccess { messages = next + ChatMessage("assistant", it.message) }
+            runCatching { repo.api.chat(ChatRequest(mode.id, next, emotion, intensity)) }
+                .onSuccess {
+                    emotion = it.emotion.takeIf(libbyEmotions::contains) ?: "default"
+                    intensity = it.intensity.coerceIn(1, 5)
+                    messages = next + ChatMessage("assistant", it.message)
+                }
                 .onFailure { error = it.message ?: "Libby couldn't answer" }
             busy = false
         }
@@ -114,15 +130,15 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
             if (!repo.prefs.hideLibby) {
                 val outfit = repo.prefs.libbyOutfit
                 SubcomposeAsyncImage(
-                    model = if (outfit.isEmpty()) "file:///android_asset/${mode.asset}"
-                    else repo.libbyEmotionUrl(outfit, mode.emotion),
+                    model = if (outfit.isEmpty()) "file:///android_asset/${libbyAsset(emotion)}"
+                    else repo.libbyEmotionUrl(outfit, emotion),
                     imageLoader = repo.imageLoader,
                     contentDescription = "Libby",
                     contentScale = ContentScale.Fit,
                     modifier = Modifier.fillMaxWidth().height(180.dp),
                     error = {
                         AsyncImage(
-                            model = "file:///android_asset/${mode.asset}",
+                            model = "file:///android_asset/${libbyAsset(emotion)}",
                             contentDescription = "Libby",
                             contentScale = ContentScale.Fit,
                             modifier = Modifier.fillMaxWidth().height(180.dp),
@@ -135,8 +151,27 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 libbyModes.forEach { item ->
-                    AssistChip(onClick = { mode = item }, label = { Text(item.label) },
+                    AssistChip(onClick = { mode = item; emotion = item.emotion }, label = { Text(item.label) },
                         leadingIcon = if (item == mode) ({ Text("✓") }) else null)
+                }
+            }
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                libbyEmotions.forEach { item ->
+                    AssistChip(onClick = { emotion = item }, label = { Text(if (item == "horniness") "Horniness" else item.replaceFirstChar(Char::uppercase)) },
+                        leadingIcon = if (item == emotion) ({ Text("✓") }) else null)
+                }
+            }
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text("Intensity", modifier = Modifier.align(Alignment.CenterVertically))
+                (1..5).forEach { level ->
+                    AssistChip(onClick = { intensity = level }, label = { Text(level.toString()) },
+                        leadingIcon = if (level == intensity) ({ Text("✓") }) else null)
                 }
             }
             LazyColumn(

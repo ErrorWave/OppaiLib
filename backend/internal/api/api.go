@@ -170,6 +170,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/imagegen/model-thumb", s.requireAuth(s.handleSetModelThumb))
 	mux.HandleFunc("GET /api/imagegen/lora-thumb", s.requireAuth(s.handleGetLoraThumb))
 	mux.HandleFunc("PUT /api/imagegen/lora-thumb", s.requireAuth(s.handleSetLoraThumb))
+	mux.HandleFunc("GET /api/imagegen/tags", s.requireAuth(s.handleBooruTags))
 	// The character library: reusable prompt fragments with a name and a face. Not
 	// media items — they live encrypted beside the config, like model thumbnails.
 	mux.HandleFunc("GET /api/imagegen/characters", s.requireAuth(s.handleListCharacters))
@@ -205,6 +206,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/libby/outfits/{id}/emotions/{emotion}", s.requireAuth(s.handleGetLibbyEmotion))
 	mux.HandleFunc("PUT /api/libby/outfits/{id}/emotions/{emotion}", s.requireAuth(s.handleSetLibbyEmotion))
 	mux.HandleFunc("DELETE /api/libby/outfits/{id}/emotions/{emotion}", s.requireAuth(s.handleDeleteLibbyEmotion))
+
+	// Photos, GIFs, and videos uploaded by users for a game.
+	mux.HandleFunc("GET /api/media/{id}/gallery", s.requireAuth(s.handleListGameGallery))
+	mux.HandleFunc("POST /api/media/{id}/gallery", s.requireAuth(s.handleUploadGameGallery))
+	mux.HandleFunc("DELETE /api/media/{id}/gallery/{media}", s.requireAuth(s.handleRemoveGameGallery))
 
 	// Libby chat proxies only to the operator-configured local OpenAI-compatible
 	// endpoint. Conversation history lives in the clients, not in OppaiLib's DB.

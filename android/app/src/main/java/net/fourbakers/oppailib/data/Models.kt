@@ -177,10 +177,19 @@ data class HealthResponse(
 data class ChatMessage(val role: String, val content: String)
 
 @Serializable
-data class ChatRequest(val mode: String, val messages: List<ChatMessage>)
+data class ChatRequest(
+    val mode: String,
+    val messages: List<ChatMessage>,
+    val emotion: String = "default",
+    val intensity: Int = 1,
+)
 
 @Serializable
-data class ChatResponse(val message: String)
+data class ChatResponse(
+    val message: String,
+    val emotion: String = "default",
+    val intensity: Int = 1,
+)
 
 @Serializable
 data class ChatStatus(
@@ -418,6 +427,9 @@ data class GenSaveRequest(val id: String, val title: String = "", val tags: List
 
 @Serializable
 data class GenSaveResponse(val id: Long, val existed: Boolean = false)
+
+@Serializable
+data class TagSuggestions(val suggestions: List<String> = emptyList(), val correction: String = "")
 
 @Serializable
 data class UrlRequest(val url: String)

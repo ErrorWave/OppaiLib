@@ -41,6 +41,7 @@ class Repository(private val appContext: Context, val prefs: Prefs) {
     init { rebuild() }
 
     val hasSession: Boolean get() = prefs.token != null
+    val canBiometricReauth: Boolean get() = prefs.biometricLock && prefs.hasReauthCredential
 
     fun setServer(url: String) {
         baseUrl = normalize(url)
@@ -129,6 +130,23 @@ class Repository(private val appContext: Context, val prefs: Prefs) {
 
     fun saveSession(token: String) { prefs.token = token }
     fun clearSession() { prefs.clearSession() }
+    fun saveReauthCredential(username: String, password: String) = prefs.saveReauthCredential(username, password)
+
+    suspend fun closeSessionForReauth() {
+        try { if (hasSession) api.logout() }
+        catch (_: Exception) { /* local logout still wins if the server is unavailable */ }
+        finally { prefs.clearActiveToken() }
+    }
+
+    suspend fun reauthenticate(): Boolean {
+        val username = prefs.reauthUsername ?: return false
+        val password = prefs.reauthPassword ?: return false
+        return try {
+            val response = api.login(LoginRequest(username, password))
+            saveSession(response.token)
+            true
+        } catch (_: Exception) { false }
+    }
     fun report(message: String) { _errors.tryEmit(message) }
     fun notifyLibraryChanged() { _libraryChanges.tryEmit(Unit) }
 
