@@ -1,7 +1,7 @@
 import { LitElement, html, css, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { iconStyles, motionStyles } from "../theme.js";
-import { api, type GenLora, type GenModel, type GenPreview, type ImageGenStatus } from "../api.js";
+import { api, type GenCharacter, type GenLora, type GenModel, type GenPreview, type ImageGenStatus } from "../api.js";
 
 // ── Web Speech typings ─────────────────────────────────────────────────────────
 // The Speech Recognition API isn't in the standard DOM lib, and it's still vendor-
@@ -65,6 +65,11 @@ export class OppaiImageGen extends LitElement {
   @state() private status: ImageGenStatus | null = null;
   @state() private checkpoint = "";
   @state() private selectedLoras: Record<string, number> = {};
+  @state() private characters: GenCharacter[] = [];
+  @state() private selectedCharacters = new Set<number>();
+  @state() private newCharacterName = "";
+  @state() private analyzingCharacter = false;
+  @state() private tagSuggestions: string[] = [];
 
   @state() private speech = "";
   @state() private listening = false;
@@ -198,6 +203,13 @@ export class OppaiImageGen extends LitElement {
         background: var(--oppai-surface);
         color: var(--oppai-text);
       }
+      .character-add { width:180px; display:flex; flex-direction:column; gap:7px; flex:0 0 auto; }
+      .character-add input[type="text"] { width:100%; box-sizing:border-box; padding:9px; border-radius:9px;
+        border:1px solid var(--oppai-border-strong); background:var(--oppai-surface); color:var(--oppai-text); }
+      .character-tags { font-size:10px; color:var(--oppai-text-muted); padding:0 7px 7px; max-height:32px; overflow:hidden; }
+      .tag-suggestions { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+      .tag-suggestions button { border:1px solid var(--oppai-border); border-radius:999px; padding:5px 9px;
+        color:var(--oppai-text-dim); background:var(--oppai-surface); cursor:pointer; }
 
       /* Prompt block. */
       .prompt-card {
@@ -414,6 +426,12 @@ export class OppaiImageGen extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     void this.loadStatus();
+    void this.loadCharacters();
+  }
+
+  private async loadCharacters() {
+    try { this.characters = (await api.characters()).characters; }
+    catch { this.characters = []; }
   }
 
   disconnectedCallback() {
@@ -513,8 +531,12 @@ export class OppaiImageGen extends LitElement {
     this.generating = true;
     this.error = "";
     try {
+      const characterTags = this.characters
+        .filter((character) => this.selectedCharacters.has(character.id))
+        .flatMap((character) => character.tags);
+      const prompt = [...new Set([this.prompt.trim(), ...characterTags].filter(Boolean))].join(", ");
       const res = await api.generate({
-        prompt: this.prompt.trim(),
+        prompt,
         negativePrompt: this.negative.trim() || undefined,
         checkpoint: this.checkpoint || undefined,
         steps: this.steps,
@@ -605,6 +627,58 @@ export class OppaiImageGen extends LitElement {
     this.selectedLoras = next;
   }
 
+  private toggleCharacter(id: number) {
+    const next = new Set(this.selectedCharacters);
+    next.has(id) ? next.delete(id) : next.add(id);
+    this.selectedCharacters = next;
+  }
+
+  private async onCharacterPicture(e: Event) {
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    const name = this.newCharacterName.trim();
+    if (!file || !name || this.analyzingCharacter) return;
+    this.analyzingCharacter = true;
+    try {
+      const character = await api.createCharacter(name, file);
+      this.characters = [character, ...this.characters];
+      this.selectedCharacters = new Set([...this.selectedCharacters, character.id]);
+      this.newCharacterName = "";
+      this.showToast(character.tags.length
+        ? `Character created with ${character.tags.length} appearance tags`
+        : "Character created; the active tagger found no appearance tags");
+    } catch (err) { this.showToast((err as Error).message); }
+    finally { this.analyzingCharacter = false; }
+  }
+
+  private currentTagFragment(): string {
+    return this.prompt.split(",").at(-1)?.trim() ?? "";
+  }
+
+  private async suggestTags() {
+    const fragment = this.currentTagFragment();
+    if (fragment.length < 2 || fragment.startsWith("<lora:")) { this.tagSuggestions = []; return; }
+    try { this.tagSuggestions = (await api.booruTags(fragment)).suggestions; }
+    catch { this.tagSuggestions = []; }
+  }
+
+  private applyTag(tag: string) {
+    const parts = this.prompt.split(",");
+    parts[parts.length - 1] = ` ${tag}`;
+    this.prompt = parts.join(",").replace(/^\s+/, "");
+    this.tagSuggestions = [];
+  }
+
+  private async correctLastTag() {
+    const fragment = this.currentTagFragment();
+    if (fragment.length < 3 || fragment.startsWith("<lora:")) return;
+    try {
+      const result = await api.booruTags(fragment);
+      if (result.correction) this.applyTag(result.correction);
+    } catch { /* correction is optional; never block prompt entry */ }
+  }
+
   private showToast(msg: string) {
     this.toast = msg;
     setTimeout(() => (this.toast = ""), 2600);
@@ -643,6 +717,7 @@ export class OppaiImageGen extends LitElement {
     return html`
       ${this.renderModels(st.models ?? [])}
       ${this.renderLoras(st.loras ?? [], st.loraError)}
+      ${this.renderCharacters()}
       ${this.renderPrompt()}
       ${this.error ? html`<div class="banner">${this.error}</div>` : nothing}
       ${this.renderResults()}
@@ -731,6 +806,33 @@ export class OppaiImageGen extends LitElement {
     `;
   }
 
+  private renderCharacters() {
+    return html`
+      <div class="section-label">Characters</div>
+      <div class="models">
+        ${this.characters.map((character) => html`
+          <div class="model-wrap">
+            <button class="model ${this.selectedCharacters.has(character.id) ? "on" : ""}"
+              @click=${() => this.toggleCharacter(character.id)} title=${character.tags.join(", ")}>
+              <img class="model-art" src=${api.characterImageURL(character.id)} alt=${character.name} />
+              <div class="model-name">${character.name}</div>
+              <div class="character-tags">${character.tags.join(", ") || "No appearance tags"}</div>
+            </button>
+          </div>`)}
+        <div class="character-add">
+          <input type="text" placeholder="Character name" .value=${this.newCharacterName}
+            @input=${(e: Event) => (this.newCharacterName = (e.target as HTMLInputElement).value)} />
+          <label class="chip">
+            ${this.analyzingCharacter ? "Analyzing locally…" : "Upload reference picture"}
+            <input class="hidden-file" type="file" accept="image/*"
+              ?disabled=${!this.newCharacterName.trim() || this.analyzingCharacter}
+              @change=${(e: Event) => this.onCharacterPicture(e)} />
+          </label>
+          <small>Only appearance tags are kept; scene objects and actions are ignored.</small>
+        </div>
+      </div>`;
+  }
+
   private renderPrompt() {
     return html`
       <div class="section-label">Prompt</div>
@@ -761,8 +863,13 @@ export class OppaiImageGen extends LitElement {
           <textarea
             .value=${this.prompt}
             placeholder="masterpiece, best quality, …"
-            @input=${(e: Event) => (this.prompt = (e.target as HTMLTextAreaElement).value)}
+            @input=${(e: Event) => { this.prompt = (e.target as HTMLTextAreaElement).value; void this.suggestTags(); }}
+            @blur=${() => void this.correctLastTag()}
           ></textarea>
+          ${this.tagSuggestions.length ? html`<div class="tag-suggestions" aria-label="Booru tag suggestions">
+            ${this.tagSuggestions.map((tag) => html`<button @mousedown=${(e: Event) => e.preventDefault()}
+              @click=${() => this.applyTag(tag)}>${tag}</button>`)}
+          </div>` : nothing}
         </div>
 
         <button class="adv-toggle" @click=${() => (this.showAdvanced = !this.showAdvanced)}>

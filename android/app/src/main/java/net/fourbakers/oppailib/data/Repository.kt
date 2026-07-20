@@ -2,9 +2,13 @@ package net.fourbakers.oppailib.data
 
 import android.content.Context
 import coil.ImageLoader
+import coil.decode.GifDecoder
+import coil.decode.ImageDecoderDecoder
+import android.os.Build
 import kotlinx.serialization.json.Json
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.CancellationException
 import java.util.concurrent.TimeUnit
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
@@ -36,6 +40,7 @@ class Repository(private val appContext: Context, val prefs: Prefs) {
     init { rebuild() }
 
     val hasSession: Boolean get() = prefs.token != null
+    val canBiometricReauth: Boolean get() = prefs.biometricLock && prefs.hasReauthCredential
 
     fun setServer(url: String) {
         baseUrl = normalize(url)
@@ -51,6 +56,8 @@ class Repository(private val appContext: Context, val prefs: Prefs) {
      * so tiles should always ask for this rather than streaming the full original.
      */
     fun thumbUrl(id: Long): String = "${baseUrl}api/media/$id/thumb"
+    fun genPreviewUrl(id: String): String = "${baseUrl}api/imagegen/preview/${URLEncoder.encode(id, "UTF-8")}"
+    fun characterImageUrl(id: Long): String = "${baseUrl}api/imagegen/characters/$id/image"
 
     /** A single comic page, 1-based to match what the reader shows the user. */
     fun pageUrl(id: Long, page: Int): String = "${baseUrl}api/media/$id/page/$page"
@@ -92,6 +99,24 @@ class Repository(private val appContext: Context, val prefs: Prefs) {
     fun saveSession(token: String) { prefs.token = token }
     fun clearSession() { prefs.clearSession() }
 
+    fun saveReauthCredential(username: String, password: String) = prefs.saveReauthCredential(username, password)
+
+    suspend fun closeSessionForReauth() {
+        try { if (hasSession) api.logout() }
+        catch (_: Exception) { /* local logout still wins if the server is unavailable */ }
+        finally { prefs.clearActiveToken() }
+    }
+
+    suspend fun reauthenticate(): Boolean {
+        val username = prefs.reauthUsername ?: return false
+        val password = prefs.reauthPassword ?: return false
+        return try {
+            val response = api.login(LoginRequest(username, password))
+            saveSession(response.token)
+            true
+        } catch (_: Exception) { false }
+    }
+
     // ── client construction ──────────────────────────────────────────────
 
     private fun okHttp(): OkHttpClient =
@@ -113,12 +138,15 @@ class Repository(private val appContext: Context, val prefs: Prefs) {
                 prefs.token?.let { req.header("Authorization", "Bearer $it") }
                 try {
                     val response = chain.proceed(req.build())
-                    if (!response.isSuccessful && !response.request.url.encodedPath.endsWith("/api/auth/login")) {
+                    if (!response.isSuccessful && response.code != 499 &&
+                        !response.request.url.encodedPath.endsWith("/api/auth/login")) {
                         _errors.tryEmit("The server returned ${response.code}. Please try again.")
                     }
                     response
                 } catch (e: Exception) {
-                    if (!chain.request().url.encodedPath.endsWith("/api/auth/login")) {
+                    val cancelled = e is CancellationException ||
+                        e.message?.contains("cancel", ignoreCase = true) == true
+                    if (!cancelled && !chain.request().url.encodedPath.endsWith("/api/auth/login")) {
                         _errors.tryEmit(e.message ?: "Couldn't reach the server.")
                     }
                     throw e
@@ -135,7 +163,13 @@ class Repository(private val appContext: Context, val prefs: Prefs) {
             .addConverterFactory(json.asConverterFactory(contentType))
             .build()
             .create(ApiService::class.java)
-        imageLoader = ImageLoader.Builder(appContext).okHttpClient(client).build()
+        imageLoader = ImageLoader.Builder(appContext)
+            .okHttpClient(client)
+            .components {
+                if (Build.VERSION.SDK_INT >= 28) add(ImageDecoderDecoder.Factory())
+                else add(GifDecoder.Factory())
+            }
+            .build()
     }
 
     // ── upload helper ────────────────────────────────────────────────────

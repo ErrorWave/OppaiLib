@@ -43,6 +43,8 @@ export class OppaiViewer extends LitElement {
   @state() private editTags: string[] = [];
   @state() private newTag = "";
   @state() private screenshot = "";
+  @state() private userGallery: Media[] = [];
+  @state() private galleryUploading = false;
 
   // Comic reader: null while the archive is being probed, then either a page
   // count to read or readable=false (a .cbr/.pdf we can't open in-app).
@@ -590,6 +592,11 @@ export class OppaiViewer extends LitElement {
         max-height: 100%;
         object-fit: contain;
       }
+      .gallery-upload { margin-top:12px; display:inline-flex; align-items:center; gap:6px; cursor:pointer; }
+      .user-shot { position:relative; }
+      .user-shot video { width:100%; height:100%; object-fit:cover; background:#000; }
+      .remove-shot { position:absolute; right:4px; top:4px; border:0; border-radius:50%; color:#fff;
+        background:rgba(0,0,0,.7); width:26px; height:26px; cursor:pointer; }
     `,
   ];
 
@@ -629,6 +636,30 @@ export class OppaiViewer extends LitElement {
       .catch(() => (this.full = m));
     this.comic = null;
     if (m.kind === "comic") this.loadComic(m.id);
+    this.userGallery = [];
+    if (m.kind === "game") void this.loadGameGallery(m.id);
+  }
+
+  private async loadGameGallery(id: number) {
+    try {
+      const result = await api.gameGallery(id);
+      if (this.media.id === id) this.userGallery = result.items;
+    } catch { this.userGallery = []; }
+  }
+
+  private async uploadGameGallery(e: Event, gameID: number) {
+    const input = e.target as HTMLInputElement;
+    const files = [...(input.files ?? [])]; input.value = "";
+    if (!files.length || this.galleryUploading) return;
+    this.galleryUploading = true;
+    try {
+      for (const file of files) this.userGallery = [...this.userGallery, await api.uploadGameGallery(gameID, file)];
+    } finally { this.galleryUploading = false; }
+  }
+
+  private async removeGameGallery(gameID: number, mediaID: number) {
+    await api.removeGameGallery(gameID, mediaID);
+    this.userGallery = this.userGallery.filter((item) => item.id !== mediaID);
   }
 
   // --- Comic reader -------------------------------------------------------
@@ -1017,7 +1048,7 @@ export class OppaiViewer extends LitElement {
       </div>
       ${this.screenshot
         ? html`<button class="shot-lightbox" aria-label="Close screenshot" @click=${() => (this.screenshot = "")}>
-            <img src=${api.proxyURL(this.screenshot)} alt="Full-size game screenshot" />
+            <img src=${this.screenshot} alt="Full-size game screenshot" />
           </button>`
         : nothing}
     `;
@@ -1241,10 +1272,29 @@ export class OppaiViewer extends LitElement {
                       ${m.gallery.map((u) => html`<button
                         class="shot"
                         title="Open full-size screenshot"
-                        @click=${() => (this.screenshot = u)}
+                        @click=${() => (this.screenshot = api.proxyURL(u))}
                       ><img loading="lazy" src=${api.proxyURL(u)} alt="screenshot" /></button>`)}
                     </div>`
                   : nothing}
+                <div class="section-label">User gallery</div>
+                <div class="shots">
+                  ${this.userGallery.map((item) => html`<div class="shot user-shot">
+                    ${item.kind === "video"
+                      ? html`<video controls preload="metadata" src=${api.streamURL(item.id)}></video>`
+                      : html`<button class="shot" title="Open full-size upload"
+                          @click=${() => (this.screenshot = api.streamURL(item.id))}>
+                          <img loading="lazy" src=${api.thumbURL(item.id)} alt=${item.title} />
+                        </button>`}
+                    <button class="remove-shot" title="Remove from game gallery"
+                      @click=${() => void this.removeGameGallery(m.id, item.id)}>×</button>
+                  </div>`)}
+                </div>
+                <label class="btn-outline gallery-upload">
+                  <span class="material-symbols-rounded">add_photo_alternate</span>
+                  ${this.galleryUploading ? "Uploading…" : "Add photos or videos"}
+                  <input type="file" accept="image/*,video/*" multiple hidden ?disabled=${this.galleryUploading}
+                    @change=${(e: Event) => void this.uploadGameGallery(e, m.id)} />
+                </label>
                 ${m.source
                   ? html`<div class="meta-note">
                       Source:

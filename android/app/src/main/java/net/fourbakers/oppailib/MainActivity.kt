@@ -28,6 +28,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -36,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
@@ -132,8 +134,8 @@ private fun AppRoot(
     repo: Repository,
     biometric: (onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit,
 ) {
-    var authed by remember { mutableStateOf(repo.hasSession) }
-    var locked by remember { mutableStateOf(repo.hasSession && repo.prefs.biometricLock) }
+    var authed by remember { mutableStateOf(repo.hasSession || repo.canBiometricReauth) }
+    var locked by remember { mutableStateOf(repo.canBiometricReauth) }
     // Guards the lock re-arm against the biometric prompt's own lifecycle: on some devices
     // the system prompt drives the activity through ON_STOP, which would otherwise re-lock
     // (harmless) and, worse, race the success callback. While a prompt is in flight this
@@ -141,6 +143,9 @@ private fun AppRoot(
     var authInProgress by remember { mutableStateOf(false) }
     var lockError by remember { mutableStateOf<String?>(null) }
     var mascotMessage by remember { mutableStateOf("") }
+    var closeInProgress by remember { mutableStateOf(repo.hasSession && repo.canBiometricReauth) }
+    var resumePending by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(repo) {
         repo.errors.collect { mascotMessage = it }
@@ -157,7 +162,23 @@ private fun AppRoot(
         authInProgress = true
         lockError = null
         biometric(
-            { authInProgress = false; locked = false; mascotMessage = "Welcome back!" },
+            {
+                // The app intentionally ended its server session when it left the
+                // foreground. The system credential gates creation of a fresh one.
+                scope.launch {
+                    val ok = repo.hasSession || repo.reauthenticate()
+                    authInProgress = false
+                    if (ok) {
+                        locked = false
+                        authed = true
+                        mascotMessage = "Welcome back!"
+                    } else {
+                        locked = false
+                        authed = false
+                        mascotMessage = "Server reauthentication failed. Please sign in again."
+                    }
+                }
+            },
             { msg ->
                 authInProgress = false
                 lockError = msg
@@ -173,10 +194,25 @@ private fun AppRoot(
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_STOP ->
-                    if (authed && repo.prefs.biometricLock && !authInProgress) locked = true
-                Lifecycle.Event.ON_RESUME ->
-                    if (authed && locked && !authInProgress) unlock()
+                Lifecycle.Event.ON_STOP -> if (authed && !authInProgress && !closeInProgress) {
+                    locked = true
+                    closeInProgress = true
+                    scope.launch {
+                        repo.closeSessionForReauth()
+                        closeInProgress = false
+                        if (!repo.prefs.biometricLock) {
+                            repo.clearSession()
+                            locked = false
+                            authed = false
+                        } else if (resumePending) {
+                            resumePending = false
+                            unlock()
+                        }
+                    }
+                }
+                Lifecycle.Event.ON_RESUME -> if (authed && locked && !authInProgress) {
+                    if (closeInProgress) resumePending = true else unlock()
+                }
                 else -> {}
             }
         }
@@ -212,10 +248,36 @@ private fun AppRoot(
             MascotPopup(mascotMessage, Modifier.align(Alignment.BottomEnd))
         }
     }
+
+    // A force-stop cannot run ON_STOP cleanup. On the next cold start, retire any
+    // token left behind before showing the credential prompt, preserving the rule
+    // that a newly opened app always creates a freshly authenticated server session.
+    LaunchedEffect(Unit) {
+        if (closeInProgress) {
+            repo.closeSessionForReauth()
+            closeInProgress = false
+            if (resumePending || locked) {
+                resumePending = false
+                unlock()
+            }
+        }
+    }
 }
 
 @Composable
 private fun MascotPopup(message: String, modifier: Modifier = Modifier) {
+    val lower = message.lowercase()
+    val (emotion, intensity, fallback, emoji) = when {
+        lower.contains("timed out") || lower.contains("network") || lower.contains("reach") ->
+            listOf("worried", "4", "mascot-thinking.png", "😟")
+        lower.contains("sign in") || lower.contains("password") || lower.contains("session") ->
+            listOf("sad", "3", "mascot-thinking.png", "😢")
+        lower.contains("invalid") || lower.contains("missing") ->
+            listOf("thinking", "2", "mascot-thinking.png", "🤔")
+        lower.contains("welcome") -> listOf("happy", "1", "mascot-happy.png", "😊")
+        else -> listOf("surprised", "3", "mascot-surprised.png", "😮")
+    }
+    var gifMissing by remember(message) { mutableStateOf(false) }
     Row(
         modifier = modifier.padding(end = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.Bottom,
@@ -227,12 +289,14 @@ private fun MascotPopup(message: String, modifier: Modifier = Modifier) {
             shadowElevation = 8.dp,
             modifier = Modifier.widthIn(max = 240.dp).padding(bottom = 72.dp),
         ) {
-            Text(message, modifier = Modifier.padding(14.dp), style = MaterialTheme.typography.bodyMedium)
+            Text("$emoji  $message", modifier = Modifier.padding(14.dp), style = MaterialTheme.typography.bodyMedium)
         }
         AsyncImage(
-            model = "file:///android_asset/mascot.png",
+            model = if (gifMissing) "file:///android_asset/$fallback"
+                else "file:///android_asset/libby/default/$emotion-$intensity.gif",
             contentDescription = null,
             modifier = Modifier.size(width = 150.dp, height = 220.dp),
+            onError = { gifMissing = true },
         )
     }
 }

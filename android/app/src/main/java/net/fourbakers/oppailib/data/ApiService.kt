@@ -24,6 +24,25 @@ interface ApiService {
     @POST("api/chat")
     suspend fun chat(@Body body: ChatRequest): ChatResponse
 
+    @GET("api/imagegen/status")
+    suspend fun imageGenStatus(): ImageGenStatus
+
+    @GET("api/imagegen/tags")
+    suspend fun booruTags(@Query("q") query: String): TagSuggestions
+
+    @GET("api/imagegen/characters")
+    suspend fun characters(): CharactersResponse
+
+    @Multipart
+    @POST("api/imagegen/characters")
+    suspend fun createCharacter(@Part("name") name: RequestBody, @Part file: MultipartBody.Part): GenCharacter
+
+    @POST("api/imagegen/generate")
+    suspend fun generate(@Body body: GenerateRequest): GenerateResponse
+
+    @POST("api/imagegen/save")
+    suspend fun saveGenerated(@Body body: SaveGeneratedRequest)
+
     @POST("api/auth/login")
     suspend fun login(@Body body: LoginRequest): LoginResponse
 
@@ -63,6 +82,19 @@ interface ApiService {
         @Part file: MultipartBody.Part,
         @Part("title") title: RequestBody? = null,
     ): UploadResponse
+
+    @GET("api/media/{id}/gallery")
+    suspend fun gameGallery(@Path("id") gameId: Long): MediaListResponse
+
+    @Multipart
+    @POST("api/media/{id}/gallery")
+    suspend fun uploadGameGallery(
+        @Path("id") gameId: Long,
+        @Part file: MultipartBody.Part,
+    ): Media
+
+    @DELETE("api/media/{id}/gallery/{media}")
+    suspend fun removeGameGallery(@Path("id") gameId: Long, @Path("media") mediaId: Long)
 
     @POST("api/media/{id}/autotag")
     suspend fun autotag(@Path("id") id: Long): AutotagResponse

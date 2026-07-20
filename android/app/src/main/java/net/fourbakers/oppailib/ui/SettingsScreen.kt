@@ -184,7 +184,7 @@ fun SettingsScreen(repo: Repository, onBack: () -> Unit, onLogout: () -> Unit) {
             StatsBlock(stats)
 
             SectionHeader("Account")
-            SwitchRow("Require unlock", "Ask for your fingerprint or face when opening the app", biometric) {
+            SwitchRow("Require unlock", "End the server session when closed; use fingerprint or device PIN to reauthenticate", biometric) {
                 biometric = it; prefs.biometricLock = it
             }
             OutlinedTextField(

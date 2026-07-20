@@ -22,8 +22,15 @@ type chatMessage struct {
 }
 
 type chatRequest struct {
-	Mode     string        `json:"mode"`
-	Messages []chatMessage `json:"messages"`
+	Mode      string        `json:"mode"`
+	Messages  []chatMessage `json:"messages"`
+	Emotion   string        `json:"emotion,omitempty"`
+	Intensity int           `json:"intensity,omitempty"`
+}
+
+var libbyEmotions = map[string]bool{
+	"default": true, "happy": true, "sad": true, "worried": true,
+	"surprised": true, "thinking": true, "mischievous": true, "horniness": true,
 }
 
 var libbyModes = map[string]string{
@@ -58,6 +65,16 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "unknown Libby mode")
 		return
 	}
+	emotion := strings.ToLower(strings.TrimSpace(in.Emotion))
+	if !libbyEmotions[emotion] {
+		emotion = "default"
+	}
+	if in.Intensity < 1 {
+		in.Intensity = 1
+	} else if in.Intensity > 5 {
+		in.Intensity = 5
+	}
+	modePrompt += fmt.Sprintf(" Your current displayed emotion is %s at intensity %d of 5; let that subtly color your wording without announcing the setting.", emotion, in.Intensity)
 	if len(in.Messages) == 0 || len(in.Messages) > maxChatMessages {
 		writeErr(w, http.StatusBadRequest, "chat history must contain 1 to 80 messages")
 		return
@@ -109,7 +126,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, "local LLM returned no message")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"message": out.Choices[0].Message.Content})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":   out.Choices[0].Message.Content,
+		"emotion":   emotion,
+		"intensity": in.Intensity,
+	})
 }
 
 func truncateChatError(body []byte) string {

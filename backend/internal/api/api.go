@@ -136,6 +136,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/media/{id}/stream", s.requireAuth(s.handleStreamMedia))
 	mux.HandleFunc("GET /api/media/{id}/thumb", s.requireAuth(s.handleThumb))
 	mux.HandleFunc("POST /api/media/{id}/autotag", s.requireAuth(s.handleAutotag))
+	mux.HandleFunc("GET /api/media/{id}/gallery", s.requireAuth(s.handleListGameGallery))
+	mux.HandleFunc("POST /api/media/{id}/gallery", s.requireAuth(s.handleUploadGameGallery))
+	mux.HandleFunc("DELETE /api/media/{id}/gallery/{media}", s.requireAuth(s.handleRemoveGameGallery))
 
 	// Comics: read page-by-page out of the archive instead of downloading it.
 	mux.HandleFunc("GET /api/media/{id}/comic", s.requireAuth(s.handleComicInfo))
@@ -168,6 +171,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/imagegen/model-thumb", s.requireAuth(s.handleSetModelThumb))
 	mux.HandleFunc("GET /api/imagegen/lora-thumb", s.requireAuth(s.handleGetLoraThumb))
 	mux.HandleFunc("PUT /api/imagegen/lora-thumb", s.requireAuth(s.handleSetLoraThumb))
+	mux.HandleFunc("GET /api/imagegen/tags", s.requireAuth(s.handleBooruTags))
+	mux.HandleFunc("GET /api/imagegen/characters", s.requireAuth(s.handleListCharacters))
+	mux.HandleFunc("POST /api/imagegen/characters", s.requireAuth(s.handleCreateCharacter))
+	mux.HandleFunc("GET /api/imagegen/characters/{id}/image", s.requireAuth(s.handleCharacterImage))
+	mux.HandleFunc("DELETE /api/imagegen/characters/{id}", s.requireAuth(s.handleDeleteCharacter))
 
 	// Libby chat proxies only to the operator-configured local OpenAI-compatible
 	// endpoint. Conversation history lives in the clients, not in OppaiLib's DB.

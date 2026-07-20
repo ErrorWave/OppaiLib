@@ -177,10 +177,19 @@ data class HealthResponse(
 data class ChatMessage(val role: String, val content: String)
 
 @Serializable
-data class ChatRequest(val mode: String, val messages: List<ChatMessage>)
+data class ChatRequest(
+    val mode: String,
+    val messages: List<ChatMessage>,
+    val emotion: String = "default",
+    val intensity: Int = 1,
+)
 
 @Serializable
-data class ChatResponse(val message: String)
+data class ChatResponse(
+    val message: String,
+    val emotion: String = "default",
+    val intensity: Int = 1,
+)
 
 @Serializable
 data class ChatStatus(
@@ -188,6 +197,56 @@ data class ChatStatus(
     val model: String = "",
     val modes: List<String> = emptyList(),
 )
+
+@Serializable
+data class GenModel(val title: String, @SerialName("model_name") val modelName: String)
+
+@Serializable
+data class GenLora(val name: String, val alias: String = "")
+
+@Serializable
+data class ImageGenStatus(
+    val enabled: Boolean = false,
+    val reachable: Boolean = false,
+    val error: String = "",
+    val models: List<GenModel> = emptyList(),
+    val loras: List<GenLora> = emptyList(),
+)
+
+@Serializable
+data class GenCharacter(val id: Long, val name: String, val tags: List<String> = emptyList(), val createdAt: Long = 0)
+
+@Serializable
+data class CharactersResponse(val characters: List<GenCharacter> = emptyList())
+
+@Serializable
+data class GenLoraSelection(val name: String, val weight: Double = 1.0)
+
+@Serializable
+data class GenerateRequest(
+    val prompt: String,
+    val negativePrompt: String = "",
+    val checkpoint: String = "",
+    val width: Int = 512,
+    val height: Int = 768,
+    val steps: Int = 25,
+    val cfgScale: Double = 7.0,
+    val seed: Long = -1,
+    val count: Int = 1,
+    val loras: List<GenLoraSelection> = emptyList(),
+)
+
+@Serializable
+data class GenPreview(val id: String, val seed: Long = -1)
+
+@Serializable
+data class GenerateResponse(val images: List<GenPreview> = emptyList(), val prompt: String = "")
+
+@Serializable
+data class SaveGeneratedRequest(val id: String, val title: String = "Generated image")
+
+@Serializable
+data class TagSuggestions(val suggestions: List<String> = emptyList(), val correction: String = "")
 
 @Serializable
 data class UrlRequest(val url: String)

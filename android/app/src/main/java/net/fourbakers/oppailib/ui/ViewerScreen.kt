@@ -2,6 +2,8 @@ package net.fourbakers.oppailib.ui
 
 import android.app.Activity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -126,6 +128,8 @@ import net.fourbakers.oppailib.data.ComicInfo
 import net.fourbakers.oppailib.data.Media
 import net.fourbakers.oppailib.data.MediaPatch
 import net.fourbakers.oppailib.data.Repository
+import net.fourbakers.oppailib.util.copyUriToCache
+import net.fourbakers.oppailib.util.mimeOf
 import net.fourbakers.oppailib.data.VideoFit
 import java.net.URI
 
@@ -320,6 +324,28 @@ private fun MediaPage(
 private fun GamePage(repo: Repository, media: Media) {
     val uriHandler = LocalUriHandler.current
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var userGallery by remember(media.id) { mutableStateOf<List<Media>>(emptyList()) }
+    var uploading by remember(media.id) { mutableStateOf(false) }
+    LaunchedEffect(media.id) {
+        runCatching { repo.api.gameGallery(media.id).items }.onSuccess { userGallery = it }
+    }
+    val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNullOrEmpty() || uploading) return@rememberLauncherForActivityResult
+        uploading = true
+        scope.launch {
+            try {
+                for (uri in uris) {
+                    val (file, _) = copyUriToCache(context, uri)
+                    try {
+                        userGallery = userGallery + repo.api.uploadGameGallery(
+                            media.id, repo.filePart(file, mimeOf(context, uri)),
+                        )
+                    } finally { file.delete() }
+                }
+            } finally { uploading = false }
+        }
+    }
 
     Column(
         Modifier
@@ -387,6 +413,40 @@ private fun GamePage(repo: Repository, media: Media) {
                 }
             }
         }
+
+        Text(
+            "User gallery",
+            color = Color.White,
+            style = MaterialTheme.typography.titleSmall,
+            modifier = Modifier.align(Alignment.Start).padding(top = 24.dp, bottom = 8.dp),
+        )
+        if (userGallery.isNotEmpty()) {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(userGallery, key = { it.id }) { item ->
+                    Box {
+                        AsyncImage(
+                            model = ImageRequest.Builder(context).data(repo.thumbUrl(item.id)).crossfade(true).build(),
+                            imageLoader = repo.imageLoader,
+                            contentDescription = item.title,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.height(140.dp).width(240.dp).clip(RoundedCornerShape(10.dp)),
+                        )
+                        IconButton(
+                            onClick = { scope.launch {
+                                runCatching { repo.api.removeGameGallery(media.id, item.id) }
+                                    .onSuccess { userGallery = userGallery.filterNot { it.id == item.id } }
+                            } },
+                            modifier = Modifier.align(Alignment.TopEnd),
+                        ) { Icon(Icons.Filled.Close, "Remove from game gallery", tint = Color.White) }
+                    }
+                }
+            }
+        }
+        Button(
+            onClick = { galleryLauncher.launch(arrayOf("image/*", "video/*")) },
+            enabled = !uploading,
+            modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+        ) { Text(if (uploading) "Uploading…" else "Add photos or videos") }
 
         Spacer(Modifier.height(120.dp)) // clear the chrome's bottom bar
     }

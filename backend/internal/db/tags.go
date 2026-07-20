@@ -7,6 +7,32 @@ import (
 	"github.com/youruser/oppailib/internal/models"
 )
 
+// SearchTagNames feeds prompt autocomplete from tags this installation has already
+// seen. The imagegen package merges these with its built-in Booru baseline.
+func (d *DB) SearchTagNames(ctx context.Context, query string, limit int) ([]string, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	rows, err := d.sql.QueryContext(ctx, `
+		SELECT DISTINCT name FROM tags
+		WHERE lower(name) LIKE '%' || lower(?) || '%'
+		ORDER BY CASE WHEN lower(name) LIKE lower(?) || '%' THEN 0 ELSE 1 END, name
+		LIMIT ?`, query, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out = append(out, name)
+	}
+	return out, rows.Err()
+}
+
 // ensureTag returns the id of the (name, category) tag, creating it if absent.
 func (d *DB) ensureTag(ctx context.Context, name, category string) (int64, error) {
 	var tagID int64

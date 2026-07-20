@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -25,6 +26,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
@@ -55,12 +57,18 @@ private val libbyModes = listOf(
     LibbyMode("bold", "Bold", "mascot-surprised.png"),
     LibbyMode("roleplay", "Roleplay", "mascot-thinking.png"),
 )
+private val libbyEmotions = listOf("default", "happy", "sad", "worried", "surprised", "thinking", "mischievous", "horniness")
+private val libbyOutfits = listOf("default", "casual", "sleepwear", "beach")
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(repo: Repository, onBack: () -> Unit) {
     var status by remember { mutableStateOf<ChatStatus?>(null) }
     var mode by remember { mutableStateOf(libbyModes.first()) }
+    var emotion by remember { mutableStateOf("happy") }
+    var intensity by remember { mutableStateOf(1) }
+    var outfit by remember { mutableStateOf("default") }
+    var emotionAssetMissing by remember { mutableStateOf(false) }
     var messages by remember { mutableStateOf<List<ChatMessage>>(emptyList()) }
     var draft by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
@@ -88,8 +96,13 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
         busy = true
         error = ""
         scope.launch {
-            runCatching { repo.api.chat(ChatRequest(mode.id, next)) }
-                .onSuccess { messages = next + ChatMessage("assistant", it.message) }
+            runCatching { repo.api.chat(ChatRequest(mode.id, next, emotion, intensity)) }
+                .onSuccess {
+                    messages = next + ChatMessage("assistant", it.message)
+                    emotion = it.emotion.takeIf { mood -> mood in libbyEmotions } ?: "default"
+                    intensity = it.intensity.coerceIn(1, 5)
+                    emotionAssetMissing = false
+                }
                 .onFailure { error = it.message ?: "Libby couldn't answer" }
             busy = false
         }
@@ -107,10 +120,12 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
     }) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
             AsyncImage(
-                model = "file:///android_asset/${mode.asset}",
+                model = if (emotionAssetMissing) "file:///android_asset/${mode.asset}"
+                    else "file:///android_asset/libby/$outfit/$emotion-$intensity.gif",
                 contentDescription = "Libby",
                 contentScale = ContentScale.Fit,
                 modifier = Modifier.fillMaxWidth().height(180.dp),
+                onError = { emotionAssetMissing = true },
             )
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 12.dp),
@@ -120,6 +135,41 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
                     AssistChip(onClick = { mode = item }, label = { Text(item.label) },
                         leadingIcon = if (item == mode) ({ Text("✓") }) else null)
                 }
+            }
+            LazyRow(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                items(libbyOutfits) { choice -> AssistChip(
+                    onClick = { outfit = choice; emotionAssetMissing = false },
+                    label = { Text(choice.replaceFirstChar { it.uppercase() }) },
+                    leadingIcon = if (choice == outfit) ({ Text("✓") }) else null,
+                ) }
+            }
+            LazyRow(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                items(libbyEmotions) { mood ->
+                    AssistChip(
+                        onClick = { emotion = mood; emotionAssetMissing = false },
+                        label = { Text(if (mood == "horniness") "Horniness" else mood.replaceFirstChar { it.uppercase() }) },
+                        leadingIcon = if (mood == emotion) ({ Text("✓") }) else null,
+                    )
+                }
+            }
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Emotion $intensity/5", style = MaterialTheme.typography.labelSmall)
+                Slider(
+                    value = intensity.toFloat(),
+                    onValueChange = { intensity = it.toInt().coerceIn(1, 5); emotionAssetMissing = false },
+                    valueRange = 1f..5f,
+                    steps = 3,
+                    modifier = Modifier.weight(1f).padding(start = 8.dp),
+                )
             }
             LazyColumn(
                 state = list,

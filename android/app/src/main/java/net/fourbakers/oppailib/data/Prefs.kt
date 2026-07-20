@@ -39,6 +39,21 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(KEY_BIOMETRIC, false)
         set(v) = sp.edit().putBoolean(KEY_BIOMETRIC, v).apply()
 
+    var reauthUsername: String?
+        get() = sp.getString(KEY_REAUTH_USER, null)
+        set(v) = sp.edit().putString(KEY_REAUTH_USER, v).apply()
+
+    var reauthPassword: String?
+        get() = sp.getString(KEY_REAUTH_PASSWORD, null)
+        set(v) = sp.edit().putString(KEY_REAUTH_PASSWORD, v).apply()
+
+    val hasReauthCredential: Boolean
+        get() = !reauthUsername.isNullOrBlank() && !reauthPassword.isNullOrEmpty()
+
+    fun saveReauthCredential(username: String, password: String) {
+        sp.edit().putString(KEY_REAUTH_USER, username).putString(KEY_REAUTH_PASSWORD, password).apply()
+    }
+
     // ── video ────────────────────────────────────────────────────────────
 
     /** How the frame fills the screen. See [VideoFit]. */
@@ -133,8 +148,10 @@ class Prefs(context: Context) {
     }
 
     fun clearSession() {
-        sp.edit().remove(KEY_TOKEN).apply()
+        sp.edit().remove(KEY_TOKEN).remove(KEY_REAUTH_USER).remove(KEY_REAUTH_PASSWORD).apply()
     }
+
+    fun clearActiveToken() { sp.edit().remove(KEY_TOKEN).apply() }
 
     companion object {
         const val DEFAULT_BUFFER_SECONDS = 30
@@ -144,6 +161,8 @@ class Prefs(context: Context) {
         private const val KEY_SERVER = "server_url"
         private const val KEY_TOKEN = "token"
         private const val KEY_BIOMETRIC = "biometric_lock"
+        private const val KEY_REAUTH_USER = "reauth_username"
+        private const val KEY_REAUTH_PASSWORD = "reauth_password"
         private const val KEY_COMIC_RTL = "comic_rtl"
         private const val KEY_COMIC_PAGE = "comic_page_"
         private const val KEY_VIDEO_FIT = "video_fit"
