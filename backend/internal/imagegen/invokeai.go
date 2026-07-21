@@ -411,6 +411,24 @@ func (c *Client) invokeCreateBoard(ctx context.Context, base, name string) (*Boa
 	return &Board{ID: raw.BoardID, Name: raw.BoardName, Count: raw.ImageCount}, nil
 }
 
+// invokeDeleteBoard removes a gallery board. The images it held are not deleted —
+// InvokeAI moves them back to the uncategorized pile (include_images defaults false).
+func (c *Client) invokeDeleteBoard(ctx context.Context, base, boardID string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, base+"/api/v1/boards/"+url.PathEscape(boardID), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return fmt.Errorf("image generator unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return fmt.Errorf("InvokeAI returned %d deleting the board", resp.StatusCode)
+	}
+	return nil
+}
+
 func (c *Client) invokeUncategorizedNames(ctx context.Context, base string) ([]string, error) {
 	var names []string
 	if err := c.getJSON(ctx, base+"/api/v1/boards/none/image_names", &names); err != nil {

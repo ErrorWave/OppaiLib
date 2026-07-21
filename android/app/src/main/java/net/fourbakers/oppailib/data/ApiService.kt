@@ -167,6 +167,10 @@ interface ApiService {
     @GET("api/imagegen/gallery/boards")
     suspend fun galleryBoards(): GalleryBoardsResponse
 
+    /** Deletes a gallery board; its images survive, moved back to Uncategorized. */
+    @DELETE("api/imagegen/gallery/boards/{id}")
+    suspend fun deleteGalleryBoard(@Path("id") id: String)
+
     @GET("api/imagegen/gallery/images")
     suspend fun galleryImages(
         @Query("board") board: String,

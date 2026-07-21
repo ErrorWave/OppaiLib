@@ -75,6 +75,7 @@ fun InvokeGalleryTab(repo: Repository, refreshKey: Int, onSaved: () -> Unit) {
     var selecting by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
     var moveMenuOpen by remember { mutableStateOf(false) }
+    var confirmDeleteBoard by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     suspend fun loadPage(reset: Boolean) {
@@ -156,6 +157,22 @@ fun InvokeGalleryTab(repo: Repository, refreshKey: Int, onSaved: () -> Unit) {
         }
     }
 
+    // Deletes the currently-viewed board. Its images aren't lost — the server hands
+    // them back to Uncategorized — then we drop to that pile and reload.
+    fun deleteBoard() {
+        val target = board
+        if (target == "none") return
+        scope.launch {
+            runCatching { repo.api.deleteGalleryBoard(target) }
+                .onSuccess {
+                    items = emptyList()
+                    board = "none" // triggers the reload that refreshes the board list
+                    repo.report("Gallery deleted", "happy")
+                }
+                .onFailure { repo.report(it.message ?: "Couldn't delete the gallery") }
+        }
+    }
+
     Column(Modifier.fillMaxSize().padding(horizontal = 14.dp)) {
         // Select / done toggle, and the batch action bar while selecting.
         if (items.isNotEmpty()) {
@@ -200,15 +217,30 @@ fun InvokeGalleryTab(repo: Repository, refreshKey: Int, onSaved: () -> Unit) {
         }
         if (boards.size > 1) {
             Row(
-                Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                boards.forEach { b ->
-                    FilterChip(
-                        selected = board == b.id,
-                        onClick = { if (board != b.id) { items = emptyList(); board = b.id } },
-                        label = { Text(if (b.count > 0) "${b.name} · ${b.count}" else b.name) },
-                    )
+                Row(
+                    Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    boards.forEach { b ->
+                        FilterChip(
+                            selected = board == b.id,
+                            onClick = { if (board != b.id) { items = emptyList(); board = b.id } },
+                            label = { Text(if (b.count > 0) "${b.name} · ${b.count}" else b.name) },
+                        )
+                    }
+                }
+                // "none" is the Uncategorized pile, not a real board — it can't be deleted.
+                if (board != "none") {
+                    IconButton(onClick = { confirmDeleteBoard = true }) {
+                        Icon(
+                            Icons.Filled.Delete,
+                            contentDescription = "Delete this gallery",
+                            tint = MaterialTheme.colorScheme.error,
+                        )
+                    }
                 }
             }
         }
@@ -294,6 +326,23 @@ fun InvokeGalleryTab(repo: Repository, refreshKey: Int, onSaved: () -> Unit) {
                 }
             }
         }
+    }
+
+    if (confirmDeleteBoard) {
+        val name = boards.find { it.id == board }?.name ?: "this gallery"
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirmDeleteBoard = false },
+            title = { Text("Delete gallery?") },
+            text = { Text("“$name” will be removed. Its images move back to Uncategorized.") },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = { confirmDeleteBoard = false; deleteBoard() }) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { confirmDeleteBoard = false }) { Text("Cancel") }
+            },
+        )
     }
 
     expanded?.let { img ->

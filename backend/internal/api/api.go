@@ -186,6 +186,7 @@ func (s *Server) Handler() http.Handler {
 	// them through the server, delete from them, or copy one into the library.
 	mux.HandleFunc("GET /api/imagegen/gallery/boards", s.requireAuth(s.handleGalleryBoards))
 	mux.HandleFunc("POST /api/imagegen/gallery/boards", s.requireAuth(s.handleGalleryCreateBoard))
+	mux.HandleFunc("DELETE /api/imagegen/gallery/boards/{id}", s.requireAuth(s.handleGalleryDeleteBoard))
 	mux.HandleFunc("GET /api/imagegen/gallery/images", s.requireAuth(s.handleGalleryImages))
 	mux.HandleFunc("GET /api/imagegen/gallery/image/{name}", s.requireAuth(s.handleGalleryFull))
 	mux.HandleFunc("GET /api/imagegen/gallery/image/{name}/thumb", s.requireAuth(s.handleGalleryThumb))

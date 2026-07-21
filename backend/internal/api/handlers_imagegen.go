@@ -584,6 +584,26 @@ func (s *Server) handleGalleryCreateBoard(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusCreated, board)
 }
 
+func (s *Server) handleGalleryDeleteBoard(w http.ResponseWriter, r *http.Request) {
+	base, ok := s.galleryBase(w)
+	if !ok {
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	// "none" is the uncategorized pseudo-board, not a real board — it can't be deleted.
+	if id == "" || id == "none" {
+		writeErr(w, http.StatusBadRequest, "that gallery can't be deleted")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	if err := s.imagegen.DeleteBoard(ctx, base, id); err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+}
+
 func (s *Server) handleGalleryImages(w http.ResponseWriter, r *http.Request) {
 	base, ok := s.galleryBase(w)
 	if !ok {

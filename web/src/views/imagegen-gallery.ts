@@ -116,6 +116,21 @@ export class OppaiInvokeGallery extends LitElement {
         color: var(--oppai-on-accent);
         border-color: var(--oppai-accent);
       }
+      .board-del {
+        margin-top: 6px;
+        border: 1px solid var(--oppai-border-strong);
+        background: transparent;
+        color: var(--oppai-error, #f2b8b5);
+        border-radius: 9px;
+        font: inherit;
+        font-size: 12px;
+        padding: 5px 10px;
+        cursor: pointer;
+      }
+      .board-del:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
       .grid {
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
@@ -365,6 +380,27 @@ export class OppaiInvokeGallery extends LitElement {
     }
   }
 
+  /** Deletes the currently-viewed board. Its images are not lost — InvokeAI returns
+      them to Uncategorized — so the confirm says as much. */
+  private async deleteBoard() {
+    const current = this.boards.find((b) => b.id === this.board);
+    if (!current || current.id === "none" || this.busy) return;
+    if (!confirm(`Delete the “${current.name}” gallery? Its images move back to Uncategorized.`)) return;
+    this.busy = true;
+    this.error = "";
+    try {
+      await api.deleteGalleryBoard(current.id);
+      this.board = "none";
+      this.items = [];
+      await this.refresh();
+      this.dispatchEvent(new CustomEvent("boards-changed", { bubbles: true, composed: true }));
+    } catch (e) {
+      this.error = (e as Error).message;
+    } finally {
+      this.busy = false;
+    }
+  }
+
   private async deleteImage(img: GalleryImage) {
     if (this.busy) return;
     this.busy = true;
@@ -501,6 +537,14 @@ export class OppaiInvokeGallery extends LitElement {
                     @click=${() => this.pickBoard(b.id)}>${b.name}${b.count ? ` · ${b.count}` : ""}</button>`,
                 )}
               </div>` : nothing}
+              ${this.board !== "none"
+                ? html`<button class="board-del" ?disabled=${this.busy}
+                    title="Delete this gallery (its images move to Uncategorized)"
+                    @click=${() => this.deleteBoard()}>
+                    <span class="material-symbols-rounded" style="font-size:15px; vertical-align:-3px;">delete</span>
+                    Delete gallery
+                  </button>`
+                : nothing}
             `
           : nothing}
         <div class="new-board">

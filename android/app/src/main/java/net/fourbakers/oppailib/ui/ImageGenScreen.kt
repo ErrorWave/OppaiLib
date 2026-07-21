@@ -107,6 +107,10 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
     // Built-in style presets are hidden by default; the picker shows the user's own.
     var showBuiltInTemplates by remember { mutableStateOf(false) }
     var loraWeights by remember { mutableStateOf<Map<String, Double>>(emptyMap()) }
+    // Trigger phrases the user has folded into the prompt, drawn from the selected
+    // LoRAs. Kept as raw phrases; stale entries (from a since-deselected LoRA) are
+    // ignored at assembly time rather than eagerly pruned.
+    var selectedTriggers by remember { mutableStateOf<Set<String>>(emptySet()) }
     var selectedChars by remember { mutableStateOf<Set<String>>(emptySet()) }
 
     var prompt by remember { mutableStateOf("") }
@@ -166,6 +170,13 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
     fun assembledPrompts(): Pair<String, String> {
         val parts = mutableListOf(prompt.trim())
         val negParts = mutableListOf(negative.trim())
+        // Fold in the picked LoRA trigger phrases, in the order they appear among the
+        // selected LoRAs, skipping any whose LoRA is no longer selected.
+        val availableTriggers = status?.loras.orEmpty()
+            .filter { it.name in loraWeights }
+            .flatMap { it.triggerPhrases }
+            .distinct()
+        parts += availableTriggers.filter { it in selectedTriggers }
         for (id in selectedChars) {
             val c = characters.find { it.id == id } ?: continue
             if (c.prompt.isNotBlank()) parts += c.prompt.trim()
@@ -451,6 +462,36 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
                                     prompt = prompt.substringBeforeLast(',', "").let { if (it.isBlank()) "$tag, " else "$it, $tag, " }
                                     tagSuggestions = emptyList(); tagCorrection = ""
                                 }, label = { Text(tag) })
+                            }
+                        }
+                    }
+                    val availableTriggers = st.loras
+                        .filter { it.name in loraWeights }
+                        .flatMap { it.triggerPhrases }
+                        .distinct()
+                    if (availableTriggers.isNotEmpty()) {
+                        Text(
+                            "LoRA trigger phrases",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.padding(top = 4.dp),
+                        ) {
+                            items(availableTriggers) { phrase ->
+                                FilterChip(
+                                    selected = phrase in selectedTriggers,
+                                    onClick = {
+                                        selectedTriggers = if (phrase in selectedTriggers) {
+                                            selectedTriggers - phrase
+                                        } else {
+                                            selectedTriggers + phrase
+                                        }
+                                    },
+                                    label = { Text(phrase) },
+                                )
                             }
                         }
                     }

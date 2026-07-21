@@ -1054,7 +1054,7 @@ export class OppaiImageGen extends LitElement {
 
   /** Repaint every picker thumbnail and retry the ones that had failed. */
   private bumpThumbs() {
-    this.bumpThumbs();
+    this.thumbVersion++;
     this.failedThumbs = new Set();
   }
 

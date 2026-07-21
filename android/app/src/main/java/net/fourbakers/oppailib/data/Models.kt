@@ -357,7 +357,11 @@ data class LibbyOutfitSaveRequest(val id: String? = null, val name: String)
 data class LibbyEmotionRequest(val imageData: String)
 
 @Serializable
-data class GenLora(val name: String, val alias: String = "")
+data class GenLora(
+    val name: String,
+    val alias: String = "",
+    val triggerPhrases: List<String> = emptyList(),
+)
 
 @Serializable
 data class GenVae(val key: String, val name: String, val base: String = "")

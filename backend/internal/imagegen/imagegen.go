@@ -394,6 +394,15 @@ func (c *Client) CreateBoard(ctx context.Context, base, name string) (*Board, er
 	return c.invokeCreateBoard(ctx, base, name)
 }
 
+// DeleteBoard removes a gallery board. Its images survive — InvokeAI returns them
+// to the uncategorized pile rather than deleting them.
+func (c *Client) DeleteBoard(ctx context.Context, base, boardID string) error {
+	if err := c.requireInvoke(ctx, base, "deleting gallery boards"); err != nil {
+		return err
+	}
+	return c.invokeDeleteBoard(ctx, base, boardID)
+}
+
 // BoardImages lists one board's images, newest first. boardID "none" is the
 // uncategorized pile.
 func (c *Client) BoardImages(ctx context.Context, base, boardID string, offset, limit int) (*GalleryPage, error) {

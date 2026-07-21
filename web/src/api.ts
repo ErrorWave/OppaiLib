@@ -807,6 +807,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ name }),
     }, 20_000),
+  // Removes the board itself; its images survive, dropped back to Uncategorized.
+  deleteGalleryBoard: (id: string) =>
+    request<{ status: string }>(`/api/imagegen/gallery/boards/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }, 20_000),
   galleryImages: (board: string, offset = 0, limit = 60) =>
     request<GalleryPage>(
       `/api/imagegen/gallery/images?board=${encodeURIComponent(board)}&offset=${offset}&limit=${limit}`,
