@@ -321,6 +321,9 @@ export interface GenTemplate {
   name: string;
   prompt: string;
   negativePrompt: string;
+  /** True for presets that ship with the generator (InvokeAI "default"/"project"),
+      false for the user's own. Built-ins are hidden by default in the picker. */
+  builtIn?: boolean;
 }
 
 /** A character from the library: a reusable prompt fragment with a thumbnail. */
@@ -456,11 +459,14 @@ export interface InstallJob {
   totalBytes?: number;
 }
 
-/** A Libby outfit: a name plus which emotions have art uploaded. */
+/** A Libby outfit: a name plus which emotions/tiers have art uploaded. */
 export interface LibbyOutfit {
   id: string;
   name: string;
+  /** Emotions with baseline (tier 0) art — kept for older clients. */
   emotions: string[];
+  /** For each emotion, which horniness tiers (0..4) have art. */
+  emotionLevels?: Record<string, number[]>;
 }
 
 const TOKEN_KEY = "oppai_token";
@@ -473,8 +479,16 @@ export function setToken(t: string | null) {
   else localStorage.removeItem(TOKEN_KEY);
 }
 
-export function mascotSay(message: string, tone: "success" | "error" = "error") {
-  window.dispatchEvent(new CustomEvent("oppai-mascot", { detail: { message, tone } }));
+export type MascotTone = "success" | "error";
+
+/**
+ * Have Libby say something app-wide (the corner speech popup). `emotion` picks her
+ * pose; when omitted it's derived from the tone — a worried "surprised" for errors,
+ * a bright "happy" for successes — so she reacts in character to whatever happened.
+ */
+export function mascotSay(message: string, tone: MascotTone = "error", emotion?: string) {
+  const pose = emotion ?? (tone === "error" ? "surprised" : "happy");
+  window.dispatchEvent(new CustomEvent("oppai-mascot", { detail: { message, tone, emotion: pose } }));
 }
 
 async function request<T>(path: string, opts: RequestInit = {}, timeoutMs = 0): Promise<T> {
@@ -570,6 +584,14 @@ export const api = {
   },
   autotag: (id: number) =>
     request<{ tags: MediaTag[] }>(`/api/media/${id}/autotag`, { method: "POST" }),
+  /** Runs the AI tagger over an uploaded image without importing it — used to
+      derive booru tags for a character from a reference picture. */
+  scanImage: (imageData: string) =>
+    request<{ tags: { tag: string; category: string; score: number }[] }>(
+      "/api/ai/scan-image",
+      { method: "POST", body: JSON.stringify({ imageData }) },
+      60_000,
+    ),
 
   // Comics are read page-by-page from the server-side archive; the client never
   // downloads the whole file.
@@ -785,6 +807,16 @@ export const api = {
     request<{ status: string }>(`/api/imagegen/gallery/image/${encodeURIComponent(name)}`, {
       method: "DELETE",
     }),
+  deleteGalleryImages: (names: string[]) =>
+    request<{ status: string }>("/api/imagegen/gallery/delete", {
+      method: "POST",
+      body: JSON.stringify({ names }),
+    }, 40_000),
+  addGalleryImagesToBoard: (board: string, names: string[]) =>
+    request<{ status: string }>("/api/imagegen/gallery/board", {
+      method: "POST",
+      body: JSON.stringify({ board, names }),
+    }, 40_000),
   saveGalleryImage: (body: { name: string; title?: string; tags?: string[] }) =>
     request<{ id: number; existed: boolean }>("/api/imagegen/gallery/save", {
       method: "POST",
@@ -827,16 +859,16 @@ export const api = {
     request<LibbyOutfit>("/api/libby/outfits", { method: "POST", body: JSON.stringify(body) }),
   deleteLibbyOutfit: (id: string) =>
     request<{ status: string }>(`/api/libby/outfits/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  setLibbyEmotion: (id: string, emotion: string, imageData: string) =>
+  setLibbyEmotion: (id: string, emotion: string, imageData: string, level = 0) =>
     request<{ status: string }>(
-      `/api/libby/outfits/${encodeURIComponent(id)}/emotions/${encodeURIComponent(emotion)}`,
+      `/api/libby/outfits/${encodeURIComponent(id)}/emotions/${encodeURIComponent(emotion)}${level ? `?level=${level}` : ""}`,
       { method: "PUT", body: JSON.stringify({ imageData }) },
     ),
-  deleteLibbyEmotion: (id: string, emotion: string) =>
+  deleteLibbyEmotion: (id: string, emotion: string, level = 0) =>
     request<{ status: string }>(
-      `/api/libby/outfits/${encodeURIComponent(id)}/emotions/${encodeURIComponent(emotion)}`,
+      `/api/libby/outfits/${encodeURIComponent(id)}/emotions/${encodeURIComponent(emotion)}${level ? `?level=${level}` : ""}`,
       { method: "DELETE" },
     ),
-  libbyEmotionURL: (id: string, emotion: string) =>
-    `/api/libby/outfits/${encodeURIComponent(id)}/emotions/${encodeURIComponent(emotion)}`,
+  libbyEmotionURL: (id: string, emotion: string, level = 0) =>
+    `/api/libby/outfits/${encodeURIComponent(id)}/emotions/${encodeURIComponent(emotion)}${level ? `?level=${level}` : ""}`,
 };

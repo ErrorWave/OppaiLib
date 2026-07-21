@@ -263,6 +263,14 @@ data class GalleryPageResponse(val items: List<GalleryImage> = emptyList(), val 
 @Serializable
 data class GallerySaveRequest(val name: String, val title: String = "", val tags: List<String> = emptyList())
 
+/** Batch delete: several gallery images removed in one request. */
+@Serializable
+data class GalleryNamesRequest(val names: List<String>)
+
+/** Move several gallery images onto a board ("none" clears their board). */
+@Serializable
+data class GalleryBoardRequest(val board: String, val names: List<String>)
+
 // ── Civitai catalogue ────────────────────────────────────────────────────────
 
 @Serializable
@@ -318,12 +326,15 @@ data class InstallJobsResponse(val jobs: List<InstallJob> = emptyList())
 
 // ── Libby outfits ────────────────────────────────────────────────────────────
 
-/** A Libby outfit: a name plus which emotions have art uploaded. */
+/** A Libby outfit: a name plus which emotions/tiers have art uploaded. */
 @Serializable
 data class LibbyOutfit(
     val id: String,
     val name: String = "",
+    /** Emotions with baseline (tier 0) art. */
     val emotions: List<String> = emptyList(),
+    /** For each emotion, which horniness tiers (0..4) have art. */
+    val emotionLevels: Map<String, List<Int>> = emptyMap(),
 )
 
 @Serializable
@@ -349,6 +360,9 @@ data class GenTemplate(
     val name: String,
     val prompt: String = "",
     val negativePrompt: String = "",
+    /** True for presets that ship with the generator; false for the user's own.
+        Built-ins are hidden by default in the picker. */
+    val builtIn: Boolean = false,
 )
 
 @Serializable
@@ -359,6 +373,31 @@ data class GenCharacter(
     val negativePrompt: String = "",
     val hasThumb: Boolean = false,
 )
+
+/** Create (empty/absent id) or update a character. [imageData] is an optional new
+    thumbnail as a data URL; leaving it null keeps the existing one. */
+@Serializable
+data class SaveCharacterRequest(
+    val id: String? = null,
+    val name: String,
+    val prompt: String = "",
+    val negativePrompt: String = "",
+    val imageData: String? = null,
+)
+
+/** A line for Libby to say around the app, with the pose she says it in
+    (one of the emotion slots: neutral | happy | mischievous | surprised | thinking). */
+data class MascotSay(val message: String, val emotion: String = "surprised")
+
+/** Scan an image for booru tags (image is a data URL; never stored server-side). */
+@Serializable
+data class ScanImageRequest(val imageData: String)
+
+@Serializable
+data class ScanTag(val tag: String, val category: String = "", val score: Double = 0.0)
+
+@Serializable
+data class ScanImageResponse(val tags: List<ScanTag> = emptyList())
 
 @Serializable
 data class GenCharacterListResponse(val characters: List<GenCharacter> = emptyList())

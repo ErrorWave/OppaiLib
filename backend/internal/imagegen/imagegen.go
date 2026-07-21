@@ -107,6 +107,11 @@ type Template struct {
 	Name           string `json:"name"`
 	Prompt         string `json:"prompt"`
 	NegativePrompt string `json:"negativePrompt"`
+	// BuiltIn marks presets that ship with the generator rather than ones the user
+	// authored. InvokeAI tags each style preset with a "type": "user" presets are
+	// the user's own; anything else ("default", "project") is built-in. Clients
+	// hide built-ins by default so the list shows what the user actually made.
+	BuiltIn bool `json:"builtIn"`
 }
 
 // Lora is one LoRA network. Name is the selector value handed back on generate;
@@ -421,6 +426,23 @@ func (c *Client) DeleteGalleryImage(ctx context.Context, base, name string) erro
 		return err
 	}
 	return c.invokeDeleteImage(ctx, base, name)
+}
+
+// DeleteGalleryImages removes several images in one call (InvokeAI's batch delete).
+func (c *Client) DeleteGalleryImages(ctx context.Context, base string, names []string) error {
+	if err := c.requireInvoke(ctx, base, "the generator gallery"); err != nil {
+		return err
+	}
+	return c.invokeDeleteImages(ctx, base, names)
+}
+
+// AddImagesToBoard moves the named images onto a board (boardID "none" clears the
+// board). InvokeAI's batch endpoint does the move in one request.
+func (c *Client) AddImagesToBoard(ctx context.Context, base, boardID string, names []string) error {
+	if err := c.requireInvoke(ctx, base, "the generator gallery"); err != nil {
+		return err
+	}
+	return c.invokeAddImagesToBoard(ctx, base, boardID, names)
 }
 
 // InstallModel asks InvokeAI to download and register a model from a URL (a

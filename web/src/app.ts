@@ -1,9 +1,11 @@
 import { LitElement, html, css } from "lit";
 import { customElement, state } from "lit/decorators.js";
-import { api, getToken, setToken, type User } from "./api.js";
-import { libbyEmotionSrc, loadHideLibby } from "./libby.js";
+import { api, getToken, setToken, mascotSay, type User } from "./api.js";
+import { loadHideLibby } from "./libby.js";
+import { bumpMeter, tierForMeter } from "./libby-meter.js";
 import "./views/login.js";
 import "./views/library.js";
+import "./views/libby-portrait.js";
 
 /**
  * How often to ask the server whether our session is still good.
@@ -22,6 +24,7 @@ export class OppaiApp extends LitElement {
   @state() private ready = false;
   @state() private mascotMessage = "";
   @state() private mascotTone: "success" | "error" = "success";
+  @state() private mascotEmotion = "neutral";
 
   private probeTimer?: number;
   private mascotTimer?: number;
@@ -39,13 +42,9 @@ export class OppaiApp extends LitElement {
       pointer-events: none;
       animation: pop-in 0.3s ease-out both;
     }
-    .mascot-talk img {
+    .mascot-talk .mascot-portrait {
       width: min(210px, 34vw);
-      max-height: 38vh;
-      object-fit: contain;
-      object-position: bottom;
-      transform-origin: 55% 100%;
-      animation: libby-talk .34s ease-in-out infinite alternate;
+      height: 38vh;
     }
     .speech {
       max-width: min(300px, 58vw);
@@ -63,9 +62,8 @@ export class OppaiApp extends LitElement {
     .mascot-talk.plain .speech { margin: 0 0 18px 0; }
     .libby-name { display: block; color: var(--md-sys-color-error); font-size: 11px; font-weight: 700; }
     @keyframes pop-in { from { opacity: 0; transform: translateY(24px) scale(.94); } }
-    @keyframes libby-talk { from { transform: rotate(-.5deg); } to { transform: translateY(-5px) rotate(.65deg); } }
     @media (max-width: 600px) {
-      .mascot-talk img { width: 150px; }
+      .mascot-talk .mascot-portrait { width: 150px; }
       .speech { margin-bottom: 100px; }
     }
   `;
@@ -75,6 +73,7 @@ export class OppaiApp extends LitElement {
     window.addEventListener("oppai-logout", this.onLogout);
     window.addEventListener("oppai-mascot", this.onMascot as EventListener);
     window.addEventListener("oppai-libby-pref", this.onLibbyPref);
+    window.addEventListener("imported", this.onImported as EventListener);
     // A tab that was in the background while the session died should find out the
     // moment it's looked at again, rather than on the next tick.
     document.addEventListener("visibilitychange", this.onVisible);
@@ -85,17 +84,19 @@ export class OppaiApp extends LitElement {
     window.removeEventListener("oppai-logout", this.onLogout);
     window.removeEventListener("oppai-mascot", this.onMascot as EventListener);
     window.removeEventListener("oppai-libby-pref", this.onLibbyPref);
+    window.removeEventListener("imported", this.onImported as EventListener);
     document.removeEventListener("visibilitychange", this.onVisible);
     this.stopProbe();
     if (this.mascotTimer) clearTimeout(this.mascotTimer);
   }
 
-  private onMascot = (event: CustomEvent<{ message: string; tone: "success" | "error" }>) => {
-    // Inside the app Libby is an error guide, not a permanent assistant. The login
-    // screen owns its always-visible Libby and handles both friendly and error speech.
-    if (event.detail.tone !== "error") return;
+  private onMascot = (event: CustomEvent<{ message: string; tone: "success" | "error"; emotion?: string }>) => {
+    // Libby reacts in character to things happening around the app — errors and
+    // successes alike — with a matching pose. (The login screen owns its own
+    // always-on Libby; this popup only appears once you're inside, see render().)
     this.mascotMessage = event.detail.message;
     this.mascotTone = event.detail.tone;
+    this.mascotEmotion = event.detail.emotion ?? (event.detail.tone === "error" ? "surprised" : "happy");
     if (this.mascotTimer) clearTimeout(this.mascotTimer);
     this.mascotTimer = window.setTimeout(() => (this.mascotMessage = ""), 5000);
   };
@@ -103,6 +104,17 @@ export class OppaiApp extends LitElement {
   // The Settings toggle fires this; re-render so a popup that's on screen right now
   // sheds (or regains) the mascot immediately.
   private onLibbyPref = () => this.requestUpdate();
+
+  // Adding to the library warms Libby up (the horniness meter) and gets a reaction
+  // from her. The event bubbles composed from whichever view did the import.
+  private onImported = (event: CustomEvent<{ count?: number }>) => {
+    const count = Math.max(1, event.detail?.count ?? 1);
+    const tier = tierForMeter(bumpMeter(6 * Math.min(count, 5)));
+    const line = tier >= 3
+      ? count > 1 ? `Mmh, ${count} more for the collection…` : "Ooh, adding to the collection?"
+      : count > 1 ? `Saved ${count} to your library.` : "Saved to your library.";
+    mascotSay(line, "success", tier >= 2 ? "mischievous" : "happy");
+  };
 
   private onLogout = () => {
     this.user = null;
@@ -169,15 +181,11 @@ export class OppaiApp extends LitElement {
     const mascot = this.mascotMessage
       ? html`<div class="mascot-talk ${this.mascotTone} ${hideLibby ? "plain" : ""}">
           <div class="speech" role=${this.mascotTone === "error" ? "alert" : "status"}>
-            ${hideLibby ? null : html`<span class="libby-name">LIBBY · 😟</span>`}${this.mascotMessage}
+            ${hideLibby ? null : html`<span class="libby-name">LIBBY · ${this.mascotTone === "error" ? "😟" : "😊"}</span>`}${this.mascotMessage}
           </div>
           ${hideLibby
             ? null
-            : html`<img src=${libbyEmotionSrc("neutral")} alt="Libby"
-                @error=${(e: Event) => {
-                  const img = e.target as HTMLImageElement;
-                  if (!img.src.endsWith("/mascot.png")) img.src = "/mascot.png";
-                }} />`}
+            : html`<libby-portrait class="mascot-portrait" .emotion=${this.mascotEmotion} talking></libby-portrait>`}
         </div>`
       : null;
     if (!this.ready) {

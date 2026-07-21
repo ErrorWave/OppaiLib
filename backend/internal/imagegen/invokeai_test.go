@@ -40,7 +40,9 @@ func (st *stubInvoke) server(t *testing.T) *httptest.Server {
 			]}`)
 		case r.URL.Path == "/api/v1/style_presets/":
 			fmt.Fprint(w, `[{"id":"sp1","name":"My Anime","type":"user",
-				"preset_data":{"positive_prompt":"{prompt}, anime style","negative_prompt":"photo"}}]`)
+				"preset_data":{"positive_prompt":"{prompt}, anime style","negative_prompt":"photo"}},
+				{"id":"sp2","name":"Shipped Preset","type":"default",
+				"preset_data":{"positive_prompt":"{prompt}, cinematic","negative_prompt":""}}]`)
 		case r.URL.Path == "/api/v2/models/i/key-main/image":
 			w.Header().Set("Content-Type", "image/png")
 			fmt.Fprint(w, "COVERPNG")
@@ -126,8 +128,15 @@ func TestInvokeModelsAndLoras(t *testing.T) {
 	if err != nil {
 		t.Fatalf("templates: %v", err)
 	}
-	if len(templates) != 1 || templates[0].Name != "My Anime" || !strings.Contains(templates[0].Prompt, "{prompt}") {
+	if len(templates) != 2 || templates[0].Name != "My Anime" || !strings.Contains(templates[0].Prompt, "{prompt}") {
 		t.Fatalf("templates = %+v", templates)
+	}
+	// The "user" preset is the user's own; the "default" one is a shipped built-in.
+	if templates[0].BuiltIn {
+		t.Errorf("user preset marked built-in: %+v", templates[0])
+	}
+	if !templates[1].BuiltIn {
+		t.Errorf("default preset not marked built-in: %+v", templates[1])
 	}
 }
 

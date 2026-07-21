@@ -150,6 +150,7 @@ func (c *Client) invokeTemplates(ctx context.Context, base string) ([]Template, 
 	var out []struct {
 		ID         string `json:"id"`
 		Name       string `json:"name"`
+		Type       string `json:"type"` // "user" for the user's own; "default"/"project" are built-in
 		PresetData struct {
 			Positive string `json:"positive_prompt"`
 			Negative string `json:"negative_prompt"`
@@ -164,6 +165,10 @@ func (c *Client) invokeTemplates(ctx context.Context, base string) ([]Template, 
 			ID: p.ID, Name: p.Name,
 			Prompt:         p.PresetData.Positive,
 			NegativePrompt: p.PresetData.Negative,
+			// Only the generator's own presets are built-in ("default", and shared
+			// "project" ones). Anything else — "user", or an absent/unknown type on an
+			// older InvokeAI — is treated as the user's, so we never hide their work.
+			BuiltIn: p.Type == "default" || p.Type == "project",
 		})
 	}
 	return templates, nil
@@ -1024,6 +1029,39 @@ func (c *Client) invokeDeleteImage(ctx context.Context, base, name string) error
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return fmt.Errorf("InvokeAI returned %d deleting the image", resp.StatusCode)
+	}
+	return nil
+}
+
+// invokeDeleteImages deletes several images in one request. An empty list is a
+// no-op so callers don't have to guard it.
+func (c *Client) invokeDeleteImages(ctx context.Context, base string, names []string) error {
+	if len(names) == 0 {
+		return nil
+	}
+	body := map[string]any{"image_names": names}
+	if err := c.postJSON(ctx, base+"/api/v1/images/delete", body, nil); err != nil {
+		return fmt.Errorf("deleting images: %w", err)
+	}
+	return nil
+}
+
+// invokeAddImagesToBoard moves images onto a board. boardID "none" (or "") removes
+// them from whatever board they're on, since InvokeAI has no "none" board to add to.
+func (c *Client) invokeAddImagesToBoard(ctx context.Context, base, boardID string, names []string) error {
+	if len(names) == 0 {
+		return nil
+	}
+	if boardID == "" || boardID == "none" {
+		body := map[string]any{"image_names": names}
+		if err := c.postJSON(ctx, base+"/api/v1/board_images/batch/delete", body, nil); err != nil {
+			return fmt.Errorf("removing images from board: %w", err)
+		}
+		return nil
+	}
+	body := map[string]any{"board_id": boardID, "image_names": names}
+	if err := c.postJSON(ctx, base+"/api/v1/board_images/batch", body, nil); err != nil {
+		return fmt.Errorf("adding images to board: %w", err)
 	}
 	return nil
 }

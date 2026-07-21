@@ -6,6 +6,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -53,6 +54,13 @@ private val emotionSlots = listOf(
     "surprised" to "Bold",
     "thinking" to "Roleplay",
 )
+
+/** Horniness art tiers 0..4, calmest first — the level Libby wears rises with the
+    session meter. Tier 0 is the baseline every outfit falls back to. */
+private val tierLabels = listOf("Calm", "Warm", "Flirty", "Heated", "Peak")
+
+/** Key for an (emotion, tier) art slot. */
+private fun slotKey(emotion: String, level: Int) = "$emotion:$level"
 
 /**
  * The outfit wardrobe inside Settings → Libby. Outfits live on the server (they
@@ -173,22 +181,38 @@ private fun OutfitEditorDialog(
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
-    var filled by remember { mutableStateOf(outfit.emotions.toSet()) }
+    // Which (emotion, tier) slots already have art, as "emotion:level" keys.
+    var filled by remember {
+        mutableStateOf(
+            buildSet {
+                if (outfit.emotionLevels.isNotEmpty()) {
+                    outfit.emotionLevels.forEach { (emotion, levels) ->
+                        levels.forEach { add(slotKey(emotion, it)) }
+                    }
+                } else {
+                    outfit.emotions.forEach { add(slotKey(it, 0)) }
+                }
+            },
+        )
+    }
     // Bumps the emotion image URLs so a fresh upload repaints past Coil's cache.
     var version by remember { mutableStateOf(0) }
+    var tier by remember { mutableStateOf(0) }
     var pendingEmotion by remember { mutableStateOf<String?>(null) }
+    var pendingLevel by remember { mutableStateOf(0) }
     val scope = rememberCoroutineScope()
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         val emotion = pendingEmotion
+        val level = pendingLevel
         pendingEmotion = null
         if (uri == null || emotion == null) return@rememberLauncherForActivityResult
         scope.launch {
             runCatching {
                 val data = uriToDataUrl(context, uri)
-                repo.api.setLibbyEmotion(outfit.id, emotion, LibbyEmotionRequest(data))
+                repo.api.setLibbyEmotion(outfit.id, emotion, LibbyEmotionRequest(data), level)
             }.onSuccess {
-                filled = filled + emotion
+                filled = filled + slotKey(emotion, level)
                 version++
                 onChanged()
             }.onFailure { repo.report(it.message ?: "Couldn't upload the image") }
@@ -204,17 +228,34 @@ private fun OutfitEditorDialog(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text(
-                    "Tap an emotion to pick its image.",
+                    "Pick a horniness tier, then tap an emotion to set its image. Empty tiers " +
+                        "fall back to the calmer art.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                Row(
+                    Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    tierLabels.forEachIndexed { level, label ->
+                        FilterChip(
+                            selected = tier == level,
+                            onClick = { tier = level },
+                            label = { Text(label) },
+                        )
+                    }
+                }
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(emotionSlots, key = { it.first }) { (emotion, hint) ->
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             modifier = Modifier
                                 .width(92.dp)
-                                .clickable { pendingEmotion = emotion; picker.launch("image/*") },
+                                .clickable {
+                                    pendingEmotion = emotion
+                                    pendingLevel = tier
+                                    picker.launch("image/*")
+                                },
                         ) {
                             Box(
                                 Modifier
@@ -224,9 +265,11 @@ private fun OutfitEditorDialog(
                                     .background(MaterialTheme.colorScheme.surfaceVariant),
                                 contentAlignment = Alignment.Center,
                             ) {
-                                if (emotion in filled) {
+                                if (slotKey(emotion, tier) in filled) {
+                                    val base = repo.libbyEmotionUrl(outfit.id, emotion, tier)
+                                    val sep = if (base.contains("?")) "&" else "?"
                                     AsyncImage(
-                                        model = "${repo.libbyEmotionUrl(outfit.id, emotion)}?v=$version",
+                                        model = "$base${sep}v=$version",
                                         imageLoader = repo.imageLoader,
                                         contentDescription = emotion,
                                         contentScale = ContentScale.Crop,
@@ -267,7 +310,7 @@ private fun OutfitEditorDialog(
 }
 
 /** Reads a picked image into the data-URL form the server's upload endpoints take. */
-private fun uriToDataUrl(context: android.content.Context, uri: Uri): String {
+internal fun uriToDataUrl(context: android.content.Context, uri: Uri): String {
     val resolver = context.contentResolver
     val mime = resolver.getType(uri) ?: "image/png"
     val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }

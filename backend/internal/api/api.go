@@ -138,6 +138,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/media/{id}/stream", s.requireAuth(s.handleStreamMedia))
 	mux.HandleFunc("GET /api/media/{id}/thumb", s.requireAuth(s.handleThumb))
 	mux.HandleFunc("POST /api/media/{id}/autotag", s.requireAuth(s.handleAutotag))
+	mux.HandleFunc("POST /api/ai/scan-image", s.requireAuth(s.handleScanImage))
 
 	// Comics: read page-by-page out of the archive instead of downloading it.
 	mux.HandleFunc("GET /api/media/{id}/comic", s.requireAuth(s.handleComicInfo))
@@ -188,6 +189,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/imagegen/gallery/image/{name}", s.requireAuth(s.handleGalleryFull))
 	mux.HandleFunc("GET /api/imagegen/gallery/image/{name}/thumb", s.requireAuth(s.handleGalleryThumb))
 	mux.HandleFunc("DELETE /api/imagegen/gallery/image/{name}", s.requireAuth(s.handleGalleryDelete))
+	mux.HandleFunc("POST /api/imagegen/gallery/delete", s.requireAuth(s.handleGalleryDeleteBatch))
+	mux.HandleFunc("POST /api/imagegen/gallery/board", s.requireAuth(s.handleGalleryAddToBoard))
 	mux.HandleFunc("POST /api/imagegen/gallery/save", s.requireAuth(s.handleGallerySave))
 	// Civitai catalogue (via the civitai.red mirror), proxied like every other
 	// remote source; install hands a download URL to InvokeAI.

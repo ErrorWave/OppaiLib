@@ -27,7 +27,9 @@ import java.net.URLEncoder
 class Repository(private val appContext: Context, val prefs: Prefs) {
 
     private val json = Json { ignoreUnknownKeys = true }
-    private val _errors = MutableSharedFlow<String>(extraBufferCapacity = 8)
+    // Things for Libby to say around the app, each with a pose so she reacts in
+    // character — a worried "surprised" for failures, a bright "happy" for wins.
+    private val _errors = MutableSharedFlow<MascotSay>(extraBufferCapacity = 8)
     val errors = _errors.asSharedFlow()
     private val _libraryChanges = MutableSharedFlow<Unit>(extraBufferCapacity = 4)
     val libraryChanges = _libraryChanges.asSharedFlow()
@@ -105,9 +107,12 @@ class Repository(private val appContext: Context, val prefs: Prefs) {
     fun civitaiImageUrl(url: String): String =
         "${baseUrl}api/imagegen/civitai/image?url=${URLEncoder.encode(url, "UTF-8")}"
 
-    /** One emotion of a Libby outfit. 404s when the outfit lacks that emotion. */
-    fun libbyEmotionUrl(outfitId: String, emotion: String): String =
-        "${baseUrl}api/libby/outfits/${URLEncoder.encode(outfitId, "UTF-8")}/emotions/$emotion"
+    /** One emotion of a Libby outfit at a horniness tier (level 0 = baseline).
+        404s when the outfit lacks that emotion/tier, so callers keep a fallback. */
+    fun libbyEmotionUrl(outfitId: String, emotion: String, level: Int = 0): String {
+        val base = "${baseUrl}api/libby/outfits/${URLEncoder.encode(outfitId, "UTF-8")}/emotions/$emotion"
+        return if (level > 0) "$base?level=$level" else base
+    }
 
     /**
      * The whole library (or one kind of it), walked a page at a time.
@@ -129,7 +134,9 @@ class Repository(private val appContext: Context, val prefs: Prefs) {
 
     fun saveSession(token: String) { prefs.token = token }
     fun clearSession() { prefs.clearSession() }
-    fun report(message: String) { _errors.tryEmit(message) }
+    /** Surfaces a message from Libby. [emotion] is her pose — default "surprised"
+        (a worried reaction) since most reports are failures; pass "happy" for wins. */
+    fun report(message: String, emotion: String = "surprised") { _errors.tryEmit(MascotSay(message, emotion)) }
     fun notifyLibraryChanged() { _libraryChanges.tryEmit(Unit) }
 
     // ── client construction ──────────────────────────────────────────────
@@ -154,12 +161,12 @@ class Repository(private val appContext: Context, val prefs: Prefs) {
                 try {
                     val response = chain.proceed(req.build())
                     if (!response.isSuccessful && !response.request.url.encodedPath.endsWith("/api/auth/login")) {
-                        _errors.tryEmit("The server returned ${response.code}. Please try again.")
+                        _errors.tryEmit(MascotSay("The server returned ${response.code}. Please try again."))
                     }
                     response
                 } catch (e: Exception) {
                     if (!chain.request().url.encodedPath.endsWith("/api/auth/login")) {
-                        _errors.tryEmit(e.message ?: "Couldn't reach the server.")
+                        _errors.tryEmit(MascotSay(e.message ?: "Couldn't reach the server."))
                     }
                     throw e
                 }

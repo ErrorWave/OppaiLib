@@ -2,16 +2,18 @@ import { LitElement, css, html, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { api, type ChatMessage, type ChatStatus } from "../api.js";
 import { iconStyles, motionStyles } from "../theme.js";
-import { defaultLibbyArt, libbyEmotionSrc, loadHideLibby } from "../libby.js";
+import { loadHideLibby } from "../libby.js";
+import { getMeter, setMeter, bumpMeter } from "../libby-meter.js";
+import "./libby-portrait.js";
 
 // Each chat mode maps to one of Libby's emotions; the artwork for an emotion
-// comes from the worn outfit when one is selected (see libby.ts), falling back
-// to the bundled art via the image's error handler.
+// comes from the worn outfit when one is selected (see libby.ts). Bolder modes
+// push the horniness meter harder per message (`heat`).
 const MODES = [
-  { id: "sweet", label: "Sweet", emotion: "happy" },
-  { id: "playful", label: "Playful", emotion: "mischievous" },
-  { id: "bold", label: "Bold", emotion: "surprised" },
-  { id: "roleplay", label: "Roleplay", emotion: "thinking" },
+  { id: "sweet", label: "Sweet", emotion: "happy", heat: 3 },
+  { id: "playful", label: "Playful", emotion: "mischievous", heat: 7 },
+  { id: "bold", label: "Bold", emotion: "surprised", heat: 10 },
+  { id: "roleplay", label: "Roleplay", emotion: "thinking", heat: 6 },
 ] as const;
 
 @customElement("oppai-chat")
@@ -22,6 +24,9 @@ export class OppaiChat extends LitElement {
   @state() private draft = "";
   @state() private busy = false;
   @state() private error = "";
+  @state() private meter = getMeter();
+
+  private onMeter = () => (this.meter = getMeter());
 
   static styles = [iconStyles, motionStyles, css`
     :host { display:block; height:100%; }
@@ -30,8 +35,16 @@ export class OppaiChat extends LitElement {
     .libby, .chat { background:var(--oppai-surface); border:1px solid var(--oppai-border);
       border-radius:20px; overflow:hidden; }
     .libby { display:flex; flex-direction:column; padding:18px; }
-    .libby img { width:100%; min-height:0; flex:1; object-fit:contain; object-position:bottom; }
+    .libby .portrait { width:100%; min-height:0; flex:1; }
     .name { font-size:20px; font-weight:650; }
+    .meter { margin-top:14px; }
+    .meter-head { display:flex; justify-content:space-between; font-size:12px; color:var(--oppai-text-dim); margin-bottom:4px; }
+    .meter-val { font-weight:650; color:var(--oppai-primary-bright); }
+    .meter-range { width:100%; accent-color:var(--oppai-primary); }
+    .meter-btns { display:flex; gap:6px; margin-top:6px; }
+    .meter-btn { flex:1; border:1px solid var(--oppai-border-strong); border-radius:8px; background:transparent;
+      color:var(--oppai-text-dim); font:inherit; font-size:15px; line-height:1; padding:5px; cursor:pointer; }
+    .meter-btn:hover { color:var(--oppai-primary-bright); border-color:var(--oppai-primary); }
     .model { font-size:12px; color:var(--oppai-text-muted); margin-top:3px; overflow:hidden; text-overflow:ellipsis; }
     .modes { display:grid; grid-template-columns:1fr 1fr; gap:7px; margin-top:14px; }
     button { font:inherit; cursor:pointer; }
@@ -53,11 +66,19 @@ export class OppaiChat extends LitElement {
     .send:disabled { opacity:.5; cursor:default; }
     .error { color:var(--md-sys-color-error); font-size:13px; padding:0 16px 10px; }
     @media(max-width:700px) { .layout { grid-template-columns:1fr; height:auto; }
-      .libby { min-height:190px; flex-direction:row; gap:12px; } .libby img { width:130px; order:-1; }
+      .libby { min-height:190px; flex-direction:row; gap:12px; } .libby .portrait { width:130px; order:-1; }
       .chat { min-height:55vh; } }
   `];
 
-  connectedCallback() { super.connectedCallback(); void this.load(); }
+  connectedCallback() {
+    super.connectedCallback();
+    window.addEventListener("oppai-libby-meter", this.onMeter);
+    void this.load();
+  }
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    window.removeEventListener("oppai-libby-meter", this.onMeter);
+  }
   private async load() {
     try { this.status = await api.chatStatus(); }
     catch (e) { this.error = (e as Error).message; }
@@ -71,6 +92,8 @@ export class OppaiChat extends LitElement {
     if (!content || this.busy || !this.status?.enabled) return;
     const next: ChatMessage[] = [...this.messages, { role: "user", content }];
     this.messages = next; this.draft = ""; this.busy = true; this.error = "";
+    // Talking to Libby warms her up — bolder modes push harder (see MODES.heat).
+    bumpMeter(MODES.find((m) => m.id === this.mode)?.heat ?? 4);
     try {
       const result = await api.chat(this.mode, next);
       this.messages = [...next, { role: "assistant", content: result.message }];
@@ -79,10 +102,21 @@ export class OppaiChat extends LitElement {
     } catch (e) { this.error = (e as Error).message; }
     finally { this.busy = false; }
   }
+  private renderMeter() {
+    // Libby's horniness for this session: rises as you chat and as you add to the
+    // library, and you can set it by hand here. It picks which outfit tier she wears.
+    return html`<div class="meter">
+      <div class="meter-head"><span>Horniness</span><span class="meter-val">${this.meter}</span></div>
+      <input class="meter-range" type="range" min="0" max="100" step="1" .value=${String(this.meter)}
+        @input=${(e: Event) => setMeter(Number((e.target as HTMLInputElement).value))} />
+      <div class="meter-btns">
+        <button class="meter-btn" title="Cool down" @click=${() => bumpMeter(-10)}>−</button>
+        <button class="meter-btn" title="Warm up" @click=${() => bumpMeter(10)}>+</button>
+      </div>
+    </div>`;
+  }
   render() {
     const emotion = MODES.find((m) => m.id === this.mode)?.emotion ?? "neutral";
-    const reaction = libbyEmotionSrc(emotion);
-    const fallback = defaultLibbyArt(emotion);
     // Hiding Libby drops her portrait; the mode picker stays, since modes change how
     // the assistant answers, not how it looks.
     const hideLibby = loadHideLibby();
@@ -90,14 +124,10 @@ export class OppaiChat extends LitElement {
       <aside class="libby"><div><div class="name">Libby</div>
         <div class="model">${this.status?.enabled ? this.status.model : "Local LLM not configured"}</div>
         <div class="modes">${MODES.map((m) => html`<button class="mode ${m.id === this.mode ? "on" : ""}"
-          @click=${() => this.setMode(m.id)}>${m.label}</button>`)}</div></div>
-        ${hideLibby ? nothing : html`<img src=${reaction} alt="Libby"
-          @error=${(e: Event) => {
-            // An outfit without this emotion (or a stale outfit id) falls back to
-            // the bundled art; guard against looping if that somehow fails too.
-            const img = e.target as HTMLImageElement;
-            if (!img.src.endsWith(fallback)) img.src = fallback;
-          }} />`}
+          @click=${() => this.setMode(m.id)}>${m.label}</button>`)}</div>
+        ${this.renderMeter()}</div>
+        ${hideLibby ? nothing : html`<libby-portrait class="portrait" .emotion=${emotion}
+          ?talking=${this.busy}></libby-portrait>`}
       </aside>
       <section class="chat"><div class="messages">
         ${!this.status?.enabled ? html`<div class="empty">Configure a local OpenAI-compatible URL and model in Settings to chat with Libby.</div>` : nothing}

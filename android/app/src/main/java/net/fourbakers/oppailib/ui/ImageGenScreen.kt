@@ -42,6 +42,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -67,6 +68,7 @@ import net.fourbakers.oppailib.data.GenLoraPick
 import net.fourbakers.oppailib.data.GenModel
 import net.fourbakers.oppailib.data.GenPreview
 import net.fourbakers.oppailib.data.GenSaveRequest
+import net.fourbakers.oppailib.data.LibbyMeter
 import net.fourbakers.oppailib.data.GenTemplate
 import net.fourbakers.oppailib.data.GenerateRequest
 import net.fourbakers.oppailib.data.ImageGenStatus
@@ -102,6 +104,8 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
     var checkpoint by remember { mutableStateOf("") }
     var vae by remember { mutableStateOf("") }
     var templateId by remember { mutableStateOf("") }
+    // Built-in style presets are hidden by default; the picker shows the user's own.
+    var showBuiltInTemplates by remember { mutableStateOf(false) }
     var loraWeights by remember { mutableStateOf<Map<String, Double>>(emptyMap()) }
     var selectedChars by remember { mutableStateOf<Set<String>>(emptySet()) }
 
@@ -125,6 +129,8 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
     var galleryRefresh by remember { mutableStateOf(0) }
     /** Model or LoRA name whose record is being edited, or null. */
     var editTarget by remember { mutableStateOf<String?>(null) }
+    // The character being created or edited (blank id = new); null = editor closed.
+    var charDraft by remember { mutableStateOf<GenCharacter?>(null) }
     /** A result expanded to full screen. */
     var expandedShot by remember { mutableStateOf<ShotState?>(null) }
     val scope = rememberCoroutineScope()
@@ -139,6 +145,10 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
         if (d.vae.isNotEmpty()) vae = d.vae
     }
 
+    suspend fun reloadCharacters() {
+        runCatching { repo.api.imageGenCharacters() }.onSuccess { characters = it.characters }
+    }
+
     LaunchedEffect(Unit) {
         runCatching { repo.api.imageGenStatus() }
             .onSuccess { st ->
@@ -146,8 +156,7 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
                 if (checkpoint.isEmpty()) st.models.firstOrNull()?.let { applyModel(it) }
             }
             .onFailure { statusError = it.message ?: "Couldn't reach the server" }
-        runCatching { repo.api.imageGenCharacters() }
-            .onSuccess { characters = it.characters }
+        reloadCharacters()
     }
     BackHandler(onBack = onBack)
 
@@ -215,7 +224,8 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
                 )
             }.onSuccess {
                 shots = shots.map { if (it.preview.id == shot.preview.id) it.copy(saved = true) else it }
-                repo.report("Saved to library")
+                LibbyMeter.bump(6) // adding to the library warms Libby up
+                repo.report("Saved to library", "happy")
                 onSaved()
             }.onFailure { repo.report(it.message ?: "Couldn't save the image") }
         }
@@ -352,9 +362,13 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
                 // ── templates ───────────────────────────────────────────────
                 if (st.templates.isNotEmpty()) {
                     item {
+                        val builtInCount = st.templates.count { it.builtIn }
+                        val visibleTemplates =
+                            if (showBuiltInTemplates) st.templates
+                            else st.templates.filter { !it.builtIn }
                         SectionLabel("Templates")
                         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            st.templates.forEach { t ->
+                            visibleTemplates.forEach { t ->
                                 FilterChip(
                                     selected = templateId == t.id,
                                     onClick = { templateId = if (templateId == t.id) "" else t.id },
@@ -362,25 +376,41 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
                                 )
                             }
                         }
+                        if (builtInCount > 0) {
+                            TextButton(onClick = { showBuiltInTemplates = !showBuiltInTemplates }) {
+                                Text(
+                                    if (showBuiltInTemplates) "Hide built-in presets"
+                                    else "Show built-in presets ($builtInCount)",
+                                )
+                            }
+                        }
                     }
                 }
 
                 // ── characters ──────────────────────────────────────────────
-                if (characters.isNotEmpty()) {
-                    item {
+                item {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
                         SectionLabel("Characters")
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            items(characters, key = { it.id }) { c ->
-                                PickerCard(
-                                    label = c.name,
-                                    imageUrl = if (c.hasThumb) repo.characterThumbUrl(c.id) else null,
-                                    selected = c.id in selectedChars,
-                                    repo = repo,
-                                    onClick = {
-                                        selectedChars = if (c.id in selectedChars) selectedChars - c.id else selectedChars + c.id
-                                    },
-                                )
-                            }
+                        TextButton(onClick = { charDraft = GenCharacter(id = "", name = "") }) {
+                            Text("＋ New")
+                        }
+                    }
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        items(characters, key = { it.id }) { c ->
+                            PickerCard(
+                                label = c.name,
+                                imageUrl = if (c.hasThumb) repo.characterThumbUrl(c.id) else null,
+                                selected = c.id in selectedChars,
+                                repo = repo,
+                                onClick = {
+                                    selectedChars = if (c.id in selectedChars) selectedChars - c.id else selectedChars + c.id
+                                },
+                                onEdit = { charDraft = c },
+                            )
                         }
                     }
                 }
@@ -546,6 +576,21 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
                     runCatching { repo.api.imageGenStatus() }.onSuccess { status = it }
                 }
             },
+        )
+    }
+
+    charDraft?.let { draft ->
+        CharacterEditorDialog(
+            repo = repo,
+            character = draft,
+            onSaved = { charDraft = null; scope.launch { reloadCharacters() } },
+            onDeleted = {
+                // A deleted character can't stay selected for the next generation.
+                selectedChars = selectedChars - draft.id
+                charDraft = null
+                scope.launch { reloadCharacters() }
+            },
+            onDismiss = { charDraft = null },
         )
     }
 

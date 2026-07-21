@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/youruser/oppailib/internal/crypto"
@@ -27,6 +28,13 @@ import (
 // actually render (neutral is the popup/login pose; the rest map to chat modes).
 var libbyEmotions = []string{"neutral", "happy", "mischievous", "surprised", "thinking"}
 
+// maxLibbyLevel is the highest horniness art tier. There are five tiers, 0..4:
+// level 0 is the baseline art (stored under the original filename, so existing
+// outfits keep working), and 1..4 are the hornier variants shown as the session
+// meter climbs. A tier that has no art for an emotion falls back to a lower tier,
+// then to the bundled default (clients handle that via the image 404).
+const maxLibbyLevel = 4
+
 func libbyEmotionValid(e string) bool {
 	for _, known := range libbyEmotions {
 		if e == known {
@@ -36,24 +44,48 @@ func libbyEmotionValid(e string) bool {
 	return false
 }
 
+// libbyLevelParam reads the ?level= tier from a request, clamped to 0..maxLibbyLevel.
+// An absent or malformed value is level 0, the baseline.
+func libbyLevelParam(r *http.Request) int {
+	n, err := strconv.Atoi(r.URL.Query().Get("level"))
+	if err != nil || n < 0 {
+		return 0
+	}
+	if n > maxLibbyLevel {
+		return maxLibbyLevel
+	}
+	return n
+}
+
 type libbyOutfit struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 }
 
 // libbyOutfitView is what lists return: the record plus which emotions have art,
-// so clients can render slots without probing five image URLs per outfit.
+// so clients can render slots without probing image URLs per outfit.
+//
+// Emotions keeps the level-0 poses that have art (backward compatible with older
+// clients). EmotionLevels is the full picture: for each emotion, which tiers 0..4
+// have art, so the editor can lay out its 5×5 grid in one round-trip.
 type libbyOutfitView struct {
 	libbyOutfit
-	Emotions []string `json:"emotions"`
+	Emotions      []string         `json:"emotions"`
+	EmotionLevels map[string][]int `json:"emotionLevels"`
 }
 
 func (s *Server) libbyOutfitPath(id string) string {
 	return filepath.Join(s.libbyDir, id+".json.enc")
 }
 
-func (s *Server) libbyEmotionPath(id, emotion string) string {
-	return filepath.Join(s.libbyDir, id+"."+emotion+".enc")
+// libbyEmotionPath is where one emotion's art for a given tier lives. Level 0 keeps
+// the original, suffix-free filename so outfits made before tiers existed still
+// resolve; higher tiers add an ".L{n}" segment.
+func (s *Server) libbyEmotionPath(id, emotion string, level int) string {
+	if level <= 0 {
+		return filepath.Join(s.libbyDir, id+"."+emotion+".enc")
+	}
+	return filepath.Join(s.libbyDir, id+"."+emotion+".L"+strconv.Itoa(level)+".enc")
 }
 
 func (s *Server) readLibbyOutfit(id string) (*libbyOutfit, error) {
@@ -74,10 +106,15 @@ func (s *Server) readLibbyOutfit(id string) (*libbyOutfit, error) {
 }
 
 func (s *Server) libbyOutfitView(o *libbyOutfit) libbyOutfitView {
-	v := libbyOutfitView{libbyOutfit: *o, Emotions: []string{}}
+	v := libbyOutfitView{libbyOutfit: *o, Emotions: []string{}, EmotionLevels: map[string][]int{}}
 	for _, e := range libbyEmotions {
-		if _, err := os.Stat(s.libbyEmotionPath(o.ID, e)); err == nil {
-			v.Emotions = append(v.Emotions, e)
+		for level := 0; level <= maxLibbyLevel; level++ {
+			if _, err := os.Stat(s.libbyEmotionPath(o.ID, e, level)); err == nil {
+				v.EmotionLevels[e] = append(v.EmotionLevels[e], level)
+				if level == 0 {
+					v.Emotions = append(v.Emotions, e)
+				}
+			}
 		}
 	}
 	return v
@@ -160,7 +197,9 @@ func (s *Server) handleDeleteLibbyOutfit(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	for _, e := range libbyEmotions {
-		_ = os.Remove(s.libbyEmotionPath(id, e))
+		for level := 0; level <= maxLibbyLevel; level++ {
+			_ = os.Remove(s.libbyEmotionPath(id, e, level))
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
@@ -198,7 +237,7 @@ func (s *Server) handleSetLibbyEmotion(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "encrypt failed")
 		return
 	}
-	if err := os.WriteFile(s.libbyEmotionPath(id, emotion), blob, 0o600); err != nil {
+	if err := os.WriteFile(s.libbyEmotionPath(id, emotion, libbyLevelParam(r)), blob, 0o600); err != nil {
 		writeErr(w, http.StatusInternalServerError, "write failed")
 		return
 	}
@@ -211,7 +250,7 @@ func (s *Server) handleGetLibbyEmotion(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad outfit id or emotion")
 		return
 	}
-	blob, err := os.ReadFile(s.libbyEmotionPath(id, emotion))
+	blob, err := os.ReadFile(s.libbyEmotionPath(id, emotion, libbyLevelParam(r)))
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "this outfit has no art for that emotion")
 		return
@@ -233,7 +272,7 @@ func (s *Server) handleDeleteLibbyEmotion(w http.ResponseWriter, r *http.Request
 		writeErr(w, http.StatusBadRequest, "bad outfit id or emotion")
 		return
 	}
-	if err := os.Remove(s.libbyEmotionPath(id, emotion)); err != nil {
+	if err := os.Remove(s.libbyEmotionPath(id, emotion, libbyLevelParam(r))); err != nil {
 		writeErr(w, http.StatusNotFound, "this outfit has no art for that emotion")
 		return
 	}

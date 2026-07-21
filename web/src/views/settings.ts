@@ -22,16 +22,27 @@ const LIBBY_EMOTIONS: { id: string; label: string; hint: string }[] = [
   { id: "thinking", label: "Thinking", hint: "Chat · Roleplay mode" },
 ];
 
+/** Horniness art tiers 0..4, calmest first — the level Libby wears rises with the
+    session meter. Tier 0 is the baseline every outfit falls back to. */
+const LIBBY_TIERS: string[] = ["Calm", "Warm", "Flirty", "Heated", "Peak"];
+
+/** Key for a staged/existing (emotion, tier) slot. */
+const slotKey = (emotion: string, level: number) => `${emotion}:${level}`;
+
 /**
  * An outfit being created or edited. Staged images are data URLs dropped onto the
- * emotion slots; they upload on Save, so backing out costs nothing.
+ * emotion slots; they upload on Save, so backing out costs nothing. Slots are keyed
+ * by "emotion:level" so each of the five tiers has its own five emotion images.
  */
 interface OutfitDraft {
   id?: string;
   name: string;
-  /** Emotions that already have art on the server (existing outfits). */
+  /** "emotion:level" pairs that already have art on the server. */
   existing: string[];
+  /** Newly dropped art as data URLs, keyed "emotion:level". */
   staged: Record<string, string>;
+  /** Which tier the editor is currently showing. */
+  level: number;
 }
 
 // The Settings screen. Server-side settings (AI tagging, scraping) are loaded
@@ -402,6 +413,33 @@ export class OppaiSettings extends LitElement {
         margin: 0 0 12px;
         font-size: 16px;
       }
+      /* Horniness tier picker across the top of the editor. */
+      .tier-tabs {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        margin-top: 12px;
+      }
+      .tier-tab {
+        border: 1px solid var(--oppai-border-strong);
+        background: transparent;
+        color: var(--oppai-text-dim);
+        border-radius: 999px;
+        font: inherit;
+        font-size: 12px;
+        padding: 5px 12px;
+        cursor: pointer;
+      }
+      .tier-tab.on {
+        background: var(--oppai-primary);
+        color: var(--oppai-on-primary);
+        border-color: var(--oppai-primary);
+      }
+      .tier-note {
+        margin: 8px 0 0;
+        font-size: 12px;
+        color: var(--oppai-text-muted);
+      }
       .slots {
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
@@ -755,9 +793,11 @@ export class OppaiSettings extends LitElement {
           <div class="field-text">
             <div class="field-label">Outfits</div>
             <div class="field-help">
-              Dress Libby up: an outfit swaps her artwork, one image per emotion. Drop
-              images onto the emotion slots in the editor; an emotion you leave empty
-              falls back to the default art. Which outfit she wears is per-device.
+              Dress Libby up: an outfit swaps her artwork, one image per emotion — and
+              per horniness tier, if you want her look to change as the meter climbs.
+              Drop images onto the emotion slots in the editor; a tier or emotion you
+              leave empty falls back to the calmer art. Which outfit she wears is
+              per-device.
             </div>
           </div>
           <div class="field-control" style="display:block;">
@@ -782,7 +822,7 @@ export class OppaiSettings extends LitElement {
             <div class="outfit-row" style="border-top:none; padding-top:12px;">
               <button
                 class="outfit-btn"
-                @click=${() => (this.outfitDraft = { name: "", existing: [], staged: {} })}
+                @click=${() => (this.outfitDraft = { name: "", existing: [], staged: {}, level: 0 })}
               >
                 <span class="material-symbols-rounded" style="font-size:14px; vertical-align:-2px;">add</span>
                 New outfit
@@ -803,18 +843,30 @@ export class OppaiSettings extends LitElement {
   }
 
   private openOutfitEditor(o: LibbyOutfit) {
-    this.outfitDraft = { id: o.id, name: o.name, existing: [...o.emotions], staged: {} };
+    // Flatten the server's per-emotion tier lists into "emotion:level" keys; fall
+    // back to the plain emotions list (tier 0) for older responses.
+    const existing: string[] = [];
+    if (o.emotionLevels) {
+      for (const [emotion, levels] of Object.entries(o.emotionLevels)) {
+        for (const level of levels) existing.push(slotKey(emotion, level));
+      }
+    } else {
+      for (const emotion of o.emotions) existing.push(slotKey(emotion, 0));
+    }
+    this.outfitDraft = { id: o.id, name: o.name, existing, staged: {}, level: 0 };
   }
 
-  /** Reads a dropped/picked image file into the draft's staging area. */
+  /** Reads a dropped/picked image file into the draft's staging area for the given
+      emotion at the tier currently open in the editor. */
   private stageEmotion(emotion: string, file: File | undefined) {
     if (!file || !file.type.startsWith("image/") || !this.outfitDraft) return;
+    const key = slotKey(emotion, this.outfitDraft.level);
     const reader = new FileReader();
     reader.onload = () => {
       if (!this.outfitDraft) return;
       this.outfitDraft = {
         ...this.outfitDraft,
-        staged: { ...this.outfitDraft.staged, [emotion]: String(reader.result) },
+        staged: { ...this.outfitDraft.staged, [key]: String(reader.result) },
       };
     };
     reader.readAsDataURL(file);
@@ -827,8 +879,9 @@ export class OppaiSettings extends LitElement {
     try {
       // Create (or rename) first so the emotion uploads have an id to hang off.
       const saved = await api.saveLibbyOutfit({ id: d.id, name: d.name.trim() });
-      for (const [emotion, dataUrl] of Object.entries(d.staged)) {
-        await api.setLibbyEmotion(saved.id, emotion, dataUrl);
+      for (const [key, dataUrl] of Object.entries(d.staged)) {
+        const [emotion, level] = key.split(":");
+        await api.setLibbyEmotion(saved.id, emotion, dataUrl, Number(level));
       }
       this.outfitDraft = null;
       await this.loadOutfits();
@@ -867,11 +920,26 @@ export class OppaiSettings extends LitElement {
             .value=${d.name}
             @input=${(e: Event) => (this.outfitDraft = { ...d, name: (e.target as HTMLInputElement).value })}
           />
+          <div class="tier-tabs">
+            ${LIBBY_TIERS.map(
+              (label, level) => html`<button
+                class="tier-tab ${d.level === level ? "on" : ""}"
+                @click=${() => (this.outfitDraft = { ...d, level })}
+                title="Shown as the horniness meter reaches this tier"
+              >${label}</button>`,
+            )}
+          </div>
+          <p class="tier-note">
+            ${d.level === 0
+              ? "Baseline art — worn when the meter is low, and the fallback for any tier you leave empty."
+              : `Shown as Libby’s horniness meter climbs into the “${LIBBY_TIERS[d.level]}” range.`}
+          </p>
           <div class="slots">
             ${LIBBY_EMOTIONS.map((em) => {
-              const staged = d.staged[em.id];
-              const existing = !staged && d.id && d.existing.includes(em.id)
-                ? `/api/libby/outfits/${encodeURIComponent(d.id)}/emotions/${em.id}`
+              const key = slotKey(em.id, d.level);
+              const staged = d.staged[key];
+              const existing = !staged && d.id && d.existing.includes(key)
+                ? api.libbyEmotionURL(d.id, em.id, d.level)
                 : "";
               return html`
                 <label

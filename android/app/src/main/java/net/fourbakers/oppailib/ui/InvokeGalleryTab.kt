@@ -47,7 +47,10 @@ import androidx.compose.ui.window.Dialog
 import coil.compose.AsyncImage
 import kotlinx.coroutines.launch
 import net.fourbakers.oppailib.data.GalleryBoard
+import net.fourbakers.oppailib.data.GalleryBoardRequest
 import net.fourbakers.oppailib.data.GalleryImage
+import net.fourbakers.oppailib.data.GalleryNamesRequest
+import net.fourbakers.oppailib.data.LibbyMeter
 import net.fourbakers.oppailib.data.GallerySaveRequest
 import net.fourbakers.oppailib.data.Repository
 
@@ -69,6 +72,9 @@ fun InvokeGalleryTab(repo: Repository, refreshKey: Int, onSaved: () -> Unit) {
     var error by remember { mutableStateOf("") }
     var expanded by remember { mutableStateOf<GalleryImage?>(null) }
     var savedNames by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var selecting by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var moveMenuOpen by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     suspend fun loadPage(reset: Boolean) {
@@ -111,14 +117,87 @@ fun InvokeGalleryTab(repo: Repository, refreshKey: Int, onSaved: () -> Unit) {
             runCatching { repo.api.saveGalleryImage(GallerySaveRequest(name = img.name)) }
                 .onSuccess {
                     savedNames = savedNames + img.name
-                    repo.report("Saved to library")
+                    LibbyMeter.bump(6) // adding to the library warms Libby up
+                    repo.report("Saved to library", "happy")
                     onSaved()
                 }
                 .onFailure { repo.report(it.message ?: "Couldn't save the image") }
         }
     }
 
+    fun deleteSelected() {
+        val names = selected.toList()
+        if (names.isEmpty()) return
+        scope.launch {
+            runCatching { repo.api.deleteGalleryImages(GalleryNamesRequest(names)) }
+                .onSuccess {
+                    items = items.filter { it.name !in selected }
+                    total = maxOf(0, total - names.size)
+                    selected = emptySet()
+                    selecting = false
+                }
+                .onFailure { repo.report(it.message ?: "Couldn't delete the images") }
+        }
+    }
+
+    fun addSelectedToBoard(targetBoard: String) {
+        val names = selected.toList()
+        if (names.isEmpty() || targetBoard == board) return
+        scope.launch {
+            runCatching { repo.api.addGalleryImagesToBoard(GalleryBoardRequest(targetBoard, names)) }
+                .onSuccess {
+                    items = items.filter { it.name !in selected }
+                    total = maxOf(0, total - names.size)
+                    selected = emptySet()
+                    selecting = false
+                    repo.report("Moved to gallery", "happy")
+                }
+                .onFailure { repo.report(it.message ?: "Couldn't move the images") }
+        }
+    }
+
     Column(Modifier.fillMaxSize().padding(horizontal = 14.dp)) {
+        // Select / done toggle, and the batch action bar while selecting.
+        if (items.isNotEmpty()) {
+            Row(
+                Modifier.fillMaxWidth().padding(top = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                if (selecting) {
+                    Text(
+                        "${selected.size} selected",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Box {
+                        OutlinedButton(
+                            onClick = { moveMenuOpen = true },
+                            enabled = selected.isNotEmpty() && boards.any { it.id != board },
+                        ) { Text("Add to gallery") }
+                        androidx.compose.material3.DropdownMenu(
+                            expanded = moveMenuOpen,
+                            onDismissRequest = { moveMenuOpen = false },
+                        ) {
+                            boards.filter { it.id != board }.forEach { b ->
+                                androidx.compose.material3.DropdownMenuItem(
+                                    text = { Text(b.name) },
+                                    onClick = { moveMenuOpen = false; addSelectedToBoard(b.id) },
+                                )
+                            }
+                        }
+                    }
+                    IconButton(onClick = { deleteSelected() }, enabled = selected.isNotEmpty()) {
+                        Icon(Icons.Filled.Delete, contentDescription = "Delete selected",
+                            tint = MaterialTheme.colorScheme.error)
+                    }
+                }
+                androidx.compose.material3.TextButton(
+                    onClick = { selecting = !selecting; if (!selecting) selected = emptySet() },
+                    modifier = Modifier.padding(start = if (selecting) 0.dp else 0.dp),
+                ) { Text(if (selecting) "Done" else "Select") }
+            }
+        }
         if (boards.size > 1) {
             Row(
                 Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 6.dp),
@@ -151,17 +230,53 @@ fun InvokeGalleryTab(repo: Repository, refreshKey: Int, onSaved: () -> Unit) {
             modifier = Modifier.weight(1f),
         ) {
             items(items, key = { it.name }) { img ->
-                AsyncImage(
-                    model = repo.galleryThumbUrl(img.name),
-                    imageLoader = repo.imageLoader,
-                    contentDescription = "Generated image",
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
+                val picked = img.name in selected
+                Box(
+                    Modifier
                         .aspectRatio(1f)
                         .clip(RoundedCornerShape(10.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant)
-                        .clickable { expanded = img },
-                )
+                        .clickable {
+                            if (selecting) {
+                                selected = if (picked) selected - img.name else selected + img.name
+                            } else {
+                                expanded = img
+                            }
+                        },
+                ) {
+                    AsyncImage(
+                        model = repo.galleryThumbUrl(img.name),
+                        imageLoader = repo.imageLoader,
+                        contentDescription = "Generated image",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize().then(
+                            if (picked) Modifier.padding(0.dp) else Modifier,
+                        ),
+                    )
+                    if (selecting) {
+                        Box(
+                            Modifier
+                                .padding(4.dp)
+                                .size(22.dp)
+                                .clip(RoundedCornerShape(11.dp))
+                                .background(
+                                    if (picked) MaterialTheme.colorScheme.primary
+                                    else Color.Black.copy(alpha = 0.5f),
+                                )
+                                .align(Alignment.TopStart),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            if (picked) {
+                                Icon(
+                                    Icons.Filled.Check,
+                                    contentDescription = "Selected",
+                                    tint = MaterialTheme.colorScheme.onPrimary,
+                                    modifier = Modifier.size(15.dp),
+                                )
+                            }
+                        }
+                    }
+                }
             }
             if (!loading && items.size < total) {
                 item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {

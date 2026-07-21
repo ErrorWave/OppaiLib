@@ -43,6 +43,31 @@ class Prefs(context: Context) {
         set(v) = sp.edit().putBoolean(KEY_BIOMETRIC, v).apply()
 
     /**
+     * A saved login for fingerprint sign-in: username + password kept in the same
+     * AES-256 encrypted prefs (hardware-backed MasterKey). Reading them back to sign
+     * in is gated behind a biometric prompt at the UI layer, so the fingerprint is
+     * what unlocks the stored credentials — you can sign in with just a fingerprint,
+     * even after the session has been cleared or has expired.
+     */
+    val hasSavedCredentials: Boolean
+        get() = !sp.getString(KEY_SAVED_USER, null).isNullOrEmpty() &&
+            !sp.getString(KEY_SAVED_PASS, null).isNullOrEmpty()
+
+    val savedUsername: String?
+        get() = sp.getString(KEY_SAVED_USER, null)
+
+    val savedPassword: String?
+        get() = sp.getString(KEY_SAVED_PASS, null)
+
+    fun saveCredentials(username: String, password: String) {
+        sp.edit().putString(KEY_SAVED_USER, username).putString(KEY_SAVED_PASS, password).apply()
+    }
+
+    fun clearCredentials() {
+        sp.edit().remove(KEY_SAVED_USER).remove(KEY_SAVED_PASS).apply()
+    }
+
+    /**
      * Whether Libby (the mascot) is hidden. Hiding her drops the artwork — the error
      * popup becomes a plain bubble and Chat loses her portrait — without touching the
      * features behind it.
@@ -166,6 +191,8 @@ class Prefs(context: Context) {
         private const val KEY_SERVER = "server_url"
         private const val KEY_TOKEN = "token"
         private const val KEY_BIOMETRIC = "biometric_lock"
+        private const val KEY_SAVED_USER = "saved_username"
+        private const val KEY_SAVED_PASS = "saved_password"
         private const val KEY_HIDE_LIBBY = "hide_libby"
         private const val KEY_LIBBY_OUTFIT = "libby_outfit"
         private const val KEY_COMIC_RTL = "comic_rtl"

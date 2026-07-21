@@ -116,6 +116,8 @@ export class OppaiImageGen extends LitElement {
   @state() private checkpoint = "";
   @state() private vae = "";
   @state() private templateId = "";
+  /** Built-in style presets are hidden by default; the picker shows the user's own. */
+  @state() private showBuiltInTemplates = false;
   @state() private selectedLoras: Record<string, number> = {};
   @state() private selectedTriggers: string[] = [];
   @state() private loraPage = 0;
@@ -123,6 +125,7 @@ export class OppaiImageGen extends LitElement {
   @state() private selectedChars: string[] = [];
   @state() private charDraft: CharDraft | null = null;
   @state() private charBusy = false;
+  @state() private scanBusy = false;
 
   // Which sidebar sections are unfolded. Models start open — it's the choice that
   // shapes everything else; the rest unfold on demand.
@@ -276,6 +279,21 @@ export class OppaiImageGen extends LitElement {
         font-size: 12px;
         color: var(--oppai-text-muted);
         padding: 0 2px 4px;
+      }
+      /* A quiet text-button used for reveal toggles (e.g. showing built-in presets). */
+      .link-toggle {
+        align-self: flex-start;
+        margin-top: 6px;
+        border: none;
+        background: none;
+        padding: 2px;
+        font: inherit;
+        font-size: 12px;
+        color: var(--oppai-primary-bright);
+        cursor: pointer;
+      }
+      .link-toggle:hover {
+        text-decoration: underline;
       }
 
       /* Picker cards (models, LoRAs, characters) — a 2-up grid in the sidebar. */
@@ -1173,6 +1191,53 @@ export class OppaiImageGen extends LitElement {
     reader.readAsDataURL(file);
   }
 
+  /** Scans a chosen image with the AI tagger and folds the booru tags it finds
+      into the character's prompt fragment (skipping ones already present). */
+  private onCharScanFile(e: Event) {
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file || !this.charDraft || this.scanBusy) return;
+    const reader = new FileReader();
+    reader.onload = () => void this.scanCharImage(String(reader.result));
+    reader.readAsDataURL(file);
+  }
+
+  private async scanCharImage(dataUrl: string) {
+    if (!this.charDraft || this.scanBusy) return;
+    this.scanBusy = true;
+    try {
+      const res = await api.scanImage(dataUrl);
+      // Booru tags carry underscores and a rating we don't want in a prompt; turn
+      // them into prompt-style phrases and drop the content rating.
+      const tags = res.tags
+        .filter((t) => t.category !== "rating")
+        .map((t) => t.tag.replace(/_/g, " ").trim())
+        .filter(Boolean);
+      const d = this.charDraft;
+      if (!d) return;
+      const existing = d.prompt.trim();
+      const have = new Set(
+        existing
+          .split(",")
+          .map((s) => s.trim().toLowerCase())
+          .filter(Boolean),
+      );
+      const additions = tags.filter((t) => !have.has(t.toLowerCase()));
+      if (!additions.length) {
+        this.showToast("No new tags found");
+        return;
+      }
+      const merged = existing ? `${existing}, ${additions.join(", ")}` : additions.join(", ");
+      this.charDraft = { ...d, prompt: merged };
+      this.showToast(`Added ${additions.length} tag${additions.length === 1 ? "" : "s"}`);
+    } catch (e) {
+      this.showToast((e as Error).message);
+    } finally {
+      this.scanBusy = false;
+    }
+  }
+
   private async saveCharacter() {
     const d = this.charDraft;
     if (!d || !d.name.trim() || this.charBusy) return;
@@ -1651,13 +1716,21 @@ export class OppaiImageGen extends LitElement {
   }
 
   private renderTemplateSection(templates: GenTemplate[]) {
-    const body = !templates.length
+    // The user's own presets come first; the generator's built-ins are hidden
+    // behind a toggle so the list isn't buried under InvokeAI's shipped defaults.
+    const builtInCount = templates.filter((t) => t.builtIn).length;
+    const visible = this.showBuiltInTemplates
+      ? templates
+      : templates.filter((t) => !t.builtIn);
+    const list = !visible.length
       ? html`<div class="sec-note">
-          No templates on the generator. In InvokeAI they're called style presets; add some there and reload.
+          ${templates.length
+            ? "No templates you created. Built-in presets are hidden — turn them on below."
+            : "No templates on the generator. In InvokeAI they're called style presets; add some there and reload."}
         </div>`
       : html`
           <div class="rows">
-            ${templates.map(
+            ${visible.map(
               (t) => html`<button
                 class="row-pick ${this.templateId === t.id ? "on" : ""}"
                 title=${t.prompt}
@@ -1669,6 +1742,19 @@ export class OppaiImageGen extends LitElement {
             )}
           </div>
         `;
+    const body = html`
+      ${list}
+      ${builtInCount
+        ? html`<button
+            class="link-toggle"
+            @click=${() => (this.showBuiltInTemplates = !this.showBuiltInTemplates)}
+          >
+            ${this.showBuiltInTemplates
+              ? "Hide built-in presets"
+              : `Show built-in presets (${builtInCount})`}
+          </button>`
+        : nothing}
+    `;
     const current = templates.find((t) => t.id === this.templateId);
     return this.section("templates", "Invoke templates", current ? current.name : "none", body);
   }
@@ -1755,6 +1841,16 @@ export class OppaiImageGen extends LitElement {
             <label class="btn">
               Choose thumbnail…
               <input class="hidden-file" type="file" accept="image/*" @change=${(e: Event) => this.onCharThumbFile(e)} />
+            </label>
+            <label class="btn ${this.scanBusy ? "disabled" : ""}"
+              title="Read booru tags off an image and add them to the prompt">
+              <span class="material-symbols-rounded" style="font-size:16px; vertical-align:-3px;">
+                ${this.scanBusy ? "hourglass_top" : "auto_awesome"}
+              </span>
+              ${this.scanBusy ? "Scanning…" : "Scan image for tags"}
+              <input class="hidden-file" type="file" accept="image/*"
+                ?disabled=${this.scanBusy}
+                @change=${(e: Event) => this.onCharScanFile(e)} />
             </label>
           </div>
           <div class="dialog-actions">

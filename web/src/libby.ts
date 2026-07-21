@@ -44,14 +44,35 @@ export function saveLibbyOutfit(id: string): void {
 }
 
 /**
- * The image to show for one of Libby's emotions: the worn outfit's art when an
- * outfit is selected, else the bundled default. Callers should keep the default
- * as an @error fallback, since an outfit may not cover every emotion.
+ * The image to show for one of Libby's emotions at a given horniness tier: the
+ * worn outfit's art when an outfit is selected, else the bundled default. This is
+ * the head of libbyArtChain(); callers that can't handle the whole fallback chain
+ * (a single <img> with an @error default) can use just this.
  */
-export function libbyEmotionSrc(emotion: string): string {
+export function libbyEmotionSrc(emotion: string, tier = 0): string {
+  return libbyArtChain(emotion, tier)[0];
+}
+
+/**
+ * The ordered list of images to try for an emotion at a tier, best first. A worn
+ * outfit is tried at the requested tier and every lower tier down to the baseline
+ * (a hornier tier the user never drew simply shows a calmer pose), then the
+ * bundled default art, then the neutral mascot as the last resort. Views walk this
+ * on each <img> error so a missing tier never leaves a broken image.
+ */
+export function libbyArtChain(emotion: string, tier = 0): string[] {
   const outfit = loadLibbyOutfit();
-  if (!outfit) return defaultLibbyArt(emotion);
-  return `/api/libby/outfits/${encodeURIComponent(outfit)}/emotions/${encodeURIComponent(emotion)}`;
+  const chain: string[] = [];
+  if (outfit) {
+    const base = `/api/libby/outfits/${encodeURIComponent(outfit)}/emotions/${encodeURIComponent(emotion)}`;
+    for (let level = Math.max(0, tier); level >= 1; level--) {
+      chain.push(`${base}?level=${level}`);
+    }
+    chain.push(base); // level 0, the suffix-free baseline
+  }
+  chain.push(defaultLibbyArt(emotion));
+  if (!chain.includes("/mascot.png")) chain.push("/mascot.png");
+  return chain;
 }
 
 export function defaultLibbyArt(emotion: string): string {

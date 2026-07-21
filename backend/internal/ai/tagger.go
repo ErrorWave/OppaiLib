@@ -257,6 +257,21 @@ func (m *Manager) TagMedia(ctx context.Context, id int64, blobPath, kind string)
 	return nil
 }
 
+// TagImage runs the tagger over a single already-decoded image and returns the
+// filtered suggestions. Unlike TagMedia it touches neither the store nor the db:
+// it's for scanning an arbitrary uploaded image (e.g. deriving booru tags for a
+// character) without importing it into the library.
+func (m *Manager) TagImage(ctx context.Context, img image.Image) ([]Suggestion, error) {
+	if m.tagger == nil {
+		return nil, errors.New("no tagger available")
+	}
+	sug, err := m.tagger.Tag(ctx, img)
+	if err != nil {
+		return nil, err
+	}
+	return m.filter(sug), nil
+}
+
 // tagImage handles a single still frame.
 func (m *Manager) tagImage(ctx context.Context, id int64, blobPath string) ([]Suggestion, error) {
 	rc, err := m.store.Open(blobPath)

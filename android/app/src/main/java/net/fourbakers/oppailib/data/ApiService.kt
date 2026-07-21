@@ -124,6 +124,18 @@ interface ApiService {
     @GET("api/imagegen/characters")
     suspend fun imageGenCharacters(): GenCharacterListResponse
 
+    /** Creates a character (empty id) or updates one; returns the saved record. */
+    @POST("api/imagegen/characters")
+    suspend fun saveCharacter(@Body body: SaveCharacterRequest): GenCharacter
+
+    @DELETE("api/imagegen/characters/{id}")
+    suspend fun deleteCharacter(@Path("id") id: String)
+
+    /** Runs the AI tagger over an uploaded image (never stored) and returns the
+        booru tags it finds — used to pre-fill a character's prompt. */
+    @POST("api/ai/scan-image")
+    suspend fun scanImage(@Body body: ScanImageRequest): ScanImageResponse
+
     /** The generator's own model record: name, description, triggers, defaults. */
     @GET("api/imagegen/model")
     suspend fun modelMeta(@Query("name") name: String): GenModelMeta
@@ -148,6 +160,14 @@ interface ApiService {
 
     @DELETE("api/imagegen/gallery/image/{name}")
     suspend fun deleteGalleryImage(@Path("name") name: String)
+
+    /** Batch delete for a multi-select. */
+    @POST("api/imagegen/gallery/delete")
+    suspend fun deleteGalleryImages(@Body body: GalleryNamesRequest)
+
+    /** Files a multi-select onto a board ("none" clears their board). */
+    @POST("api/imagegen/gallery/board")
+    suspend fun addGalleryImagesToBoard(@Body body: GalleryBoardRequest)
 
     /** Copies one gallery image into the library (the only crossing point). */
     @POST("api/imagegen/gallery/save")
@@ -190,6 +210,7 @@ interface ApiService {
         @Path("id") id: String,
         @Path("emotion") emotion: String,
         @Body body: LibbyEmotionRequest,
+        @Query("level") level: Int = 0,
     )
 
     @POST("api/scrape")

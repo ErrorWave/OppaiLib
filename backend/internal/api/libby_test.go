@@ -77,3 +77,53 @@ func TestLibbyOutfits(t *testing.T) {
 		t.Fatalf("art after delete: %d, want 404", rec.Code)
 	}
 }
+
+// Horniness tiers: level 0 (baseline) and a higher tier are stored independently,
+// and the list reports each emotion's covered levels.
+func TestLibbyOutfitTiers(t *testing.T) {
+	s, token := newTestServer(t)
+	h := s.Handler()
+
+	rec := do(t, h, token, "POST", "/api/libby/outfits", `{"name":"Tiered"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body)
+	}
+	var outfit struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &outfit)
+
+	img := `{"imageData":"data:image/png;base64,` + onePixelPNG + `"}`
+	// Dress happy at the baseline and at tier 3.
+	if rec = do(t, h, token, "PUT", "/api/libby/outfits/"+outfit.ID+"/emotions/happy", img); rec.Code != http.StatusOK {
+		t.Fatalf("set level 0: %d %s", rec.Code, rec.Body)
+	}
+	if rec = do(t, h, token, "PUT", "/api/libby/outfits/"+outfit.ID+"/emotions/happy?level=3", img); rec.Code != http.StatusOK {
+		t.Fatalf("set level 3: %d %s", rec.Code, rec.Body)
+	}
+
+	// The list reports both covered levels for happy.
+	rec = do(t, h, token, "GET", "/api/libby/outfits", "")
+	if !strings.Contains(rec.Body.String(), `"happy":[0,3]`) {
+		t.Fatalf("emotionLevels: %s", rec.Body)
+	}
+
+	// A tier that was never dressed 404s, while the dressed ones stream.
+	if rec = do(t, h, token, "GET", "/api/libby/outfits/"+outfit.ID+"/emotions/happy?level=3", ""); rec.Code != http.StatusOK {
+		t.Fatalf("get level 3: %d", rec.Code)
+	}
+	if rec = do(t, h, token, "GET", "/api/libby/outfits/"+outfit.ID+"/emotions/happy?level=2", ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("get undressed level 2: %d, want 404", rec.Code)
+	}
+
+	// Deleting one tier leaves the other intact.
+	if rec = do(t, h, token, "DELETE", "/api/libby/outfits/"+outfit.ID+"/emotions/happy?level=3", ""); rec.Code != http.StatusOK {
+		t.Fatalf("delete level 3: %d", rec.Code)
+	}
+	if rec = do(t, h, token, "GET", "/api/libby/outfits/"+outfit.ID+"/emotions/happy", ""); rec.Code != http.StatusOK {
+		t.Fatalf("baseline gone after tier delete: %d", rec.Code)
+	}
+	if rec = do(t, h, token, "GET", "/api/libby/outfits/"+outfit.ID+"/emotions/happy?level=3", ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("tier 3 still present: %d, want 404", rec.Code)
+	}
+}

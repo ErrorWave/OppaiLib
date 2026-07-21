@@ -27,6 +27,9 @@ export class OppaiInvokeGallery extends LitElement {
   @state() private newBoard = "";
   /** Names saved to the library this session, so the button can say "Saved". */
   @state() private savedNames = new Set<string>();
+  /** Multi-select mode: tiles become checkboxes and a toolbar acts on the set. */
+  @state() private selecting = false;
+  @state() private selected = new Set<string>();
 
   static styles = [
     iconStyles,
@@ -150,6 +153,86 @@ export class OppaiInvokeGallery extends LitElement {
       }
       .tile:hover .del {
         display: grid;
+      }
+      .tile.picked {
+        outline: 2px solid var(--oppai-primary);
+        outline-offset: -2px;
+      }
+      .tile.picked img {
+        opacity: 0.8;
+      }
+      /* The selection tick sits where the delete button would; always visible in
+         select mode so tapping a tile toggles it. */
+      .tile .check {
+        position: absolute;
+        top: 3px;
+        left: 3px;
+        width: 22px;
+        height: 22px;
+        border-radius: 11px;
+        background: rgba(0, 0, 0, 0.55);
+        color: #fff;
+        display: grid;
+        place-items: center;
+      }
+      .tile.picked .check {
+        background: var(--oppai-primary);
+        color: var(--oppai-on-primary);
+      }
+      /* Head "Select" toggle and the selection action bar. */
+      .sel-toggle {
+        margin-left: 8px;
+        border: 1px solid var(--oppai-border-strong);
+        background: transparent;
+        color: var(--oppai-text-dim);
+        border-radius: 999px;
+        font: inherit;
+        font-size: 12px;
+        padding: 3px 10px;
+        cursor: pointer;
+      }
+      .sel-toggle.on {
+        background: var(--oppai-primary);
+        color: var(--oppai-on-primary);
+        border-color: var(--oppai-primary);
+      }
+      .sel-bar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .sel-count {
+        font-size: 12px;
+        color: var(--oppai-text-muted);
+      }
+      .sel-move {
+        border: 1px solid var(--oppai-border-strong);
+        border-radius: 9px;
+        background: var(--oppai-surface);
+        color: var(--oppai-text);
+        font: inherit;
+        font-size: 12px;
+        padding: 6px 8px;
+      }
+      .sel-move:disabled {
+        opacity: 0.5;
+      }
+      .sel-del {
+        margin-left: auto;
+        border: none;
+        border-radius: 9px;
+        background: var(--oppai-surface);
+        color: var(--oppai-error, #f2b8b5);
+        font: inherit;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 6px 12px;
+        cursor: pointer;
+      }
+      .sel-del:disabled {
+        opacity: 0.5;
+        cursor: default;
       }
       .note {
         font-size: 12px;
@@ -284,7 +367,6 @@ export class OppaiInvokeGallery extends LitElement {
 
   private async deleteImage(img: GalleryImage) {
     if (this.busy) return;
-    if (!confirm("Delete this image from InvokeAI's gallery?")) return;
     this.busy = true;
     try {
       await api.deleteGalleryImage(img.name);
@@ -315,6 +397,61 @@ export class OppaiInvokeGallery extends LitElement {
     }
   }
 
+  // ── multi-select ────────────────────────────────────────────────────────────
+
+  private toggleSelecting() {
+    this.selecting = !this.selecting;
+    if (!this.selecting) this.selected = new Set();
+  }
+
+  private toggleSelected(name: string) {
+    const next = new Set(this.selected);
+    if (next.has(name)) next.delete(name);
+    else next.add(name);
+    this.selected = next;
+  }
+
+  private async deleteSelected() {
+    const names = [...this.selected];
+    if (!names.length || this.busy) return;
+    this.busy = true;
+    try {
+      await api.deleteGalleryImages(names);
+      const gone = this.selected;
+      this.items = this.items.filter((i) => !gone.has(i.name));
+      this.total = Math.max(0, this.total - names.length);
+      this.boards = this.boards.map((b) =>
+        b.id === this.board ? { ...b, count: Math.max(0, b.count - names.length) } : b,
+      );
+      this.selected = new Set();
+      this.selecting = false;
+    } catch (e) {
+      this.error = (e as Error).message;
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  private async addSelectedToBoard(boardId: string) {
+    const names = [...this.selected];
+    if (!names.length || !boardId || boardId === this.board || this.busy) return;
+    this.busy = true;
+    try {
+      await api.addGalleryImagesToBoard(boardId, names);
+      // The moved images leave the board we're viewing.
+      const moved = this.selected;
+      this.items = this.items.filter((i) => !moved.has(i.name));
+      this.total = Math.max(0, this.total - names.length);
+      this.selected = new Set();
+      this.selecting = false;
+      await this.refresh();
+    } catch (e) {
+      this.error = (e as Error).message;
+    } finally {
+      this.busy = false;
+    }
+  }
+
   render() {
     const current = this.boards.find((b) => b.id === this.board);
     return html`
@@ -323,7 +460,35 @@ export class OppaiInvokeGallery extends LitElement {
           <span class="material-symbols-rounded" style="font-size:18px;">photo_library</span>
           Invoke gallery
           <span class="count">${current ? `${this.total || current.count} images` : ""}</span>
+          ${this.items.length
+            ? html`<button class="sel-toggle ${this.selecting ? "on" : ""}"
+                @click=${() => this.toggleSelecting()}>
+                ${this.selecting ? "Done" : "Select"}
+              </button>`
+            : nothing}
         </div>
+        ${this.selecting
+          ? html`<div class="sel-bar">
+              <span class="sel-count">${this.selected.size} selected</span>
+              <select class="sel-move" aria-label="Move to gallery" .value=${""}
+                ?disabled=${this.busy || !this.selected.size}
+                @change=${(e: Event) => {
+                  const el = e.target as HTMLSelectElement;
+                  void this.addSelectedToBoard(el.value);
+                  el.value = "";
+                }}>
+                <option value="">Add to gallery…</option>
+                ${this.boards
+                  .filter((b) => b.id !== this.board)
+                  .map((b) => html`<option value=${b.id}>${b.name}</option>`)}
+              </select>
+              <button class="sel-del" ?disabled=${this.busy || !this.selected.size}
+                @click=${() => this.deleteSelected()}>
+                <span class="material-symbols-rounded" style="font-size:15px; vertical-align:-3px;">delete</span>
+                Delete
+              </button>
+            </div>`
+          : nothing}
         ${this.boards.length
           ? html`
               <select class="board-select" aria-label="Gallery" .value=${this.board}
@@ -347,24 +512,36 @@ export class OppaiInvokeGallery extends LitElement {
         ${this.error ? html`<div class="err">${this.error}</div>` : nothing}
         ${this.items.length
           ? html`<div class="grid">
-              ${this.items.map(
-                (img) => html`
-                  <button class="tile" title=${img.name} @click=${() => (this.expanded = img)}>
+              ${this.items.map((img) => {
+                const picked = this.selected.has(img.name);
+                return html`
+                  <button
+                    class="tile ${this.selecting ? "selectable" : ""} ${picked ? "picked" : ""}"
+                    title=${img.name}
+                    @click=${() =>
+                      this.selecting ? this.toggleSelected(img.name) : (this.expanded = img)}
+                  >
                     <img src=${api.galleryThumbURL(img.name)} alt="Generated image" loading="lazy" />
-                    <span
-                      class="del"
-                      role="button"
-                      title="Delete from InvokeAI"
-                      @click=${(e: Event) => {
-                        e.stopPropagation();
-                        void this.deleteImage(img);
-                      }}
-                    >
-                      <span class="material-symbols-rounded" style="font-size:14px;">delete</span>
-                    </span>
+                    ${this.selecting
+                      ? html`<span class="check">
+                          <span class="material-symbols-rounded" style="font-size:15px;">
+                            ${picked ? "check_circle" : "radio_button_unchecked"}
+                          </span>
+                        </span>`
+                      : html`<span
+                          class="del"
+                          role="button"
+                          title="Delete from InvokeAI"
+                          @click=${(e: Event) => {
+                            e.stopPropagation();
+                            void this.deleteImage(img);
+                          }}
+                        >
+                          <span class="material-symbols-rounded" style="font-size:14px;">delete</span>
+                        </span>`}
                   </button>
-                `,
-              )}
+                `;
+              })}
             </div>`
           : this.loading
             ? nothing

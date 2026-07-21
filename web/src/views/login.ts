@@ -50,7 +50,9 @@ export class OppaiLogin extends LitElement {
         animation: libby-breathe 3.6s ease-in-out infinite;
       }
       .libby.talking img { animation: libby-talk .34s ease-in-out infinite alternate; }
-      .libby.error img { animation: libby-worry .22s ease-in-out 4 alternate; filter: saturate(.82); }
+      /* On an error Libby stays steady — only the speech bubble turns to the error
+         colour (below). She used to shake (libby-worry); that was removed as jarring. */
+      .libby.error img { filter: saturate(.82); }
       .libby-speech {
         position: absolute;
         right: 72%;
@@ -69,7 +71,6 @@ export class OppaiLogin extends LitElement {
       .libby-emotion { margin-right: 4px; }
       @keyframes libby-breathe { 50% { transform: translateY(-3px) rotate(.35deg); } }
       @keyframes libby-talk { from { transform: translateY(0) rotate(-.45deg); } to { transform: translateY(-5px) rotate(.65deg); } }
-      @keyframes libby-worry { from { transform: rotate(-1deg); } to { transform: rotate(1deg) translateY(-2px); } }
       @media (max-width: 900px) {
         .libby {
           right: 50%;

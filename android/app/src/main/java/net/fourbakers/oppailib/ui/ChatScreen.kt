@@ -25,12 +25,14 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,24 +40,23 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
-import coil.compose.SubcomposeAsyncImage
 import kotlinx.coroutines.launch
 import net.fourbakers.oppailib.data.ChatMessage
 import net.fourbakers.oppailib.data.ChatRequest
 import net.fourbakers.oppailib.data.ChatStatus
+import net.fourbakers.oppailib.data.LibbyMeter
 import net.fourbakers.oppailib.data.Repository
 
-/** Each mode maps to one of Libby's emotions; [asset] is the bundled default art. */
-private data class LibbyMode(val id: String, val label: String, val emotion: String, val asset: String)
+/** Each mode maps to one of Libby's emotions; [asset] is the bundled default art.
+    [heat] is how hard chatting in this mode pushes the horniness meter per message. */
+private data class LibbyMode(val id: String, val label: String, val emotion: String, val asset: String, val heat: Int)
 private val libbyModes = listOf(
-    LibbyMode("sweet", "Sweet", "happy", "mascot-happy.png"),
-    LibbyMode("playful", "Playful", "mischievous", "mascot-mischievous.png"),
-    LibbyMode("bold", "Bold", "surprised", "mascot-surprised.png"),
-    LibbyMode("roleplay", "Roleplay", "thinking", "mascot-thinking.png"),
+    LibbyMode("sweet", "Sweet", "happy", "mascot-happy.png", 3),
+    LibbyMode("playful", "Playful", "mischievous", "mascot-mischievous.png", 7),
+    LibbyMode("bold", "Bold", "surprised", "mascot-surprised.png", 10),
+    LibbyMode("roleplay", "Roleplay", "thinking", "mascot-thinking.png", 6),
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -69,6 +70,8 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
     var error by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     val list = rememberLazyListState()
+    val meter by LibbyMeter.value.collectAsState()
+    val tier = LibbyMeter.tier(meter)
 
     LaunchedEffect(Unit) {
         runCatching { repo.api.chatStatus() }
@@ -89,6 +92,8 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
         draft = ""
         busy = true
         error = ""
+        // Talking to Libby warms her up — bolder modes push harder (see LibbyMode.heat).
+        LibbyMeter.bump(mode.heat)
         scope.launch {
             runCatching { repo.api.chat(ChatRequest(mode.id, next)) }
                 .onSuccess { messages = next + ChatMessage("assistant", it.message) }
@@ -112,22 +117,12 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
             // how the assistant answers, not how it looks. A worn outfit swaps the art
             // per emotion, falling back to the bundled default when the outfit lacks one.
             if (!repo.prefs.hideLibby) {
-                val outfit = repo.prefs.libbyOutfit
-                SubcomposeAsyncImage(
-                    model = if (outfit.isEmpty()) "file:///android_asset/${mode.asset}"
-                    else repo.libbyEmotionUrl(outfit, mode.emotion),
-                    imageLoader = repo.imageLoader,
-                    contentDescription = "Libby",
-                    contentScale = ContentScale.Fit,
+                LibbyPortrait(
+                    repo = repo,
+                    emotion = mode.emotion,
+                    tier = tier,
+                    fallbackAsset = mode.asset,
                     modifier = Modifier.fillMaxWidth().height(180.dp),
-                    error = {
-                        AsyncImage(
-                            model = "file:///android_asset/${mode.asset}",
-                            contentDescription = "Libby",
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier.fillMaxWidth().height(180.dp),
-                        )
-                    },
                 )
             }
             Row(
@@ -138,6 +133,20 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
                     AssistChip(onClick = { mode = item }, label = { Text(item.label) },
                         leadingIcon = if (item == mode) ({ Text("✓") }) else null)
                 }
+            }
+            // Horniness meter: rises as you chat and add to the library; set by hand too.
+            Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("Horniness", style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("$meter", style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary)
+                }
+                Slider(
+                    value = meter.toFloat(),
+                    onValueChange = { LibbyMeter.set(it.toInt()) },
+                    valueRange = 0f..100f,
+                )
             }
             LazyColumn(
                 state = list,

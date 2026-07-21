@@ -674,6 +674,65 @@ func (s *Server) handleGalleryDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 
+type galleryImagesReq struct {
+	Names []string `json:"names"`
+}
+
+// handleGalleryDeleteBatch removes several gallery images in one request, so a
+// multi-select delete in the UI is a single round-trip.
+func (s *Server) handleGalleryDeleteBatch(w http.ResponseWriter, r *http.Request) {
+	base, ok := s.galleryBase(w)
+	if !ok {
+		return
+	}
+	var req galleryImagesReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Names) == 0 {
+		writeErr(w, http.StatusBadRequest, "at least one image name is required")
+		return
+	}
+	if len(req.Names) > 500 {
+		writeErr(w, http.StatusBadRequest, "too many images in one request")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	if err := s.imagegen.DeleteGalleryImages(ctx, base, req.Names); err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+}
+
+type galleryBoardReq struct {
+	Board string   `json:"board"`
+	Names []string `json:"names"`
+}
+
+// handleGalleryAddToBoard moves the selected images onto a board (board "none"
+// clears their board), so the UI can file a multi-select into a gallery at once.
+func (s *Server) handleGalleryAddToBoard(w http.ResponseWriter, r *http.Request) {
+	base, ok := s.galleryBase(w)
+	if !ok {
+		return
+	}
+	var req galleryBoardReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Names) == 0 {
+		writeErr(w, http.StatusBadRequest, "a board and at least one image name are required")
+		return
+	}
+	if len(req.Names) > 500 {
+		writeErr(w, http.StatusBadRequest, "too many images in one request")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	if err := s.imagegen.AddImagesToBoard(ctx, base, req.Board, req.Names); err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+}
+
 type gallerySaveReq struct {
 	Name  string   `json:"name"`
 	Title string   `json:"title"`
