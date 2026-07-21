@@ -3,7 +3,8 @@ import { customElement, state, query } from "lit/decorators.js";
 import { api, mascotSay, setToken, type User } from "../api.js";
 import { motionStyles } from "../theme.js";
 import { logoSVG } from "../logo.js";
-import { loadHideLibby } from "../libby.js";
+import { applyImageFallback, emotionEmoji, inferErrorEmotion, libbyAssetCandidates,
+  loadHideLibby, normalizeEmotion, normalizeIntensity, type LibbyEmotion } from "../libby.js";
 
 @customElement("oppai-login")
 export class OppaiLogin extends LitElement {
@@ -11,6 +12,8 @@ export class OppaiLogin extends LitElement {
   @state() private busy = false;
   @state() private libbyMessage = "Welcome! I'm Libby. I'll help if sign-in gives you trouble.";
   @state() private libbyTone: "success" | "error" = "success";
+  @state() private libbyEmotion: LibbyEmotion = "happy";
+  @state() private libbyIntensity = 1;
   private libbyTimer?: number;
 
   static styles = [
@@ -39,19 +42,12 @@ export class OppaiLogin extends LitElement {
         aspect-ratio: 4 / 5;
         pointer-events: none;
         user-select: none;
-        animation: oppai-fade-in-up 0.7s var(--oppai-ease-emphasized) both;
-        animation-delay: 0.15s;
       }
       .libby img {
         display: block;
         height: 100%;
         width: 100%;
-        transform-origin: 55% 100%;
-        animation: libby-breathe 3.6s ease-in-out infinite;
       }
-      .libby.talking img { animation: libby-talk .34s ease-in-out infinite alternate; }
-      /* On an error Libby stays steady — only the speech bubble turns to the error
-         colour (below). She used to shake (libby-worry); that was removed as jarring. */
       .libby.error img { filter: saturate(.82); }
       .libby-speech {
         position: absolute;
@@ -69,8 +65,6 @@ export class OppaiLogin extends LitElement {
       .libby.error .libby-speech { border-color: var(--md-sys-color-error); }
       .libby-name { display: block; color: var(--md-sys-color-primary); font-size: 11px; font-weight: 700; }
       .libby-emotion { margin-right: 4px; }
-      @keyframes libby-breathe { 50% { transform: translateY(-3px) rotate(.35deg); } }
-      @keyframes libby-talk { from { transform: translateY(0) rotate(-.45deg); } to { transform: translateY(-5px) rotate(.65deg); } }
       @media (max-width: 900px) {
         .libby {
           right: 50%;
@@ -149,9 +143,12 @@ export class OppaiLogin extends LitElement {
     if (this.libbyTimer) clearTimeout(this.libbyTimer);
   }
 
-  private onLibby = (event: CustomEvent<{ message: string; tone: "success" | "error" }>) => {
+  private onLibby = (event: CustomEvent<{ message: string; tone: "success" | "error"; emotion?: string; intensity?: number }>) => {
     this.libbyMessage = event.detail.message;
     this.libbyTone = event.detail.tone;
+    const inferred = event.detail.tone === "error" ? inferErrorEmotion(event.detail.message) : { emotion: "happy" as const, intensity: 1 };
+    this.libbyEmotion = normalizeEmotion(event.detail.emotion ?? inferred.emotion);
+    this.libbyIntensity = normalizeIntensity(event.detail.intensity ?? inferred.intensity);
     if (this.libbyTimer) clearTimeout(this.libbyTimer);
     this.libbyTimer = window.setTimeout(() => {
       this.libbyMessage = "";
@@ -193,14 +190,16 @@ export class OppaiLogin extends LitElement {
   render() {
     // With Libby hidden the mascot (and her speech) stays off the login screen
     // entirely; errors still land in the form's own error line below.
+    const assets = libbyAssetCandidates(this.libbyEmotion, this.libbyIntensity);
     const libby = loadHideLibby()
       ? null
       : html`<div class="libby ${this.libbyMessage ? "talking" : ""} ${this.libbyTone}">
           ${this.libbyMessage ? html`<div class="libby-speech" role=${this.libbyTone === "error" ? "alert" : "status"}>
-            <span class="libby-name">LIBBY</span>
-            <span class="libby-emotion">${this.libbyTone === "error" ? "😟" : "😊"}</span>${this.libbyMessage}
+            <span class="libby-name">LIBBY · ${this.libbyEmotion} ${this.libbyIntensity}</span>
+            <span class="libby-emotion">${emotionEmoji(this.libbyEmotion)}</span>${this.libbyMessage}
           </div>` : null}
-          <img src="/mascot-lg.png" alt="Libby, the OppaiLib mascot" />
+          <img src=${assets[0]} data-fallback-index="0" alt=${`Libby feeling ${this.libbyEmotion}`}
+            @error=${(e: Event) => applyImageFallback(e.target as HTMLImageElement, assets)} />
         </div>`;
     return html`
       ${libby}

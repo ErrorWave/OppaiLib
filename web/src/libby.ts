@@ -44,35 +44,14 @@ export function saveLibbyOutfit(id: string): void {
 }
 
 /**
- * The image to show for one of Libby's emotions at a given horniness tier: the
- * worn outfit's art when an outfit is selected, else the bundled default. This is
- * the head of libbyArtChain(); callers that can't handle the whole fallback chain
- * (a single <img> with an @error default) can use just this.
+ * The image to show for one of Libby's emotions: the worn outfit's art when an
+ * outfit is selected, else the bundled default. Callers should keep the default
+ * as an @error fallback, since an outfit may not cover every emotion.
  */
-export function libbyEmotionSrc(emotion: string, tier = 0): string {
-  return libbyArtChain(emotion, tier)[0];
-}
-
-/**
- * The ordered list of images to try for an emotion at a tier, best first. A worn
- * outfit is tried at the requested tier and every lower tier down to the baseline
- * (a hornier tier the user never drew simply shows a calmer pose), then the
- * bundled default art, then the neutral mascot as the last resort. Views walk this
- * on each <img> error so a missing tier never leaves a broken image.
- */
-export function libbyArtChain(emotion: string, tier = 0): string[] {
+export function libbyEmotionSrc(emotion: string): string {
   const outfit = loadLibbyOutfit();
-  const chain: string[] = [];
-  if (outfit) {
-    const base = `/api/libby/outfits/${encodeURIComponent(outfit)}/emotions/${encodeURIComponent(emotion)}`;
-    for (let level = Math.max(0, tier); level >= 1; level--) {
-      chain.push(`${base}?level=${level}`);
-    }
-    chain.push(base); // level 0, the suffix-free baseline
-  }
-  chain.push(defaultLibbyArt(emotion));
-  if (!chain.includes("/mascot.png")) chain.push("/mascot.png");
-  return chain;
+  if (!outfit) return defaultLibbyArt(emotion);
+  return `/api/libby/outfits/${encodeURIComponent(outfit)}/emotions/${encodeURIComponent(emotion)}`;
 }
 
 export function defaultLibbyArt(emotion: string): string {
@@ -83,4 +62,79 @@ export function defaultLibbyArt(emotion: string): string {
     case "thinking": return "/mascot-thinking.png";
     default: return "/mascot.png";
   }
+}
+
+export const LIBBY_EMOTIONS = [
+  "default", "happy", "sad", "worried", "surprised", "thinking", "mischievous", "horniness",
+] as const;
+
+export type LibbyEmotion = (typeof LIBBY_EMOTIONS)[number];
+export type LibbyTone = "success" | "error";
+
+export interface LibbyCue {
+  message: string;
+  tone: LibbyTone;
+  emotion: LibbyEmotion;
+  intensity: number;
+  outfit?: string;
+}
+
+const emoji: Record<LibbyEmotion, string> = {
+  default: "🙂", happy: "😊", sad: "😢", worried: "😟", surprised: "😮",
+  thinking: "🤔", mischievous: "😏", horniness: "🥵",
+};
+
+export function normalizeEmotion(value?: string): LibbyEmotion {
+  const emotion = (value ?? "").trim().toLowerCase();
+  return (LIBBY_EMOTIONS as readonly string[]).includes(emotion)
+    ? emotion as LibbyEmotion
+    : "default";
+}
+
+export function normalizeIntensity(value?: number): number {
+  return Math.max(1, Math.min(5, Math.round(Number(value) || 1)));
+}
+
+export function emotionEmoji(value?: string): string {
+  return emoji[normalizeEmotion(value)];
+}
+
+/** Outfit uploads may be GIF or PNG; the server preserves their media type. */
+export function libbyAssetCandidates(emotion?: string, intensity?: number, outfit = loadLibbyOutfit()): string[] {
+  const mood = normalizeEmotion(emotion);
+  const level = normalizeIntensity(intensity);
+  const paths: string[] = [];
+  if (outfit && outfit !== "default") {
+    // Outfits can carry a separate image per horniness tier (server levels 0..4,
+    // where level = intensity-1). Try the tier for this intensity and every calmer
+    // one down to the baseline, so a tier the user never drew shows a cooler pose.
+    const outfitBase = `/api/libby/outfits/${encodeURIComponent(outfit)}/emotions/${encodeURIComponent(mood)}`;
+    for (let tier = level - 1; tier >= 1; tier--) paths.push(`${outfitBase}?level=${tier}`);
+    paths.push(outfitBase); // level 0, the suffix-free baseline
+  }
+  paths.push(
+    `/libby/default/${mood}-${level}.gif`,
+    `/libby/default/${mood}-${level}.png`,
+    `/libby/default/${mood}.gif`,
+    `/libby/default/${mood}.png`,
+    defaultLibbyArt(mood),
+    "/mascot.png",
+  );
+  return [...new Set(paths)];
+}
+
+export function inferErrorEmotion(message: string): Pick<LibbyCue, "emotion" | "intensity"> {
+  const text = message.toLowerCase();
+  if (/timed? out|unreachable|network|offline|couldn.t reach|connection/.test(text)) return { emotion: "worried", intensity: 4 };
+  if (/unauthori[sz]ed|session ended|sign in|password|login/.test(text)) return { emotion: "sad", intensity: 3 };
+  if (/invalid|missing|required|not found|doesn.t exist/.test(text)) return { emotion: "thinking", intensity: 2 };
+  if (/failed|error|couldn.t|can.t/.test(text)) return { emotion: "surprised", intensity: 3 };
+  return { emotion: "worried", intensity: 2 };
+}
+
+export function applyImageFallback(img: HTMLImageElement, candidates: string[]) {
+  const next = Number(img.dataset.fallbackIndex || "0") + 1;
+  if (next >= candidates.length) return;
+  img.dataset.fallbackIndex = String(next);
+  img.src = candidates[next];
 }

@@ -110,6 +110,8 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
     var selectedChars by remember { mutableStateOf<Set<String>>(emptySet()) }
 
     var prompt by remember { mutableStateOf("") }
+    var tagSuggestions by remember { mutableStateOf<List<String>>(emptyList()) }
+    var tagCorrection by remember { mutableStateOf("") }
     var negative by remember { mutableStateOf("") }
     var width by remember { mutableStateOf(512) }
     var height by remember { mutableStateOf(768) }
@@ -224,7 +226,7 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
                 )
             }.onSuccess {
                 shots = shots.map { if (it.preview.id == shot.preview.id) it.copy(saved = true) else it }
-                LibbyMeter.bump(6) // adding to the library warms Libby up
+                LibbyMeter.bump() // adding to the library warms Libby up
                 repo.report("Saved to library", "happy")
                 onSaved()
             }.onFailure { repo.report(it.message ?: "Couldn't save the image") }
@@ -420,11 +422,38 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
                     SectionLabel("Prompt")
                     OutlinedTextField(
                         value = prompt,
-                        onValueChange = { prompt = it },
+                        onValueChange = { value ->
+                            prompt = value
+                            val query = value.substringAfterLast(',').trim()
+                            if (query.length < 2) {
+                                tagSuggestions = emptyList(); tagCorrection = ""
+                            } else scope.launch {
+                                runCatching { repo.api.booruTags(query) }.onSuccess {
+                                    tagSuggestions = it.suggestions; tagCorrection = it.correction
+                                }
+                            }
+                        },
                         placeholder = { Text("masterpiece, best quality, …") },
                         minLines = 2,
                         modifier = Modifier.fillMaxWidth(),
                     )
+                    if (tagCorrection.isNotEmpty()) {
+                        Text("Did you mean: $tagCorrection?", style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.clickable {
+                                prompt = prompt.substringBeforeLast(',', "").let { if (it.isBlank()) "$tagCorrection, " else "$it, $tagCorrection, " }
+                                tagSuggestions = emptyList(); tagCorrection = ""
+                            }.padding(top = 4.dp))
+                    }
+                    if (tagSuggestions.isNotEmpty()) {
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 4.dp)) {
+                            items(tagSuggestions) { tag ->
+                                FilterChip(selected = false, onClick = {
+                                    prompt = prompt.substringBeforeLast(',', "").let { if (it.isBlank()) "$tag, " else "$it, $tag, " }
+                                    tagSuggestions = emptyList(); tagCorrection = ""
+                                }, label = { Text(tag) })
+                            }
+                        }
+                    }
                     OutlinedTextField(
                         value = negative,
                         onValueChange = { negative = it },

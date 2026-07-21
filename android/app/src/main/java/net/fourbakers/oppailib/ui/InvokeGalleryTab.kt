@@ -117,7 +117,7 @@ fun InvokeGalleryTab(repo: Repository, refreshKey: Int, onSaved: () -> Unit) {
             runCatching { repo.api.saveGalleryImage(GallerySaveRequest(name = img.name)) }
                 .onSuccess {
                     savedNames = savedNames + img.name
-                    LibbyMeter.bump(6) // adding to the library warms Libby up
+                    LibbyMeter.bump() // adding to the library warms Libby up
                     repo.report("Saved to library", "happy")
                     onSaved()
                 }

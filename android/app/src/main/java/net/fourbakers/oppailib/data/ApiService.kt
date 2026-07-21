@@ -25,6 +25,9 @@ interface ApiService {
     @POST("api/chat")
     suspend fun chat(@Body body: ChatRequest): ChatResponse
 
+    @GET("api/imagegen/tags")
+    suspend fun booruTags(@Query("q") query: String): TagSuggestions
+
     @POST("api/auth/login")
     suspend fun login(@Body body: LoginRequest): LoginResponse
 
@@ -64,6 +67,19 @@ interface ApiService {
         @Part file: MultipartBody.Part,
         @Part("title") title: RequestBody? = null,
     ): UploadResponse
+
+    @GET("api/media/{id}/gallery")
+    suspend fun gameGallery(@Path("id") gameId: Long): MediaListResponse
+
+    @Multipart
+    @POST("api/media/{id}/gallery")
+    suspend fun uploadGameGallery(
+        @Path("id") gameId: Long,
+        @Part file: MultipartBody.Part,
+    ): Media
+
+    @DELETE("api/media/{id}/gallery/{media}")
+    suspend fun removeGameGallery(@Path("id") gameId: Long, @Path("media") mediaId: Long)
 
     @POST("api/media/{id}/autotag")
     suspend fun autotag(@Path("id") id: Long): AutotagResponse

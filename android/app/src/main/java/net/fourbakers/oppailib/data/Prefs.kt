@@ -43,31 +43,6 @@ class Prefs(context: Context) {
         set(v) = sp.edit().putBoolean(KEY_BIOMETRIC, v).apply()
 
     /**
-     * A saved login for fingerprint sign-in: username + password kept in the same
-     * AES-256 encrypted prefs (hardware-backed MasterKey). Reading them back to sign
-     * in is gated behind a biometric prompt at the UI layer, so the fingerprint is
-     * what unlocks the stored credentials — you can sign in with just a fingerprint,
-     * even after the session has been cleared or has expired.
-     */
-    val hasSavedCredentials: Boolean
-        get() = !sp.getString(KEY_SAVED_USER, null).isNullOrEmpty() &&
-            !sp.getString(KEY_SAVED_PASS, null).isNullOrEmpty()
-
-    val savedUsername: String?
-        get() = sp.getString(KEY_SAVED_USER, null)
-
-    val savedPassword: String?
-        get() = sp.getString(KEY_SAVED_PASS, null)
-
-    fun saveCredentials(username: String, password: String) {
-        sp.edit().putString(KEY_SAVED_USER, username).putString(KEY_SAVED_PASS, password).apply()
-    }
-
-    fun clearCredentials() {
-        sp.edit().remove(KEY_SAVED_USER).remove(KEY_SAVED_PASS).apply()
-    }
-
-    /**
      * Whether Libby (the mascot) is hidden. Hiding her drops the artwork — the error
      * popup becomes a plain bubble and Chat loses her portrait — without touching the
      * features behind it.
@@ -85,6 +60,26 @@ class Prefs(context: Context) {
     var libbyOutfit: String
         get() = sp.getString(KEY_LIBBY_OUTFIT, "") ?: ""
         set(v) = sp.edit().putString(KEY_LIBBY_OUTFIT, v).apply()
+
+    var reauthUsername: String?
+        get() = sp.getString(KEY_REAUTH_USER, null)
+        private set(v) = sp.edit().putString(KEY_REAUTH_USER, v).apply()
+
+    var reauthPassword: String?
+        get() = sp.getString(KEY_REAUTH_PASSWORD, null)
+        private set(v) = sp.edit().putString(KEY_REAUTH_PASSWORD, v).apply()
+
+    val hasReauthCredential: Boolean
+        get() = !reauthUsername.isNullOrBlank() && !reauthPassword.isNullOrBlank()
+
+    fun saveReauthCredential(username: String, password: String) {
+        sp.edit().putString(KEY_REAUTH_USER, username).putString(KEY_REAUTH_PASSWORD, password).apply()
+    }
+
+    /** End only the active server session while retaining encrypted reauth credentials. */
+    fun clearActiveToken() {
+        sp.edit().remove(KEY_TOKEN).commit()
+    }
 
     // ── video ────────────────────────────────────────────────────────────
 
@@ -180,7 +175,7 @@ class Prefs(context: Context) {
     }
 
     fun clearSession() {
-        sp.edit().remove(KEY_TOKEN).commit()
+        sp.edit().remove(KEY_TOKEN).remove(KEY_REAUTH_USER).remove(KEY_REAUTH_PASSWORD).commit()
     }
 
     companion object {
@@ -191,10 +186,10 @@ class Prefs(context: Context) {
         private const val KEY_SERVER = "server_url"
         private const val KEY_TOKEN = "token"
         private const val KEY_BIOMETRIC = "biometric_lock"
-        private const val KEY_SAVED_USER = "saved_username"
-        private const val KEY_SAVED_PASS = "saved_password"
         private const val KEY_HIDE_LIBBY = "hide_libby"
         private const val KEY_LIBBY_OUTFIT = "libby_outfit"
+        private const val KEY_REAUTH_USER = "reauth_username"
+        private const val KEY_REAUTH_PASSWORD = "reauth_password"
         private const val KEY_COMIC_RTL = "comic_rtl"
         private const val KEY_COMIC_PAGE = "comic_page_"
         private const val KEY_VIDEO_FIT = "video_fit"

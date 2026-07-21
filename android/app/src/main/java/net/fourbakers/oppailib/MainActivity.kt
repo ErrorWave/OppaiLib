@@ -32,6 +32,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -240,8 +241,8 @@ private fun AppRoot(
     biometric: (onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit,
     onAuthenticated: () -> Unit,
 ) {
-    var authed by remember { mutableStateOf(repo.hasSession) }
-    var locked by remember { mutableStateOf(repo.hasSession && repo.prefs.biometricLock) }
+    var authed by remember { mutableStateOf(repo.hasSession || repo.canBiometricReauth) }
+    var locked by remember { mutableStateOf(repo.canBiometricReauth) }
     // Guards the lock re-arm against the biometric prompt's own lifecycle: on some devices
     // the system prompt drives the activity through ON_STOP, which would otherwise re-lock
     // (harmless) and, worse, race the success callback. While a prompt is in flight this
@@ -250,6 +251,9 @@ private fun AppRoot(
     var lockError by remember { mutableStateOf<String?>(null) }
     var mascotMessage by remember { mutableStateOf("") }
     var mascotEmotion by remember { mutableStateOf("neutral") }
+    var closeInProgress by remember { mutableStateOf(repo.hasSession && repo.canBiometricReauth) }
+    var resumePending by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(repo) {
         repo.errors.collect { mascotMessage = it.message; mascotEmotion = it.emotion }
@@ -266,7 +270,22 @@ private fun AppRoot(
         authInProgress = true
         lockError = null
         biometric(
-            { authInProgress = false; locked = false; mascotMessage = "Welcome back!"; mascotEmotion = "happy" },
+            {
+                scope.launch {
+                    val ok = repo.hasSession || repo.reauthenticate()
+                    authInProgress = false
+                    if (ok) {
+                        locked = false
+                        authed = true
+                        mascotMessage = "Welcome back!"; mascotEmotion = "happy"
+                    } else {
+                        locked = false
+                        authed = false
+                        mascotMessage = "Server reauthentication failed. Please sign in again."
+                        mascotEmotion = "surprised"
+                    }
+                }
+            },
             { msg ->
                 authInProgress = false
                 lockError = msg
@@ -282,10 +301,25 @@ private fun AppRoot(
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_STOP ->
-                    if (authed && repo.prefs.biometricLock && !authInProgress) locked = true
-                Lifecycle.Event.ON_RESUME ->
-                    if (authed && locked && !authInProgress) unlock()
+                Lifecycle.Event.ON_STOP -> if (authed && !authInProgress && !closeInProgress) {
+                    locked = true
+                    closeInProgress = true
+                    scope.launch {
+                        repo.closeSessionForReauth()
+                        closeInProgress = false
+                        if (!repo.prefs.biometricLock) {
+                            repo.clearSession()
+                            locked = false
+                            authed = false
+                        } else if (resumePending) {
+                            resumePending = false
+                            unlock()
+                        }
+                    }
+                }
+                Lifecycle.Event.ON_RESUME -> if (authed && locked && !authInProgress) {
+                    if (closeInProgress) resumePending = true else unlock()
+                }
                 else -> {}
             }
         }
@@ -320,6 +354,19 @@ private fun AppRoot(
         }
         if (mascotMessage.isNotBlank()) {
             MascotPopup(mascotMessage, mascotEmotion, repo, Modifier.align(Alignment.BottomEnd))
+        }
+    }
+
+    // A force-stop cannot run ON_STOP cleanup. Retire a token left from the prior
+    // process before allowing device credentials to create a fresh server session.
+    LaunchedEffect(Unit) {
+        if (closeInProgress) {
+            repo.closeSessionForReauth()
+            closeInProgress = false
+            if (resumePending || locked) {
+                resumePending = false
+                unlock()
+            }
         }
     }
 }

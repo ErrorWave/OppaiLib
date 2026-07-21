@@ -41,9 +41,9 @@ import net.fourbakers.oppailib.data.Repository
 /**
  * Sign-in. Beyond username/password, this device can **save the login behind a
  * fingerprint**: tick "Save login & use fingerprint" and the credentials are kept in
- * the app's AES-256 encrypted store, and next time a fingerprint alone signs you in
- * (the biometric prompt is what unlocks the saved credentials). Works even after the
- * session is cleared or expires, since it re-logs in rather than reusing a token.
+ * the app's AES-256 encrypted store and the biometric lock is armed, so next time a
+ * fingerprint alone signs you in (the prompt unlocks the saved credentials and
+ * re-authenticates). Works even after the session is cleared or expires.
  *
  * [biometric] is the activity's shared BiometricPrompt runner.
  */
@@ -55,16 +55,17 @@ fun LoginScreen(
     biometric: (onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit,
 ) {
     var server by remember { mutableStateOf(repo.prefs.serverUrl ?: "http://10.0.2.2:8080") }
-    var username by remember { mutableStateOf(repo.prefs.savedUsername ?: "admin") }
+    var username by remember { mutableStateOf(repo.prefs.reauthUsername ?: "admin") }
     var password by remember { mutableStateOf("") }
-    var remember_ by remember { mutableStateOf(repo.prefs.hasSavedCredentials) }
+    var remember_ by remember { mutableStateOf(repo.prefs.hasReauthCredential) }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    val hasSaved = repo.prefs.hasSavedCredentials
+    val hasSaved = repo.prefs.hasReauthCredential
 
-    // Signs in with the given credentials, persisting or clearing the saved login per
-    // the checkbox. Used by both the password button and the fingerprint path.
+    // Signs in with the given credentials. When "save login" is on, the credentials
+    // are stored for fingerprint sign-in and the biometric lock is armed; turning it
+    // off disarms the lock so the saved login is no longer used.
     fun doLogin(user: String, pass: String, save: Boolean) {
         error = null
         busy = true
@@ -73,7 +74,12 @@ fun LoginScreen(
             try {
                 val res = repo.api.login(LoginRequest(user, pass))
                 repo.saveSession(res.token)
-                if (save) repo.prefs.saveCredentials(user, pass) else repo.prefs.clearCredentials()
+                if (save) {
+                    repo.saveReauthCredential(user, pass)
+                    repo.prefs.biometricLock = true
+                } else {
+                    repo.prefs.biometricLock = false
+                }
                 onMascot("Welcome back, ${res.user.username}!", "happy")
                 onAuthed()
             } catch (e: Exception) {
@@ -89,13 +95,23 @@ fun LoginScreen(
         }
     }
 
-    // Prompts for a fingerprint, then signs in with the saved credentials.
+    // Prompts for a fingerprint, then re-authenticates with the saved credentials.
     fun fingerprintSignIn() {
-        val user = repo.prefs.savedUsername
-        val pass = repo.prefs.savedPassword
-        if (user.isNullOrEmpty() || pass.isNullOrEmpty()) return
+        if (!repo.prefs.hasReauthCredential) return
+        repo.setServer(server)
         biometric(
-            { doLogin(user, pass, save = true) },
+            {
+                busy = true
+                scope.launch {
+                    if (repo.reauthenticate()) {
+                        onMascot("Welcome back!", "happy")
+                        onAuthed()
+                    } else {
+                        error = "Couldn't sign in with the saved login. Enter your password."
+                    }
+                    busy = false
+                }
+            },
             { msg -> if (msg.isNotBlank()) error = msg },
         )
     }

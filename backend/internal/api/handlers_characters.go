@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -145,6 +146,18 @@ func (s *Server) handleSaveCharacter(w http.ResponseWriter, r *http.Request) {
 	if len(thumb) > maxModelThumbBytes {
 		writeErr(w, http.StatusBadRequest, "image is too large")
 		return
+	}
+	// When the user supplies a reference image but no manual prompt, derive only
+	// stable appearance tags. AnalyzeAppearance intentionally excludes objects,
+	// actions, scene details, identities, and content ratings.
+	if len(thumb) > 0 && strings.TrimSpace(req.Prompt) == "" {
+		if suggestions, err := s.ai.AnalyzeAppearance(r.Context(), bytes.NewReader(thumb)); err == nil {
+			tags := make([]string, 0, len(suggestions))
+			for _, suggestion := range suggestions {
+				tags = append(tags, suggestion.Name)
+			}
+			req.Prompt = strings.Join(tags, ", ")
+		}
 	}
 
 	c := character{ID: id, Name: req.Name, Prompt: strings.TrimSpace(req.Prompt), NegativePrompt: strings.TrimSpace(req.NegativePrompt)}

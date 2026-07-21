@@ -1,52 +1,50 @@
-// Libby's "horniness" meter: a per-session stat, 0–100, that decides which art
-// tier of her outfit she wears. It is deliberately session-scoped (sessionStorage,
-// not localStorage) — it's a mood for this sitting, and starts fresh next time.
+// Libby's "horniness" meter: a per-session intensity, 1–5, shared across the app.
+// It is the persistent backing for the chat's intensity slider — deliberately
+// session-scoped (sessionStorage), a mood for this sitting that starts fresh next
+// time. Three things move it: the user sets it by hand (the chat slider), chatting
+// with Libby (the model's replies carry an intensity), and adding items to the
+// library. It also selects which tier of an outfit's art Libby wears (see
+// libbyAssetCandidates in libby.ts), so hornier = a hotter outfit tier.
 //
-// Three things move it, all funnelled through here so every surface agrees:
-//   - the user sets it by hand (slider / ± in the chat panel),
-//   - chatting with Libby nudges it up (harder in the bolder modes),
-//   - adding items to the library nudges it up.
-//
-// Views react to the `oppai-libby-meter` event to re-render at the new tier.
+// Values line up with the server's five outfit art tiers: intensity i ↔ level i-1.
 
-const METER_KEY = "oppai_libby_meter";
+const KEY = "oppai_libby_intensity";
 
-// Five art tiers, levels 0..4, matching the server's maxLibbyLevel.
-export const LIBBY_TIERS = 5;
+/** Intensity runs 1..5, matching normalizeIntensity() and the five art tiers. */
+export const LIBBY_MAX_INTENSITY = 5;
 
-export function getMeter(): number {
-  const raw = sessionStorage.getItem(METER_KEY);
-  const v = raw === null ? 0 : Number(raw);
-  return Number.isFinite(v) ? clamp(v) : 0;
+export function getIntensity(): number {
+  const raw = sessionStorage.getItem(KEY);
+  const v = raw === null ? 1 : Number(raw);
+  return Number.isFinite(v) ? clamp(v) : 1;
 }
 
-/** Sets the meter to an absolute value (manual control). Returns the stored value. */
-export function setMeter(value: number): number {
+/** Sets the intensity to an absolute value (the chat slider / model replies). */
+export function setIntensity(value: number): number {
   return store(value);
 }
 
-/** Nudges the meter by a delta (chat, library adds). Returns the stored value. */
-export function bumpMeter(delta: number): number {
-  return store(getMeter() + delta);
+/** Nudges the intensity up (library adds, bolder chat). */
+export function bumpIntensity(delta = 1): number {
+  return store(getIntensity() + delta);
 }
 
-/** The art tier (0..LIBBY_TIERS-1) for a meter value. */
-export function tierForMeter(value: number = getMeter()): number {
-  const t = Math.floor(clamp(value) / (100 / LIBBY_TIERS));
-  return Math.max(0, Math.min(LIBBY_TIERS - 1, t));
+/** The outfit art tier (0..4) for an intensity (1..5). */
+export function tierForIntensity(value: number = getIntensity()): number {
+  return clamp(value) - 1;
 }
 
 function store(value: number): number {
   const v = clamp(value);
   try {
-    sessionStorage.setItem(METER_KEY, String(v));
+    sessionStorage.setItem(KEY, String(v));
   } catch {
     /* ignore quota / private-mode errors */
   }
-  window.dispatchEvent(new CustomEvent("oppai-libby-meter", { detail: { value: v } }));
+  window.dispatchEvent(new CustomEvent("oppai-libby-meter", { detail: { intensity: v } }));
   return v;
 }
 
 function clamp(v: number): number {
-  return Math.max(0, Math.min(100, Math.round(v)));
+  return Math.max(1, Math.min(LIBBY_MAX_INTENSITY, Math.round(v)));
 }

@@ -123,6 +123,12 @@ export interface ChatStatus {
   modes: string[];
 }
 
+export interface ChatResponse {
+  message: string;
+  emotion?: string;
+  intensity?: number;
+}
+
 // Environment/build facts the Settings screen shows but can't change — these come
 // from env vars and only take effect at startup.
 export interface ReadOnlyInfo {
@@ -479,16 +485,12 @@ export function setToken(t: string | null) {
   else localStorage.removeItem(TOKEN_KEY);
 }
 
-export type MascotTone = "success" | "error";
-
-/**
- * Have Libby say something app-wide (the corner speech popup). `emotion` picks her
- * pose; when omitted it's derived from the tone — a worried "surprised" for errors,
- * a bright "happy" for successes — so she reacts in character to whatever happened.
- */
-export function mascotSay(message: string, tone: MascotTone = "error", emotion?: string) {
-  const pose = emotion ?? (tone === "error" ? "surprised" : "happy");
-  window.dispatchEvent(new CustomEvent("oppai-mascot", { detail: { message, tone, emotion: pose } }));
+export function mascotSay(
+  message: string,
+  tone: "success" | "error" = "error",
+  detail: { emotion?: string; intensity?: number; outfit?: string } = {},
+) {
+  window.dispatchEvent(new CustomEvent("oppai-mascot", { detail: { message, tone, ...detail } }));
 }
 
 async function request<T>(path: string, opts: RequestInit = {}, timeoutMs = 0): Promise<T> {
@@ -704,6 +706,16 @@ export const api = {
 
   imageGenStatus: () => request<ImageGenStatus>("/api/imagegen/status", {}, 12_000),
 
+  booruTags: (q: string) => request<{ suggestions: string[]; correction?: string }>(
+    `/api/imagegen/tags?q=${encodeURIComponent(q)}`,
+  ),
+  gameGallery: (gameId: number) => request<{ items: Media[] }>(`/api/media/${gameId}/gallery`),
+  uploadGameGallery: (gameId: number, file: File) => {
+    const fd = new FormData(); fd.append("file", file);
+    return request<Media>(`/api/media/${gameId}/gallery`, { method: "POST", body: fd });
+  },
+  removeGameGallery: (gameId: number, mediaId: number) =>
+    request<void>(`/api/media/${gameId}/gallery/${mediaId}`, { method: "DELETE" }),
   // Turn a scrap of (spoken) natural language into a fuller prompt + negative prompt.
   optimizePrompt: (text: string) =>
     request<{ prompt: string; negativePrompt: string }>("/api/imagegen/prompt", {
@@ -738,10 +750,10 @@ export const api = {
     }),
 
   chatStatus: () => request<ChatStatus>("/api/chat/status", {}, 12_000),
-  chat: (mode: string, messages: ChatMessage[]) =>
-    request<{ message: string }>("/api/chat", {
+  chat: (mode: string, messages: ChatMessage[], emotion = "default", intensity = 1) =>
+    request<ChatResponse>("/api/chat", {
       method: "POST",
-      body: JSON.stringify({ mode, messages }),
+      body: JSON.stringify({ mode, messages, emotion, intensity }),
     }, 125_000),
   loraThumbURL: (name: string) => `/api/imagegen/lora-thumb?name=${encodeURIComponent(name)}`,
 

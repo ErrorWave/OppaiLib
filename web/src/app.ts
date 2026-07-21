@@ -1,11 +1,10 @@
 import { LitElement, html, css } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { api, getToken, setToken, mascotSay, type User } from "./api.js";
-import { loadHideLibby } from "./libby.js";
-import { bumpMeter, tierForMeter } from "./libby-meter.js";
+import { applyImageFallback, emotionEmoji, inferErrorEmotion, libbyAssetCandidates, loadHideLibby } from "./libby.js";
+import { bumpIntensity } from "./libby-meter.js";
 import "./views/login.js";
 import "./views/library.js";
-import "./views/libby-portrait.js";
 
 /**
  * How often to ask the server whether our session is still good.
@@ -24,7 +23,10 @@ export class OppaiApp extends LitElement {
   @state() private ready = false;
   @state() private mascotMessage = "";
   @state() private mascotTone: "success" | "error" = "success";
-  @state() private mascotEmotion = "neutral";
+  // When an event tells us Libby's pose (a happy library-add reaction, say) we honor
+  // it; errors that arrive without one still infer their mood from the message text.
+  @state() private mascotEmotion = "";
+  @state() private mascotIntensity = 0;
 
   private probeTimer?: number;
   private mascotTimer?: number;
@@ -42,9 +44,12 @@ export class OppaiApp extends LitElement {
       pointer-events: none;
       animation: pop-in 0.3s ease-out both;
     }
-    .mascot-talk .mascot-portrait {
+    .mascot-talk img {
       width: min(210px, 34vw);
-      height: 38vh;
+      max-height: 38vh;
+      object-fit: contain;
+      object-position: bottom;
+      transform-origin: 55% 100%;
     }
     .speech {
       max-width: min(300px, 58vw);
@@ -63,7 +68,7 @@ export class OppaiApp extends LitElement {
     .libby-name { display: block; color: var(--md-sys-color-error); font-size: 11px; font-weight: 700; }
     @keyframes pop-in { from { opacity: 0; transform: translateY(24px) scale(.94); } }
     @media (max-width: 600px) {
-      .mascot-talk .mascot-portrait { width: 150px; }
+      .mascot-talk img { width: 150px; }
       .speech { margin-bottom: 100px; }
     }
   `;
@@ -90,31 +95,35 @@ export class OppaiApp extends LitElement {
     if (this.mascotTimer) clearTimeout(this.mascotTimer);
   }
 
-  private onMascot = (event: CustomEvent<{ message: string; tone: "success" | "error"; emotion?: string }>) => {
+  private onMascot = (event: CustomEvent<{ message: string; tone: "success" | "error"; emotion?: string; intensity?: number }>) => {
     // Libby reacts in character to things happening around the app — errors and
-    // successes alike — with a matching pose. (The login screen owns its own
-    // always-on Libby; this popup only appears once you're inside, see render().)
-    this.mascotMessage = event.detail.message;
-    this.mascotTone = event.detail.tone;
-    this.mascotEmotion = event.detail.emotion ?? (event.detail.tone === "error" ? "surprised" : "happy");
+    // successes alike. An event that names her pose (a happy library-add, say) is
+    // shown as-is; a bare error still infers its mood from the message text at render.
+    // (The login screen owns its own always-on Libby; this popup only shows once
+    // you're inside, see render().)
+    const d = event.detail;
+    this.mascotMessage = d.message;
+    this.mascotTone = d.tone;
+    this.mascotEmotion = d.emotion ?? "";
+    this.mascotIntensity = d.intensity ?? 0;
     if (this.mascotTimer) clearTimeout(this.mascotTimer);
     this.mascotTimer = window.setTimeout(() => (this.mascotMessage = ""), 5000);
+  };
+
+  // Adding to the library warms Libby up (her session horniness) and gets a reaction.
+  // The event bubbles composed from whichever view did the import.
+  private onImported = (event: CustomEvent<{ count?: number }>) => {
+    const count = Math.max(1, event.detail?.count ?? 1);
+    const intensity = bumpIntensity(count > 1 ? 2 : 1);
+    const line = intensity >= 4
+      ? count > 1 ? `Mmh, ${count} more for the collection…` : "Ooh, adding to the collection?"
+      : count > 1 ? `Saved ${count} to your library.` : "Saved to your library.";
+    mascotSay(line, "success", { emotion: intensity >= 3 ? "mischievous" : "happy", intensity });
   };
 
   // The Settings toggle fires this; re-render so a popup that's on screen right now
   // sheds (or regains) the mascot immediately.
   private onLibbyPref = () => this.requestUpdate();
-
-  // Adding to the library warms Libby up (the horniness meter) and gets a reaction
-  // from her. The event bubbles composed from whichever view did the import.
-  private onImported = (event: CustomEvent<{ count?: number }>) => {
-    const count = Math.max(1, event.detail?.count ?? 1);
-    const tier = tierForMeter(bumpMeter(6 * Math.min(count, 5)));
-    const line = tier >= 3
-      ? count > 1 ? `Mmh, ${count} more for the collection…` : "Ooh, adding to the collection?"
-      : count > 1 ? `Saved ${count} to your library.` : "Saved to your library.";
-    mascotSay(line, "success", tier >= 2 ? "mischievous" : "happy");
-  };
 
   private onLogout = () => {
     this.user = null;
@@ -178,14 +187,20 @@ export class OppaiApp extends LitElement {
     // This popup is the app's error surface, so hiding Libby can't hide the message —
     // it just drops the character: same bubble, no artwork, no name.
     const hideLibby = loadHideLibby();
+    // Prefer the pose the event carried; fall back to inferring one from an error's text.
+    const cue = this.mascotEmotion
+      ? { emotion: this.mascotEmotion, intensity: this.mascotIntensity || 1 }
+      : inferErrorEmotion(this.mascotMessage);
+    const assets = libbyAssetCandidates(cue.emotion, cue.intensity);
     const mascot = this.mascotMessage
       ? html`<div class="mascot-talk ${this.mascotTone} ${hideLibby ? "plain" : ""}">
           <div class="speech" role=${this.mascotTone === "error" ? "alert" : "status"}>
-            ${hideLibby ? null : html`<span class="libby-name">LIBBY · ${this.mascotTone === "error" ? "😟" : "😊"}</span>`}${this.mascotMessage}
+            ${hideLibby ? null : html`<span class="libby-name">LIBBY · ${emotionEmoji(cue.emotion)} · ${cue.emotion} ${cue.intensity}</span>`}${this.mascotMessage}
           </div>
           ${hideLibby
             ? null
-            : html`<libby-portrait class="mascot-portrait" .emotion=${this.mascotEmotion} talking></libby-portrait>`}
+            : html`<img src=${assets[0]} data-fallback-index="0" alt=${`Libby feeling ${cue.emotion}`}
+              @error=${(e: Event) => applyImageFallback(e.target as HTMLImageElement, assets)} />`}
         </div>`
       : null;
     if (!this.ready) {

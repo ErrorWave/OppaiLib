@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -25,7 +26,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
@@ -37,11 +37,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
+import coil.compose.SubcomposeAsyncImage
 import kotlinx.coroutines.launch
 import net.fourbakers.oppailib.data.ChatMessage
 import net.fourbakers.oppailib.data.ChatRequest
@@ -58,20 +62,30 @@ private val libbyModes = listOf(
     LibbyMode("bold", "Bold", "surprised", "mascot-surprised.png", 10),
     LibbyMode("roleplay", "Roleplay", "thinking", "mascot-thinking.png", 6),
 )
+private val libbyEmotions = listOf("default", "happy", "sad", "worried", "surprised", "thinking", "mischievous", "horniness")
+private fun libbyAsset(emotion: String) = when (emotion) {
+    "happy" -> "mascot-happy.png"
+    "mischievous", "horniness" -> "mascot-mischievous.png"
+    "surprised" -> "mascot-surprised.png"
+    "thinking", "worried" -> "mascot-thinking.png"
+    else -> "mascot.png"
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(repo: Repository, onBack: () -> Unit) {
     var status by remember { mutableStateOf<ChatStatus?>(null) }
     var mode by remember { mutableStateOf(libbyModes.first()) }
+    var emotion by remember { mutableStateOf(mode.emotion) }
+    // Intensity is Libby's session horniness meter (see LibbyMeter): persistent across
+    // the app, nudged by library adds, and set by hand with the picker below.
+    val intensity by LibbyMeter.value.collectAsState()
     var messages by remember { mutableStateOf<List<ChatMessage>>(emptyList()) }
     var draft by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     val list = rememberLazyListState()
-    val meter by LibbyMeter.value.collectAsState()
-    val tier = LibbyMeter.tier(meter)
 
     LaunchedEffect(Unit) {
         runCatching { repo.api.chatStatus() }
@@ -92,11 +106,14 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
         draft = ""
         busy = true
         error = ""
-        // Talking to Libby warms her up — bolder modes push harder (see LibbyMode.heat).
-        LibbyMeter.bump(mode.heat)
         scope.launch {
-            runCatching { repo.api.chat(ChatRequest(mode.id, next)) }
-                .onSuccess { messages = next + ChatMessage("assistant", it.message) }
+            runCatching { repo.api.chat(ChatRequest(mode.id, next, emotion, intensity)) }
+                .onSuccess {
+                    emotion = it.emotion.takeIf(libbyEmotions::contains) ?: "default"
+                    // Persist the reply's intensity into the shared session meter.
+                    LibbyMeter.set(it.intensity)
+                    messages = next + ChatMessage("assistant", it.message)
+                }
                 .onFailure { error = it.message ?: "Libby couldn't answer" }
             busy = false
         }
@@ -117,12 +134,24 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
             // how the assistant answers, not how it looks. A worn outfit swaps the art
             // per emotion, falling back to the bundled default when the outfit lacks one.
             if (!repo.prefs.hideLibby) {
-                LibbyPortrait(
-                    repo = repo,
-                    emotion = mode.emotion,
-                    tier = tier,
-                    fallbackAsset = mode.asset,
+                val outfit = repo.prefs.libbyOutfit
+                // Outfit art can vary by horniness tier (level = intensity-1); fall back
+                // to the bundled emotion art when the outfit lacks that tier/emotion.
+                SubcomposeAsyncImage(
+                    model = if (outfit.isEmpty()) "file:///android_asset/${libbyAsset(emotion)}"
+                    else repo.libbyEmotionUrl(outfit, emotion, LibbyMeter.tier(intensity)),
+                    imageLoader = repo.imageLoader,
+                    contentDescription = "Libby",
+                    contentScale = ContentScale.Fit,
                     modifier = Modifier.fillMaxWidth().height(180.dp),
+                    error = {
+                        AsyncImage(
+                            model = "file:///android_asset/${libbyAsset(emotion)}",
+                            contentDescription = "Libby",
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier.fillMaxWidth().height(180.dp),
+                        )
+                    },
                 )
             }
             Row(
@@ -130,23 +159,29 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 libbyModes.forEach { item ->
-                    AssistChip(onClick = { mode = item }, label = { Text(item.label) },
+                    AssistChip(onClick = { mode = item; emotion = item.emotion }, label = { Text(item.label) },
                         leadingIcon = if (item == mode) ({ Text("✓") }) else null)
                 }
             }
-            // Horniness meter: rises as you chat and add to the library; set by hand too.
-            Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("Horniness", style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text("$meter", style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary)
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                libbyEmotions.forEach { item ->
+                    AssistChip(onClick = { emotion = item }, label = { Text(if (item == "horniness") "Horniness" else item.replaceFirstChar(Char::uppercase)) },
+                        leadingIcon = if (item == emotion) ({ Text("✓") }) else null)
                 }
-                Slider(
-                    value = meter.toFloat(),
-                    onValueChange = { LibbyMeter.set(it.toInt()) },
-                    valueRange = 0f..100f,
-                )
+            }
+            // Horniness / intensity, backed by the shared session meter.
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text("Horniness", modifier = Modifier.align(Alignment.CenterVertically))
+                (1..5).forEach { level ->
+                    AssistChip(onClick = { LibbyMeter.set(level) }, label = { Text(level.toString()) },
+                        leadingIcon = if (level == intensity) ({ Text("✓") }) else null)
+                }
             }
             LazyColumn(
                 state = list,
