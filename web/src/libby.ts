@@ -79,10 +79,8 @@ export interface LibbyCue {
   outfit?: string;
 }
 
-const emoji: Record<LibbyEmotion, string> = {
-  default: "🙂", happy: "😊", sad: "😢", worried: "😟", surprised: "😮",
-  thinking: "🤔", mischievous: "😏", horniness: "🥵",
-};
+// Libby's mood is carried by her artwork and her wording, not by a label: her
+// speech deliberately shows no emoji and no "emotion N" readout.
 
 export function normalizeEmotion(value?: string): LibbyEmotion {
   const emotion = (value ?? "").trim().toLowerCase();
@@ -93,10 +91,6 @@ export function normalizeEmotion(value?: string): LibbyEmotion {
 
 export function normalizeIntensity(value?: number): number {
   return Math.max(1, Math.min(5, Math.round(Number(value) || 1)));
-}
-
-export function emotionEmoji(value?: string): string {
-  return emoji[normalizeEmotion(value)];
 }
 
 /** Outfit uploads may be GIF or PNG; the server preserves their media type. */

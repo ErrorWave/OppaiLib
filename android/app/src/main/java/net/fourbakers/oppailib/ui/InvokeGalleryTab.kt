@@ -51,6 +51,7 @@ import net.fourbakers.oppailib.data.GalleryBoardRequest
 import net.fourbakers.oppailib.data.GalleryImage
 import net.fourbakers.oppailib.data.GalleryNamesRequest
 import net.fourbakers.oppailib.data.LibbyMeter
+import net.fourbakers.oppailib.data.LibbyVoice
 import net.fourbakers.oppailib.data.GallerySaveRequest
 import net.fourbakers.oppailib.data.Repository
 
@@ -61,11 +62,20 @@ private const val PAGE = 40
  * grouped into its boards. Tap to expand; from there save into the library or
  * delete from the generator. [refreshKey] bumps after a generation so fresh
  * images appear without leaving the screen.
+ *
+ * The open board is hoisted ([board] / [onBoardChange]) because it is also the
+ * destination for new generations: whatever gallery you have open here is where
+ * the Create tab files what it makes.
  */
 @Composable
-fun InvokeGalleryTab(repo: Repository, refreshKey: Int, onSaved: () -> Unit) {
+fun InvokeGalleryTab(
+    repo: Repository,
+    refreshKey: Int,
+    board: String,
+    onBoardChange: (String) -> Unit,
+    onSaved: () -> Unit,
+) {
     var boards by remember { mutableStateOf<List<GalleryBoard>>(emptyList()) }
-    var board by remember { mutableStateOf("none") }
     var items by remember { mutableStateOf<List<GalleryImage>>(emptyList()) }
     var total by remember { mutableStateOf(0) }
     var loading by remember { mutableStateOf(false) }
@@ -94,7 +104,9 @@ fun InvokeGalleryTab(repo: Repository, refreshKey: Int, onSaved: () -> Unit) {
         runCatching { repo.api.galleryBoards() }
             .onSuccess { res ->
                 boards = res.boards
-                if (res.boards.none { it.id == board } && res.boards.isNotEmpty()) board = res.boards.first().id
+                if (res.boards.none { it.id == board } && res.boards.isNotEmpty()) {
+                    onBoardChange(res.boards.first().id)
+                }
             }
             .onFailure { error = it.message ?: "Couldn't load the gallery" }
         loadPage(reset = true)
@@ -107,6 +119,7 @@ fun InvokeGalleryTab(repo: Repository, refreshKey: Int, onSaved: () -> Unit) {
                     items = items.filter { it.name != img.name }
                     total = maxOf(0, total - 1)
                     if (expanded?.name == img.name) expanded = null
+                    LibbyVoice.react(LibbyVoice.Event.GALLERY_DELETE).let { repo.report(it.message, it.emotion) }
                 }
                 .onFailure { repo.report(it.message ?: "Couldn't delete the image") }
         }
@@ -119,7 +132,7 @@ fun InvokeGalleryTab(repo: Repository, refreshKey: Int, onSaved: () -> Unit) {
                 .onSuccess {
                     savedNames = savedNames + img.name
                     LibbyMeter.bump() // adding to the library warms Libby up
-                    repo.report("Saved to library", "happy")
+                    LibbyVoice.react(LibbyVoice.Event.SAVE).let { repo.report(it.message, it.emotion) }
                     onSaved()
                 }
                 .onFailure { repo.report(it.message ?: "Couldn't save the image") }
@@ -166,7 +179,7 @@ fun InvokeGalleryTab(repo: Repository, refreshKey: Int, onSaved: () -> Unit) {
             runCatching { repo.api.deleteGalleryBoard(target) }
                 .onSuccess {
                     items = emptyList()
-                    board = "none" // triggers the reload that refreshes the board list
+                    onBoardChange("none") // triggers the reload that refreshes the board list
                     repo.report("Gallery deleted", "happy")
                 }
                 .onFailure { repo.report(it.message ?: "Couldn't delete the gallery") }
@@ -227,7 +240,7 @@ fun InvokeGalleryTab(repo: Repository, refreshKey: Int, onSaved: () -> Unit) {
                     boards.forEach { b ->
                         FilterChip(
                             selected = board == b.id,
-                            onClick = { if (board != b.id) { items = emptyList(); board = b.id } },
+                            onClick = { if (board != b.id) { items = emptyList(); onBoardChange(b.id) } },
                             label = { Text(if (b.count > 0) "${b.name} · ${b.count}" else b.name) },
                         )
                     }
@@ -244,6 +257,12 @@ fun InvokeGalleryTab(repo: Repository, refreshKey: Int, onSaved: () -> Unit) {
                 }
             }
         }
+        Text(
+            "New generations are filed into ${boards.find { it.id == board }?.name ?: "this gallery"}.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = 4.dp),
+        )
         if (error.isNotEmpty()) {
             Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         }

@@ -949,7 +949,7 @@ export class OppaiLibrary extends LitElement {
           ${isImageGen
             ? html`<oppai-imagegen @imported=${() => this.refresh()}></oppai-imagegen>`
             : nothing}
-          ${isChat ? html`<oppai-chat></oppai-chat>` : nothing}
+          ${isChat ? html`<oppai-chat .user=${this.user}></oppai-chat>` : nothing}
           ${isGrid || isFavorites || isSearch
             ? this.renderGrid(isGrid, isFavorites, isSearch)
             : nothing}

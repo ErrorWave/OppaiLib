@@ -324,6 +324,18 @@ export class OppaiInvokeGallery extends LitElement {
     void this.refresh();
   }
 
+  /** The board on screen. New generations are filed here — see the host view. */
+  get selectedBoard(): string {
+    return this.board;
+  }
+
+  /** Tells the host which board new generations should be filed into. */
+  private announceBoard() {
+    this.dispatchEvent(
+      new CustomEvent("board-changed", { detail: { board: this.board }, bubbles: true, composed: true }),
+    );
+  }
+
   /** Reloads boards and the current board's first page. */
   async refresh() {
     this.error = "";
@@ -333,6 +345,9 @@ export class OppaiInvokeGallery extends LitElement {
       if (!this.boards.some((b) => b.id === this.board) && this.boards.length) {
         this.board = this.boards[0].id;
       }
+      // Always announce, not just on a change: the host files new generations into
+      // whichever board is open here, and it needs that on first load too.
+      this.announceBoard();
     } catch (e) {
       this.error = (e as Error).message;
       return;
@@ -359,6 +374,7 @@ export class OppaiInvokeGallery extends LitElement {
     if (this.board === id) return;
     this.board = id;
     this.items = [];
+    this.announceBoard();
     void this.loadPage(true);
   }
 
@@ -547,6 +563,7 @@ export class OppaiInvokeGallery extends LitElement {
                 : nothing}
             `
           : nothing}
+        <div class="note">New generations are filed into ${current?.name ?? "this gallery"}.</div>
         <div class="new-board">
           <input maxlength="300" placeholder="New Invoke gallery" .value=${this.newBoard}
             @input=${(e: Event) => (this.newBoard = (e.target as HTMLInputElement).value)}

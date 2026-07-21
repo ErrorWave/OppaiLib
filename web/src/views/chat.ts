@@ -1,71 +1,219 @@
 import { LitElement, css, html, nothing } from "lit";
-import { customElement, state } from "lit/decorators.js";
-import { api, type ChatMessage, type ChatStatus } from "../api.js";
+import { customElement, property, state } from "lit/decorators.js";
+import { api, type ChatMessage, type ChatStatus, type User } from "../api.js";
 import { iconStyles, motionStyles } from "../theme.js";
 import { LIBBY_EMOTIONS, applyImageFallback, libbyAssetCandidates, loadHideLibby,
   loadLibbyOutfit, normalizeEmotion, normalizeIntensity, type LibbyEmotion } from "../libby.js";
 import { getIntensity, setIntensity } from "../libby-meter.js";
+import { libbyOpener, libbyReply } from "../libby-voice.js";
 
-// Each chat mode maps to one of Libby's emotions; the artwork for an emotion
-// comes from the worn outfit when one is selected (see libby.ts), falling back
-// to the bundled art via the image's error handler.
+// Each mode is a channel in Libby's "server", and maps to one of her emotions; the
+// artwork for an emotion comes from the worn outfit when one is selected (see
+// libby.ts), falling back to the bundled art via the image's error handler.
 const MODES = [
-  { id: "sweet", label: "Sweet", emotion: "happy" },
-  { id: "playful", label: "Playful", emotion: "mischievous" },
-  { id: "bold", label: "Bold", emotion: "surprised" },
-  { id: "roleplay", label: "Roleplay", emotion: "thinking" },
+  { id: "sweet", label: "sweet", emotion: "happy", topic: "Soft, warm, and unhurried." },
+  { id: "playful", label: "playful", emotion: "mischievous", topic: "Teasing and quick on her feet." },
+  { id: "bold", label: "bold", emotion: "surprised", topic: "Blunt, uninhibited, no coyness." },
+  { id: "roleplay", label: "roleplay", emotion: "thinking", topic: "In character, in scene, in detail." },
 ] as const;
+
+/** A message plus who said it and when — the chat log renders Discord-style rows. */
+interface Entry extends ChatMessage {
+  at: number;
+  /** Assistant lines she wrote herself, with no model behind her. */
+  local?: boolean;
+}
+
+const timeOf = (ms: number) =>
+  new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 
 @customElement("oppai-chat")
 export class OppaiChat extends LitElement {
+  /** The signed-in user, for the message author line. */
+  @property({ attribute: false }) user?: User;
+
   @state() private status: ChatStatus | null = null;
   @state() private mode = "sweet";
   @state() private emotion: LibbyEmotion = "happy";
   // Intensity is Libby's session horniness meter (see libby-meter.ts): persistent
-  // across the app, nudged by library adds, and set by hand with the slider below.
+  // across the app, nudged by library adds, and set by hand in the settings panel.
   @state() private intensity = getIntensity();
+  /** The settings panel is folded away until asked for — the chat is the point. */
+  @state() private settingsOpen = false;
 
   private onMeter = (e: Event) =>
     (this.intensity = (e as CustomEvent<{ intensity: number }>).detail.intensity);
-  @state() private messages: ChatMessage[] = [];
+  @state() private entries: Entry[] = [];
   @state() private draft = "";
   @state() private busy = false;
   @state() private error = "";
 
   static styles = [iconStyles, motionStyles, css`
-    :host { display:block; height:100%; }
-    .layout { max-width:920px; height:calc(100vh - 120px); margin:auto; display:grid;
-      grid-template-columns:230px 1fr; gap:18px; }
-    .libby, .chat { background:var(--oppai-surface); border:1px solid var(--oppai-border);
-      border-radius:20px; overflow:hidden; }
-    .libby { display:flex; flex-direction:column; padding:18px; }
-    .libby img { width:100%; min-height:0; flex:1; object-fit:contain; object-position:bottom; }
-    .name { font-size:20px; font-weight:650; }
-    .model { font-size:12px; color:var(--oppai-text-muted); margin-top:3px; overflow:hidden; text-overflow:ellipsis; }
-    .emotion-row { display:grid; gap:5px; margin-top:12px; }
-    select, input[type="range"] { width:100%; box-sizing:border-box; accent-color:var(--oppai-primary); }
-    .modes { display:grid; grid-template-columns:1fr 1fr; gap:7px; margin-top:14px; }
-    button { font:inherit; cursor:pointer; }
-    .mode { border:1px solid var(--oppai-border-strong); border-radius:999px; padding:7px;
-      background:transparent; color:var(--oppai-text-dim); }
-    .mode.on { color:var(--oppai-primary-bright); background:var(--oppai-primary-container); border-color:var(--oppai-primary); }
-    .chat { display:flex; flex-direction:column; }
-    .messages { flex:1; overflow:auto; padding:20px; display:flex; flex-direction:column; gap:12px; }
-    .bubble { max-width:78%; padding:11px 14px; border-radius:16px; white-space:pre-wrap; line-height:1.45; }
-    .assistant { align-self:flex-start; background:var(--oppai-surface-2); border-bottom-left-radius:4px; }
-    .user { align-self:flex-end; background:var(--oppai-primary-container); color:var(--oppai-primary-bright); border-bottom-right-radius:4px; }
-    .empty { margin:auto; text-align:center; color:var(--oppai-text-muted); max-width:360px; }
-    form { display:flex; gap:10px; padding:14px; border-top:1px solid var(--oppai-border); }
-    textarea { flex:1; resize:none; min-height:44px; max-height:130px; box-sizing:border-box;
-      border:1px solid var(--oppai-border-strong); border-radius:14px; padding:11px 13px;
-      background:var(--oppai-surface-2); color:var(--oppai-text); font:inherit; outline:none; }
-    textarea:focus { border-color:var(--oppai-primary); }
-    .send { width:46px; border:0; border-radius:14px; background:var(--oppai-primary); color:var(--oppai-on-primary); }
-    .send:disabled { opacity:.5; cursor:default; }
-    .error { color:var(--md-sys-color-error); font-size:13px; padding:0 16px 10px; }
-    @media(max-width:700px) { .layout { grid-template-columns:1fr; height:auto; }
-      .libby { min-height:190px; flex-direction:row; gap:12px; } .libby img { width:130px; order:-1; }
-      .chat { min-height:55vh; } }
+    /* A Discord client, deliberately: its own dark chrome regardless of the app
+       theme, because half of "looks like Discord" is the palette. */
+    :host {
+      display: block;
+      height: 100%;
+      --dc-rail: #1e1f22;
+      --dc-side: #2b2d31;
+      --dc-main: #313338;
+      --dc-hover: #35373c;
+      --dc-input: #383a40;
+      --dc-text: #dbdee1;
+      --dc-bright: #f2f3f5;
+      --dc-muted: #949ba4;
+      --dc-accent: #5865f2;
+      --dc-line: #3f4147;
+      --dc-online: #23a55a;
+      color: var(--dc-text);
+      font: 400 15px/1.375 "gg sans", "Noto Sans", Roboto, system-ui, sans-serif;
+    }
+    .client {
+      display: grid;
+      grid-template-columns: 72px 240px 1fr 232px;
+      height: calc(100vh - 120px);
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid #1e1f22;
+      background: var(--dc-main);
+    }
+
+    /* ── server rail ─────────────────────────────────────────────────────── */
+    .rail { background: var(--dc-rail); display: flex; flex-direction: column;
+      align-items: center; gap: 8px; padding: 12px 0; }
+    .guild { width: 48px; height: 48px; border-radius: 16px; background: var(--dc-side);
+      display: grid; place-items: center; overflow: hidden; cursor: pointer;
+      transition: border-radius .15s, background .15s; }
+    .guild.on { border-radius: 14px; background: var(--dc-accent); }
+    .guild img { width: 100%; height: 100%; object-fit: cover; }
+    .guild .material-symbols-rounded { color: var(--dc-bright); font-size: 22px; }
+    .rail-sep { width: 32px; height: 2px; background: var(--dc-line); border-radius: 1px; }
+
+    /* ── channel sidebar ─────────────────────────────────────────────────── */
+    .side { background: var(--dc-side); display: flex; flex-direction: column; min-width: 0; }
+    .guild-head { height: 48px; padding: 0 16px; display: flex; align-items: center;
+      font-weight: 600; color: var(--dc-bright); border-bottom: 1px solid #1f2023;
+      box-shadow: 0 1px 0 rgba(0,0,0,.2); font-size: 15px; }
+    .cat { padding: 16px 8px 4px 16px; font-size: 12px; font-weight: 600;
+      letter-spacing: .02em; text-transform: uppercase; color: var(--dc-muted); }
+    .chan { display: flex; align-items: center; gap: 6px; margin: 1px 8px; padding: 6px 8px;
+      border: 0; border-radius: 4px; background: transparent; color: var(--dc-muted);
+      font: inherit; font-size: 15px; font-weight: 500; width: calc(100% - 16px);
+      text-align: left; cursor: pointer; }
+    .chan:hover { background: var(--dc-hover); color: var(--dc-text); }
+    .chan.on { background: #404249; color: var(--dc-bright); }
+    .chan .hash { font-size: 19px; color: var(--dc-muted); font-weight: 400; }
+    .side-foot { margin-top: auto; background: #232428; padding: 8px; display: flex;
+      align-items: center; gap: 8px; }
+    .me-avatar { width: 32px; height: 32px; border-radius: 50%; background: var(--dc-accent);
+      color: #fff; display: grid; place-items: center; font-size: 12px; font-weight: 700; }
+    .me-name { font-size: 14px; font-weight: 600; color: var(--dc-bright);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .me-sub { font-size: 12px; color: var(--dc-muted); }
+
+    /* ── main column ─────────────────────────────────────────────────────── */
+    .main { display: flex; flex-direction: column; min-width: 0; background: var(--dc-main); }
+    .top { height: 48px; display: flex; align-items: center; gap: 8px; padding: 0 16px;
+      border-bottom: 1px solid #26272b; box-shadow: 0 1px 0 rgba(0,0,0,.2); }
+    .top .hash { font-size: 22px; color: var(--dc-muted); }
+    .top .name { font-weight: 600; color: var(--dc-bright); }
+    .top .topic { font-size: 13px; color: var(--dc-muted); border-left: 1px solid var(--dc-line);
+      margin-left: 8px; padding-left: 12px; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; }
+    .top .gear { margin-left: auto; border: 0; background: transparent; color: var(--dc-muted);
+      cursor: pointer; border-radius: 4px; padding: 4px; display: grid; place-items: center; }
+    .top .gear:hover, .top .gear.on { color: var(--dc-bright); background: var(--dc-hover); }
+
+    .log { flex: 1; overflow-y: auto; padding: 16px 0 24px; display: flex;
+      flex-direction: column; }
+    .row { display: grid; grid-template-columns: 56px 1fr; padding: 2px 16px 2px 0;
+      align-items: start; }
+    .row:hover { background: rgba(2,2,2,.06); }
+    .row.grouped { margin-top: 0; }
+    .row.first { margin-top: 17px; }
+    .avatar { grid-column: 1; justify-self: center; width: 40px; height: 40px;
+      border-radius: 50%; overflow: hidden; background: var(--dc-input); margin-top: 2px; }
+    .avatar img { width: 100%; height: 100%; object-fit: cover; object-position: top center; }
+    .avatar.initials { display: grid; place-items: center; background: var(--dc-accent);
+      color: #fff; font-size: 15px; font-weight: 700; }
+    .stamp { grid-column: 1; justify-self: end; padding-right: 4px; font-size: 11px;
+      color: var(--dc-muted); opacity: 0; line-height: 22px; }
+    .row:hover .stamp { opacity: 1; }
+    .body { grid-column: 2; min-width: 0; }
+    .who { display: flex; align-items: baseline; gap: 8px; }
+    .who .author { font-size: 15px; font-weight: 500; color: var(--dc-bright); }
+    .who .author.libby { color: #f0a6c8; }
+    .tag { background: var(--dc-accent); color: #fff; font-size: 10px; font-weight: 600;
+      border-radius: 3px; padding: 1px 4px; text-transform: uppercase; letter-spacing: .02em; }
+    .tag.offline { background: #4e5058; }
+    .when { font-size: 12px; color: var(--dc-muted); }
+    .text { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--dc-text); }
+    .typing { display: flex; align-items: center; gap: 6px; padding: 4px 16px 0 56px;
+      font-size: 13px; color: var(--dc-muted); }
+    .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--dc-muted);
+      animation: blink 1.2s infinite; }
+    .dot:nth-child(2) { animation-delay: .2s; }
+    .dot:nth-child(3) { animation-delay: .4s; }
+    @keyframes blink { 0%, 60%, 100% { opacity: .3; } 30% { opacity: 1; } }
+
+    /* Channel intro, Discord's "Welcome to #channel" block. */
+    .intro { padding: 16px 16px 8px; }
+    .intro .badge { width: 68px; height: 68px; border-radius: 50%; background: var(--dc-input);
+      display: grid; place-items: center; margin-bottom: 8px; }
+    .intro .badge .material-symbols-rounded { font-size: 40px; color: var(--dc-bright); }
+    .intro h2 { margin: 0 0 4px; font-size: 28px; font-weight: 700; color: var(--dc-bright); }
+    .intro p { margin: 0; color: var(--dc-muted); font-size: 15px; }
+
+    /* ── composer ────────────────────────────────────────────────────────── */
+    form { padding: 0 16px 22px; }
+    .composer { display: flex; align-items: flex-end; gap: 10px; background: var(--dc-input);
+      border-radius: 8px; padding: 10px 14px; }
+    textarea { flex: 1; resize: none; border: 0; outline: 0; background: transparent;
+      color: var(--dc-text); font: inherit; max-height: 140px; min-height: 22px;
+      line-height: 22px; padding: 0; }
+    textarea::placeholder { color: var(--dc-muted); }
+    .send { border: 0; background: transparent; color: var(--dc-muted); cursor: pointer;
+      display: grid; place-items: center; padding: 0; }
+    .send:hover:not(:disabled) { color: var(--dc-bright); }
+    .send:disabled { opacity: .4; cursor: default; }
+    .error { color: #fa777c; font-size: 13px; padding: 0 16px 8px; }
+
+    /* ── members sidebar (Libby) ─────────────────────────────────────────── */
+    .members { background: var(--dc-side); display: flex; flex-direction: column;
+      padding: 12px 8px; gap: 8px; overflow: hidden; }
+    .members .cat { padding: 4px 8px; }
+    .member { display: flex; align-items: center; gap: 10px; padding: 4px 8px;
+      border-radius: 4px; }
+    .member .pip { width: 32px; height: 32px; border-radius: 50%; overflow: hidden;
+      background: var(--dc-input); position: relative; }
+    .member .pip img { width: 100%; height: 100%; object-fit: cover; object-position: top center; }
+    .member .who2 { min-width: 0; }
+    .member .n { font-size: 14px; font-weight: 600; color: #f0a6c8; }
+    .member .s { font-size: 12px; color: var(--dc-muted); overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap; }
+    .portrait { flex: 1; min-height: 0; display: grid; place-items: end center; }
+    .portrait img { max-width: 100%; max-height: 100%; object-fit: contain;
+      object-position: bottom; }
+
+    /* ── settings panel (folded away by default) ─────────────────────────── */
+    .settings { background: #2b2d31; border-bottom: 1px solid #26272b; padding: 14px 16px;
+      display: grid; gap: 12px; }
+    .settings h3 { margin: 0; font-size: 12px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .02em; color: var(--dc-muted); }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip { border: 1px solid var(--dc-line); background: transparent; color: var(--dc-text);
+      border-radius: 4px; font: inherit; font-size: 13px; padding: 4px 10px; cursor: pointer; }
+    .chip:hover { background: var(--dc-hover); }
+    .chip.on { background: var(--dc-accent); border-color: var(--dc-accent); color: #fff; }
+    .heat { display: flex; align-items: center; gap: 8px; }
+    .heat input { flex: 1; accent-color: var(--dc-accent); }
+    .heat .val { font-size: 13px; color: var(--dc-muted); min-width: 78px; }
+
+    @media (max-width: 1100px) { .client { grid-template-columns: 72px 220px 1fr; }
+      .members { display: none; } }
+    @media (max-width: 780px) { .client { grid-template-columns: 1fr; height: auto; }
+      .rail, .side { display: none; }
+      .main { min-height: 70vh; } }
   `];
 
   connectedCallback() {
@@ -77,66 +225,238 @@ export class OppaiChat extends LitElement {
     super.disconnectedCallback();
     window.removeEventListener("oppai-libby-meter", this.onMeter);
   }
+
   private async load() {
     try { this.status = await api.chatStatus(); }
     catch (e) { this.error = (e as Error).message; }
   }
-  private setMode(mode: string) { this.mode = mode; }
+
+  private setMode(mode: string) {
+    if (mode === this.mode) return;
+    this.mode = mode;
+    // Switching channel puts her in that channel's pose, the way the mode picker
+    // used to. The log carries over — it's one conversation, not four.
+    this.emotion = normalizeEmotion(MODES.find((m) => m.id === mode)?.emotion);
+  }
+
   private onKey(e: KeyboardEvent) {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void this.send(); }
   }
+
+  private async scrollToEnd() {
+    await this.updateComplete;
+    this.renderRoot.querySelector(".log")?.scrollTo({ top: 1e9, behavior: "smooth" });
+  }
+
   private async send() {
     const content = this.draft.trim();
-    if (!content || this.busy || !this.status?.enabled) return;
-    const next: ChatMessage[] = [...this.messages, { role: "user", content }];
-    this.messages = next; this.draft = ""; this.busy = true; this.error = "";
+    if (!content || this.busy) return;
+    const next: Entry[] = [...this.entries, { role: "user", content, at: Date.now() }];
+    this.entries = next; this.draft = ""; this.busy = true; this.error = "";
+    void this.scrollToEnd();
+
+    // No local LLM configured? Libby answers for herself rather than going quiet —
+    // her own voice reads the message and replies from the emotion/heat she's in.
+    if (!this.status?.enabled) {
+      const line = libbyReply(content, this.mode, this.emotion, this.intensity);
+      // A beat of "typing", so she doesn't answer faster than thought.
+      await new Promise((r) => setTimeout(r, 350 + Math.random() * 450));
+      this.emotion = line.emotion;
+      this.intensity = setIntensity(line.intensity);
+      this.entries = [...next, { role: "assistant", content: line.message, at: Date.now(), local: true }];
+      this.busy = false;
+      void this.scrollToEnd();
+      return;
+    }
+
     try {
-      const result = await api.chat(this.mode, next, this.emotion, this.intensity);
+      // Lines Libby wrote herself (the opener, offline replies) are hers, not the
+      // model's — they stay out of the history we hand it.
+      const history: ChatMessage[] = next
+        .filter((e) => !e.local)
+        .map(({ role, content: text }) => ({ role, content: text }));
+      const result = await api.chat(this.mode, history, this.emotion, this.intensity);
       this.emotion = normalizeEmotion(result.emotion ?? this.emotion);
       // Persist the reply's intensity into the session meter so it carries across
       // the app (the outfit tier Libby wears, the next screen she pops up on).
       this.intensity = setIntensity(normalizeIntensity(result.intensity ?? this.intensity));
-      this.messages = [...next, { role: "assistant", content: result.message }];
-      await this.updateComplete;
-      this.renderRoot.querySelector(".messages")?.scrollTo({ top: 1e9, behavior: "smooth" });
+      this.entries = [...next, { role: "assistant", content: result.message, at: Date.now() }];
+      void this.scrollToEnd();
     } catch (e) { this.error = (e as Error).message; }
     finally { this.busy = false; }
   }
+
   render() {
     const assets = libbyAssetCandidates(this.emotion, this.intensity, loadLibbyOutfit());
-    // Hiding Libby drops her portrait; the mode picker stays, since modes change how
-    // the assistant answers, not how it looks.
+    // Hiding Libby drops her artwork; the client, the channels and her replies stay.
     const hideLibby = loadHideLibby();
-    return html`<div class="layout">
-      <aside class="libby"><div><div class="name">Libby</div>
-        <div class="model">${this.status?.enabled ? this.status.model : "Local LLM not configured"}</div>
-        <div class="modes">${MODES.map((m) => html`<button class="mode ${m.id === this.mode ? "on" : ""}"
-          @click=${() => this.setMode(m.id)}>${m.label}</button>`)}</div></div>
-        <div class="emotion-row">
-          <label>Emotion</label>
-          <select .value=${this.emotion} @change=${(e: Event) => (this.emotion = normalizeEmotion((e.target as HTMLSelectElement).value))}>
-            ${LIBBY_EMOTIONS.map((m) => html`<option value=${m}>${m === "horniness" ? "Horniness" : m[0].toUpperCase() + m.slice(1)}</option>`)}
-          </select>
-          <label>Horniness ${this.intensity}/5</label>
+    const channel = MODES.find((m) => m.id === this.mode) ?? MODES[0];
+    const me = this.user?.username ?? "You";
+    return html`
+      <div class="client">
+        ${this.renderRail(assets, hideLibby)}
+        ${this.renderSidebar(me)}
+        <section class="main">
+          <div class="top">
+            <span class="hash">#</span><span class="name">${channel.label}</span>
+            <span class="topic">${channel.topic}</span>
+            <button class="gear ${this.settingsOpen ? "on" : ""}" title="Libby settings"
+              aria-expanded=${this.settingsOpen} @click=${() => (this.settingsOpen = !this.settingsOpen)}>
+              <span class="material-symbols-rounded" style="font-size:20px;">settings</span>
+            </button>
+          </div>
+          ${this.settingsOpen ? this.renderSettings() : nothing}
+          <div class="log">
+            ${this.renderIntro(channel)}
+            ${this.entries.map((entry, i) => this.renderEntry(entry, this.entries[i - 1], assets, hideLibby, me))}
+            ${this.busy ? html`<div class="typing">
+              <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+              <b>Libby</b> is typing…
+            </div>` : nothing}
+          </div>
+          ${this.error ? html`<div class="error">${this.error}</div>` : nothing}
+          <form @submit=${(e: Event) => { e.preventDefault(); void this.send(); }}>
+            <div class="composer">
+              <textarea rows="1" placeholder=${`Message #${channel.label}`} .value=${this.draft}
+                ?disabled=${this.busy}
+                @input=${(e: Event) => (this.draft = (e.target as HTMLTextAreaElement).value)}
+                @keydown=${this.onKey}></textarea>
+              <button class="send" title="Send" ?disabled=${!this.draft.trim() || this.busy}>
+                <span class="material-symbols-rounded">send</span>
+              </button>
+            </div>
+          </form>
+        </section>
+        ${this.renderMembers(assets, hideLibby)}
+      </div>`;
+  }
+
+  private renderRail(assets: string[], hideLibby: boolean) {
+    return html`<nav class="rail">
+      <div class="guild on" title="Libby">
+        ${hideLibby
+          ? html`<span class="material-symbols-rounded">forum</span>`
+          : html`<img src=${assets[0]} data-fallback-index="0" alt="Libby"
+              @error=${(e: Event) => applyImageFallback(e.target as HTMLImageElement, assets)} />`}
+      </div>
+      <div class="rail-sep"></div>
+    </nav>`;
+  }
+
+  private renderSidebar(me: string) {
+    return html`<nav class="side">
+      <div class="guild-head">Libby</div>
+      <div class="cat">Channels</div>
+      ${MODES.map((m) => html`<button class="chan ${m.id === this.mode ? "on" : ""}"
+        @click=${() => this.setMode(m.id)}><span class="hash">#</span>${m.label}</button>`)}
+      <div class="side-foot">
+        <div class="me-avatar">${me.slice(0, 2).toUpperCase()}</div>
+        <div style="min-width:0;">
+          <div class="me-name">${me}</div>
+          <div class="me-sub">${this.status?.enabled ? "Online" : "Offline mode"}</div>
+        </div>
+      </div>
+    </nav>`;
+  }
+
+  /**
+   * The settings panel: hidden until the gear is pressed, and built from the
+   * emotion model the rest of the app uses now — the named emotions from
+   * LIBBY_EMOTIONS plus the 1–5 horniness meter that picks her art tier.
+   */
+  private renderSettings() {
+    return html`<div class="settings">
+      <div>
+        <h3>Emotion</h3>
+        <div class="chips">
+          ${LIBBY_EMOTIONS.map((m) => html`<button class="chip ${m === this.emotion ? "on" : ""}"
+            @click=${() => (this.emotion = m)}>
+            ${m === "horniness" ? "Horniness" : m[0].toUpperCase() + m.slice(1)}
+          </button>`)}
+        </div>
+      </div>
+      <div>
+        <h3>Horniness</h3>
+        <div class="heat">
           <input type="range" min="1" max="5" .value=${String(this.intensity)}
             @input=${(e: Event) => (this.intensity = setIntensity(Number((e.target as HTMLInputElement).value)))} />
+          <span class="val">${this.intensity} / 5</span>
         </div>
-        ${hideLibby ? nothing : html`<img src=${assets[0]} data-fallback-index="0" alt=${`Libby feeling ${this.emotion}`}
-          @error=${(e: Event) => applyImageFallback(e.target as HTMLImageElement, assets)} />`}
-      </aside>
-      <section class="chat"><div class="messages">
-        ${!this.status?.enabled ? html`<div class="empty">Configure a local OpenAI-compatible URL and model in Settings to chat with Libby.</div>` : nothing}
-        ${this.status?.enabled && !this.messages.length ? html`<div class="empty">Libby is ready. Pick a mode and say what’s on your mind.</div>` : nothing}
-        ${this.messages.map((m) => html`<div class="bubble ${m.role}">${m.content}</div>`)}
-        ${this.busy ? html`<div class="bubble assistant">Libby is thinking…</div>` : nothing}
-      </div>${this.error ? html`<div class="error">${this.error}</div>` : nothing}
-      <form @submit=${(e: Event) => { e.preventDefault(); void this.send(); }}>
-        <textarea placeholder="Message Libby…" .value=${this.draft} ?disabled=${!this.status?.enabled || this.busy}
-          @input=${(e: Event) => (this.draft = (e.target as HTMLTextAreaElement).value)} @keydown=${this.onKey}></textarea>
-        <button class="send" title="Send" ?disabled=${!this.draft.trim() || this.busy || !this.status?.enabled}>
-          <span class="material-symbols-rounded">send</span></button>
-      </form></section>
+      </div>
     </div>`;
+  }
+
+  private renderIntro(channel: (typeof MODES)[number]) {
+    return html`<div class="intro">
+      <div class="badge"><span class="material-symbols-rounded">tag</span></div>
+      <h2>Welcome to #${channel.label}!</h2>
+      <p>
+        ${channel.topic}
+        ${this.status?.enabled
+          ? html` Running on <b>${this.status.model}</b>.`
+          : html` No local LLM configured — Libby is answering on her own.`}
+      </p>
+    </div>`;
+  }
+
+  private renderEntry(entry: Entry, previous: Entry | undefined, assets: string[], hideLibby: boolean, me: string) {
+    // Discord groups consecutive messages from the same author within a few minutes:
+    // the follow-ups drop the avatar and header and just show a hover timestamp.
+    const grouped = !!previous && previous.role === entry.role && entry.at - previous.at < 5 * 60_000;
+    const libby = entry.role === "assistant";
+    const author = libby ? "Libby" : me;
+    return html`<div class="row ${grouped ? "grouped" : "first"}">
+      ${grouped
+        ? html`<span class="stamp">${timeOf(entry.at)}</span>`
+        : libby
+          ? html`<div class="avatar">
+              ${hideLibby
+                ? nothing
+                : html`<img src=${assets[0]} data-fallback-index="0" alt="Libby"
+                    @error=${(e: Event) => applyImageFallback(e.target as HTMLImageElement, assets)} />`}
+            </div>`
+          : html`<div class="avatar initials">${me.slice(0, 2).toUpperCase()}</div>`}
+      <div class="body">
+        ${grouped ? nothing : html`<div class="who">
+          <span class="author ${libby ? "libby" : ""}">${author}</span>
+          ${libby ? html`<span class="tag ${entry.local ? "offline" : ""}">
+            ${entry.local ? "Local" : "Bot"}</span>` : nothing}
+          <span class="when">${timeOf(entry.at)}</span>
+        </div>`}
+        <div class="text">${entry.content}</div>
+      </div>
+    </div>`;
+  }
+
+  private renderMembers(assets: string[], hideLibby: boolean) {
+    return html`<aside class="members">
+      <div class="cat">Online — 1</div>
+      <div class="member">
+        <div class="pip">
+          ${hideLibby
+            ? nothing
+            : html`<img src=${assets[0]} data-fallback-index="0" alt="Libby"
+                @error=${(e: Event) => applyImageFallback(e.target as HTMLImageElement, assets)} />`}
+        </div>
+        <div class="who2">
+          <div class="n">Libby</div>
+          <div class="s">${this.status?.enabled ? this.status.model : "Answering on her own"}</div>
+        </div>
+      </div>
+      ${hideLibby
+        ? nothing
+        : html`<div class="portrait">
+            <img src=${assets[0]} data-fallback-index="0" alt="Libby"
+              @error=${(e: Event) => applyImageFallback(e.target as HTMLImageElement, assets)} />
+          </div>`}
+    </aside>`;
+  }
+
+  /** Her opening line, written locally so a fresh channel is never empty. */
+  protected firstUpdated() {
+    const opener = libbyOpener(this.mode, this.intensity);
+    this.emotion = opener.emotion;
+    this.entries = [{ role: "assistant", content: opener.message, at: Date.now(), local: true }];
   }
 }
 

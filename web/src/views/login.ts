@@ -3,8 +3,9 @@ import { customElement, state, query } from "lit/decorators.js";
 import { api, mascotSay, setToken, type User } from "../api.js";
 import { motionStyles } from "../theme.js";
 import { logoSVG } from "../logo.js";
-import { applyImageFallback, emotionEmoji, inferErrorEmotion, libbyAssetCandidates,
+import { applyImageFallback, inferErrorEmotion, libbyAssetCandidates,
   loadHideLibby, normalizeEmotion, normalizeIntensity, type LibbyEmotion } from "../libby.js";
+import { libbyReact } from "../libby-voice.js";
 
 @customElement("oppai-login")
 export class OppaiLogin extends LitElement {
@@ -64,7 +65,6 @@ export class OppaiLogin extends LitElement {
       }
       .libby.error .libby-speech { border-color: var(--md-sys-color-error); }
       .libby-name { display: block; color: var(--md-sys-color-primary); font-size: 11px; font-weight: 700; }
-      .libby-emotion { margin-right: 4px; }
       @media (max-width: 900px) {
         .libby {
           right: 50%;
@@ -175,13 +175,20 @@ export class OppaiLogin extends LitElement {
     try {
       const res = await api.login(u, p);
       setToken(res.token);
-      mascotSay(`Welcome back, ${res.user.username}!`, "success");
+      const welcome = libbyReact("login");
+      mascotSay(`${welcome.message.replace(/\.$/, "")}, ${res.user.username}.`, "success",
+        { emotion: welcome.emotion, intensity: welcome.intensity });
       this.dispatchEvent(
         new CustomEvent<User>("logged-in", { detail: res.user, bubbles: true, composed: true }),
       );
     } catch (err) {
       this.error = (err as Error).message || "login failed";
-      mascotSay(this.error === "unauthorized" ? "That login didn't work. Check your username and password." : this.error);
+      if (this.error === "unauthorized") {
+        const nope = libbyReact("loginFail");
+        mascotSay(nope.message, "error", { emotion: nope.emotion, intensity: nope.intensity });
+      } else {
+        mascotSay(this.error);
+      }
     } finally {
       this.busy = false;
     }
@@ -195,8 +202,7 @@ export class OppaiLogin extends LitElement {
       ? null
       : html`<div class="libby ${this.libbyMessage ? "talking" : ""} ${this.libbyTone}">
           ${this.libbyMessage ? html`<div class="libby-speech" role=${this.libbyTone === "error" ? "alert" : "status"}>
-            <span class="libby-name">LIBBY · ${this.libbyEmotion} ${this.libbyIntensity}</span>
-            <span class="libby-emotion">${emotionEmoji(this.libbyEmotion)}</span>${this.libbyMessage}
+            <span class="libby-name">LIBBY</span>${this.libbyMessage}
           </div>` : null}
           <img src=${assets[0]} data-fallback-index="0" alt=${`Libby feeling ${this.libbyEmotion}`}
             @error=${(e: Event) => applyImageFallback(e.target as HTMLImageElement, assets)} />

@@ -35,6 +35,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import net.fourbakers.oppailib.R
+import net.fourbakers.oppailib.data.LibbyVoice
 import net.fourbakers.oppailib.data.LoginRequest
 import net.fourbakers.oppailib.data.Repository
 
@@ -80,15 +81,18 @@ fun LoginScreen(
                 } else {
                     repo.prefs.biometricLock = false
                 }
-                onMascot("Welcome back, ${res.user.username}!", "happy")
+                LibbyVoice.react(LibbyVoice.Event.LOGIN).let {
+                    onMascot("${it.message.trimEnd('.')}, ${res.user.username}.", it.emotion)
+                }
                 onAuthed()
             } catch (e: Exception) {
                 val message = e.message ?: "Login failed"
                 error = message
-                onMascot(
-                    if (message.contains("401")) "That login didn't work. Check your details." else message,
-                    "surprised",
-                )
+                if (message.contains("401")) {
+                    LibbyVoice.react(LibbyVoice.Event.LOGIN_FAIL).let { onMascot(it.message, it.emotion) }
+                } else {
+                    onMascot(message, "surprised")
+                }
             } finally {
                 busy = false
             }
@@ -104,7 +108,7 @@ fun LoginScreen(
                 busy = true
                 scope.launch {
                     if (repo.reauthenticate()) {
-                        onMascot("Welcome back!", "happy")
+                        LibbyVoice.react(LibbyVoice.Event.LOGIN).let { onMascot(it.message, it.emotion) }
                         onAuthed()
                     } else {
                         error = "Couldn't sign in with the saved login. Enter your password."

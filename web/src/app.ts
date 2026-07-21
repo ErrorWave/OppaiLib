@@ -1,8 +1,9 @@
 import { LitElement, html, css } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { api, getToken, setToken, mascotSay, type User } from "./api.js";
-import { applyImageFallback, emotionEmoji, inferErrorEmotion, libbyAssetCandidates, loadHideLibby } from "./libby.js";
+import { applyImageFallback, inferErrorEmotion, libbyAssetCandidates, loadHideLibby } from "./libby.js";
 import { bumpIntensity } from "./libby-meter.js";
+import { libbyReact } from "./libby-voice.js";
 import "./views/login.js";
 import "./views/library.js";
 
@@ -111,14 +112,13 @@ export class OppaiApp extends LitElement {
   };
 
   // Adding to the library warms Libby up (her session horniness) and gets a reaction.
-  // The event bubbles composed from whichever view did the import.
+  // The event bubbles composed from whichever view did the import. Her wording comes
+  // from the local voice (libby-voice.ts), so it shifts with the meter she just moved.
   private onImported = (event: CustomEvent<{ count?: number }>) => {
     const count = Math.max(1, event.detail?.count ?? 1);
     const intensity = bumpIntensity(count > 1 ? 2 : 1);
-    const line = intensity >= 4
-      ? count > 1 ? `Mmh, ${count} more for the collection…` : "Ooh, adding to the collection?"
-      : count > 1 ? `Saved ${count} to your library.` : "Saved to your library.";
-    mascotSay(line, "success", { emotion: intensity >= 3 ? "mischievous" : "happy", intensity });
+    const line = libbyReact("import", { intensity, count });
+    mascotSay(line.message, "success", { emotion: line.emotion, intensity: line.intensity });
   };
 
   // The Settings toggle fires this; re-render so a popup that's on screen right now
@@ -195,7 +195,7 @@ export class OppaiApp extends LitElement {
     const mascot = this.mascotMessage
       ? html`<div class="mascot-talk ${this.mascotTone} ${hideLibby ? "plain" : ""}">
           <div class="speech" role=${this.mascotTone === "error" ? "alert" : "status"}>
-            ${hideLibby ? null : html`<span class="libby-name">LIBBY · ${emotionEmoji(cue.emotion)} · ${cue.emotion} ${cue.intensity}</span>`}${this.mascotMessage}
+            ${hideLibby ? null : html`<span class="libby-name">LIBBY</span>`}${this.mascotMessage}
           </div>
           ${hideLibby
             ? null

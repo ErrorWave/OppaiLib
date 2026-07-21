@@ -69,6 +69,7 @@ import net.fourbakers.oppailib.data.GenModel
 import net.fourbakers.oppailib.data.GenPreview
 import net.fourbakers.oppailib.data.GenSaveRequest
 import net.fourbakers.oppailib.data.LibbyMeter
+import net.fourbakers.oppailib.data.LibbyVoice
 import net.fourbakers.oppailib.data.GenTemplate
 import net.fourbakers.oppailib.data.GenerateRequest
 import net.fourbakers.oppailib.data.ImageGenStatus
@@ -133,6 +134,10 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
     // Bumped after each generation so the Gallery tab reloads: InvokeAI keeps its
     // own copy of everything that just finished.
     var galleryRefresh by remember { mutableStateOf(0) }
+    // The gallery board new generations are filed into. It is owned here but driven
+    // by the Gallery tab, so whatever gallery you have open there is where the next
+    // image lands — there is no second "destination" setting to keep in sync.
+    var board by remember { mutableStateOf("none") }
     /** Model or LoRA name whose record is being edited, or null. */
     var editTarget by remember { mutableStateOf<String?>(null) }
     // The character being created or edited (blank id = new); null = editor closed.
@@ -214,6 +219,7 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
                         cfgScale = cfg,
                         seed = seedText.toLongOrNull() ?: -1,
                         count = count,
+                        board = board,
                         loras = loraWeights.map { (name, weight) -> GenLoraPick(name, weight) },
                         detailer = if (status?.detailerAvailable == true && detailerEnabled) {
                             DetailerRequest(enabled = true, model = detailerModel)
@@ -221,8 +227,12 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
                     ),
                 )
             }.onSuccess { res ->
-                shots = res.images.map { ShotState(it, saved = false) } + shots
+                // Only the newest run stays on screen. Earlier ones aren't lost —
+                // InvokeAI keeps every finished image in its gallery, which is what
+                // the Gallery tab browses.
+                shots = res.images.map { ShotState(it, saved = false) }
                 galleryRefresh++
+                LibbyVoice.react(LibbyVoice.Event.GENERATE).let { repo.report(it.message, it.emotion) }
             }.onFailure { error = it.message ?: "Generation failed" }
             generating = false
         }
@@ -238,7 +248,9 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
             }.onSuccess {
                 shots = shots.map { if (it.preview.id == shot.preview.id) it.copy(saved = true) else it }
                 LibbyMeter.bump() // adding to the library warms Libby up
-                repo.report("Saved to library", "happy")
+                // Her wording comes from the local voice, so it shifts with the meter
+                // she just moved rather than being the same line every time.
+                LibbyVoice.react(LibbyVoice.Event.SAVE).let { repo.report(it.message, it.emotion) }
                 onSaved()
             }.onFailure { repo.report(it.message ?: "Couldn't save the image") }
         }
@@ -287,7 +299,13 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
                     }
                 }
                 when {
-                    invoke && tab == 1 -> InvokeGalleryTab(repo, galleryRefresh, onSaved)
+                    invoke && tab == 1 -> InvokeGalleryTab(
+                        repo = repo,
+                        refreshKey = galleryRefresh,
+                        board = board,
+                        onBoardChange = { board = it },
+                        onSaved = onSaved,
+                    )
                     invoke && tab == 2 -> CivitaiTab(repo)
                     else -> LazyColumn(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -586,7 +604,7 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
 
                 // ── results ─────────────────────────────────────────────────
                 if (shots.isNotEmpty()) {
-                    item { SectionLabel("Results — save what you want to keep") }
+                    item { SectionLabel("Latest creation — save what you want to keep") }
                     items(shots.chunked(2), key = { it.first().preview.id }) { pair ->
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             pair.forEach { shot ->
@@ -622,8 +640,9 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
                     }
                     item {
                         Text(
-                            "Save copies an image into the library. InvokeAI also keeps its own " +
-                                "gallery copy — see the Gallery tab to browse or delete those.",
+                            "Only your latest creation shows here. Everything you generate is kept " +
+                                "in the Gallery tab — browse, save, or delete earlier ones there. " +
+                                "Save copies an image into the library.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

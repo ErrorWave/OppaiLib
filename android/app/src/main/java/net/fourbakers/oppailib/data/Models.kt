@@ -455,6 +455,8 @@ data class GenerateRequest(
     val cfgScale: Double = 7.0,
     val seed: Long = -1,
     val count: Int = 1,
+    /** Which InvokeAI gallery board the finished images are filed into. */
+    val board: String = "none",
     val loras: List<GenLoraPick> = emptyList(),
     val detailer: DetailerRequest? = null,
 )

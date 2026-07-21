@@ -850,9 +850,8 @@ export class OppaiImageGen extends LitElement {
       if (!this.checkpoint && st.models && st.models.length) {
         this.pickModel(st.models[0]);
       }
-      if (st.boards?.length && !st.boards.some((b) => b.id === this.board)) {
-        this.board = st.boards[0].id;
-      }
+      // The destination board is not chosen here — the Invoke gallery panel owns it
+      // and announces it (board-changed), so generations land in the gallery on screen.
     } catch (e) {
       this.status = { enabled: true, reachable: false, error: (e as Error).message };
     }
@@ -1027,8 +1026,10 @@ export class OppaiImageGen extends LitElement {
             }
           : undefined,
       });
-      // Newest batch first, kept above earlier ones so a session builds a roll.
-      this.shots = [...res.images.map((g: GenPreview) => ({ ...g, saved: false })), ...this.shots];
+      // Only the newest run stays on screen. Earlier ones are not lost — InvokeAI
+      // keeps every finished image in its gallery, which is what the right-hand
+      // panel browses, so the creator itself shows just what you last made.
+      this.shots = res.images.map((g: GenPreview) => ({ ...g, saved: false }));
       // InvokeAI keeps its own gallery copy of everything that just finished.
       void this.galleryPanel?.refresh();
     } catch (e) {
@@ -1475,7 +1476,10 @@ export class OppaiImageGen extends LitElement {
         </div>
         ${invoke
           ? html`<aside class="right">
-              <oppai-invoke-gallery @boards-changed=${() => this.loadStatus()}></oppai-invoke-gallery>
+              <oppai-invoke-gallery
+                @boards-changed=${() => this.loadStatus()}
+                @board-changed=${(e: CustomEvent<{ board: string }>) => (this.board = e.detail.board)}
+              ></oppai-invoke-gallery>
             </aside>`
           : nothing}
       </div>
@@ -1656,12 +1660,12 @@ export class OppaiImageGen extends LitElement {
             @input=${(e: Event) => (this.seed = clampNum((e.target as HTMLInputElement).value, -1, 2 ** 31, -1))} />
         </div>
         ${invoke ? html`
-          <div class="full">
-            <label class="field">Add generations to gallery</label>
-            <select class="num" .value=${this.board}
-              @change=${(e: Event) => (this.board = (e.target as HTMLSelectElement).value)}>
-              ${boards.map((b) => html`<option value=${b.id}>${b.name}</option>`)}
-            </select>
+          <!-- Which gallery a generation lands in is no longer a second setting here:
+               it follows whichever gallery the Invoke gallery panel has open, so the
+               place you're looking at is the place new images appear. -->
+          <div class="full" style="font-size:12px; color:var(--oppai-text-muted);">
+            Generations are added to <b>${boards.find((b) => b.id === this.board)?.name ?? "the open gallery"}</b> —
+            switch galleries in the Invoke gallery panel.
           </div>
           <label class="switch-row"><input type="checkbox" .checked=${this.cpuNoise}
             @change=${(e: Event) => (this.cpuNoise = (e.target as HTMLInputElement).checked)} /> CPU noise</label>
@@ -2007,7 +2011,7 @@ export class OppaiImageGen extends LitElement {
   private renderResults() {
     if (!this.shots.length) return nothing;
     return html`
-      <div class="section-label">Results</div>
+      <div class="section-label">Latest creation</div>
       <div class="results">
         ${this.shots.map(
           (shot) => html`
@@ -2037,8 +2041,9 @@ export class OppaiImageGen extends LitElement {
         )}
       </div>
       <div class="banner">
-        Save copies an image into the library. InvokeAI also keeps its own gallery copy of
-        everything generated — see the Invoke gallery panel to browse or delete those.
+        Only your latest creation shows here. Everything you generate is kept in the Invoke
+        gallery panel — browse, save, or delete earlier ones there. Save copies an image
+        into the library.
       </div>
     `;
   }

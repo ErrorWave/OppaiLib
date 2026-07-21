@@ -47,6 +47,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.lifecycleScope
 import net.fourbakers.oppailib.data.LibbyMeter
+import net.fourbakers.oppailib.data.LibbyVoice
 import net.fourbakers.oppailib.data.Repository
 import net.fourbakers.oppailib.data.ScrapeImportRequest
 import net.fourbakers.oppailib.data.UrlRequest
@@ -140,14 +141,19 @@ class MainActivity : FragmentActivity() {
             }
             if (uploaded > 0) repo.notifyLibraryChanged()
             if (uploaded + queued > 0) {
-                val message = buildString {
+                // Adding to the library warms Libby up, and she reacts in whatever
+                // state that leaves her in (see LibbyVoice) rather than reciting a
+                // fixed line every time.
+                LibbyMeter.bump(if (uploaded + queued > 1) 2 else 1)
+                val reaction = LibbyVoice.react(LibbyVoice.Event.IMPORT, count = uploaded + queued)
+                val detail = buildString {
                     if (uploaded > 0) append("Imported $uploaded shared file${if (uploaded == 1) "" else "s"}.")
                     if (queued > 0) {
                         if (isNotEmpty()) append(' ')
                         append("Queued $queued shared link${if (queued == 1) "" else "s"}.")
                     }
                 }
-                repo.report(message)
+                repo.report("${reaction.message} $detail", reaction.emotion)
             }
         }
     }
