@@ -10,7 +10,7 @@
   <Privileged>false</Privileged>
   <Support>https://github.com/ErrorWave/OppaiLib/issues</Support>
   <Project>https://github.com/ErrorWave/OppaiLib</Project>
-  <Overview>OppaiLib — a private, self-hosted, encrypted media library for adult content (videos, GIFs, images, comics, and game entries) with tagging, URL scraping, and fully local AI auto-tagging. Everything stays on your box: no cloud storage, no cloud AI, no telemetry.</Overview>
+  <Overview>OppaiLib — a private, self-hosted, encrypted media library for adult content (videos, GIFs, images, comics, and game entries) with tagging, URL scraping, and fully local AI auto-tagging. Also includes Libby, an in-app chat companion with importable character cards, which talks to an OpenAI-compatible LLM you run yourself. Everything stays on your box: no cloud storage, no cloud AI, no telemetry.</Overview>
   <Category>MediaApp:Other</Category>
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/ErrorWave/OppaiLib/main/unraid/oppailib.xml</TemplateURL>
@@ -35,6 +35,19 @@
 
   <Config Name="AI Auto-tagging" Target="OPPAI_AI_ENABLED" Default="true" Mode="" Description="Enable local AI auto-tagging" Type="Variable" Display="advanced" Required="false" Mask="false">true</Config>
   <Config Name="AI Device" Target="OPPAI_AI_DEVICE" Default="cpu" Mode="" Description="cpu or cuda (cuda needs GPU passthrough and a CUDA build of libonnxruntime; falls back to cpu with a warning)" Type="Variable" Display="advanced" Required="false" Mask="false">cpu</Config>
+  <Config Name="AI Video Frames" Target="OPPAI_AI_VIDEO_FRAMES" Default="5" Mode="" Description="Frames sampled per video/GIF before merging their tags (capped at 32). Each frame costs one ffmpeg decode plus one inference, so raising this makes video tagging slower but more thorough." Type="Variable" Display="advanced" Required="false" Mask="false">5</Config>
   <Config Name="Scrape Delay (ms)" Target="OPPAI_SCRAPE_DELAY_MS" Default="1500" Mode="" Description="Politeness delay between scraper requests" Type="Variable" Display="advanced" Required="false" Mask="false">1500</Config>
+  <Config Name="Respect robots.txt" Target="OPPAI_SCRAPE_RESPECT_ROBOTS" Default="true" Mode="" Description="Honor robots.txt before fetching. Set to false only for a site you own or are authorized to archive, when Fetch returns 'blocked by robots.txt'." Type="Variable" Display="advanced" Required="false" Mask="false">true</Config>
+
+  <!-- Libby chat. These are startup defaults only: the Settings screen can set all
+       three at runtime, and the API key there is write-only. Exposed here so the
+       container can be pointed at an LLM when it is first created. -->
+  <Config Name="Chat LLM URL" Target="OPPAI_CHAT_URL" Default="" Mode="" Description="OpenAI-compatible endpoint for Libby chat — LM Studio, llama.cpp, Ollama's /v1 bridge, or text-generation-webui. Example: http://192.168.1.10:5000/v1 . Blank disables chat (Libby falls back to built-in local replies). Chat becomes ready once that API reports a loaded model; load models in its own UI." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+  <Config Name="Chat Model" Target="OPPAI_CHAT_MODEL" Default="" Mode="" Description="Optional fallback model name, for chat servers that require a model field in the request." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+  <Config Name="Chat API Key" Target="OPPAI_CHAT_API_KEY" Default="" Mode="" Description="Optional. Needed only when your chat server was started with an API key (e.g. text-generation-webui's --api-key)." Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
+
+  <Config Name="Image Generation URL" Target="OPPAI_IMAGEGEN_URL" Default="" Mode="" Description="Local image generator for the Create tab: an InvokeAI server (default port 9090) or Automatic1111 / SD.Next (the /sdapi/v1 flavour, default port 7860). Which API it speaks is detected automatically. Blank disables the feature. Also settable at runtime in Settings." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+
   <Config Name="Web Idle Timeout (minutes)" Target="OPPAI_WEB_IDLE_MINUTES" Default="60" Mode="" Description="How long a browser session may sit unused before it is signed out. Browser sessions are also signed out whenever the container restarts. The Android app is exempt from both — it stays signed in. Set to 0 to disable the idle timeout." Type="Variable" Display="advanced" Required="false" Mask="false">60</Config>
+  <Config Name="Session Lifetime (hours)" Target="OPPAI_SESSION_TTL_HOURS" Default="720" Mode="" Description="How long a signed-in session stays valid before requiring a fresh sign-in. Applies to the Android app as well as browsers." Type="Variable" Display="advanced" Required="false" Mask="false">720</Config>
 </Container>
