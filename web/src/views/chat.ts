@@ -1,504 +1,568 @@
-import { LitElement, css, html, nothing } from "lit";
-import { customElement, property, state } from "lit/decorators.js";
-import { api, type ChatMessage, type ChatStatus, type User } from "../api.js";
+import { LitElement, css, html, nothing, type TemplateResult } from "lit";
+import { customElement, property, query, state } from "lit/decorators.js";
+import {
+  api, type ChatCharacter, type ChatConversation, type ChatImage, type ChatMessage, type ChatModels,
+  type ChatOptions, type ChatStatus, type ChatWorkspace, type StoredChatMessage, type User,
+} from "../api.js";
 import { iconStyles, motionStyles } from "../theme.js";
-import { LIBBY_EMOTIONS, applyImageFallback, libbyAssetCandidates, loadHideLibby,
-  loadLibbyOutfit, normalizeEmotion, normalizeIntensity, type LibbyEmotion } from "../libby.js";
-import { getIntensity, setIntensity } from "../libby-meter.js";
-import { libbyOpener, libbyReact, libbyReply } from "../libby-voice.js";
+import {
+  applyImageFallback, libbyAssetCandidates, loadHideLibby, loadLibbyOutfit,
+  normalizeEmotion, normalizeIntensity, type LibbyEmotion,
+} from "../libby.js";
+import { applyProgression, getIntensity, setIntensity } from "../libby-meter.js";
+import { libbyHeatDelta, libbyOpener, libbyReact, libbyReply } from "../libby-voice.js";
 
-// Each mode is a channel in Libby's "server", and maps to one of her emotions; the
-// artwork for an emotion comes from the worn outfit when one is selected (see
-// libby.ts), falling back to the bundled art via the image's error handler.
 const MODES = [
   { id: "sweet", label: "sweet", emotion: "happy", topic: "Soft, warm, and unhurried." },
-  { id: "playful", label: "playful", emotion: "mischievous", topic: "Teasing and quick on her feet." },
-  { id: "bold", label: "bold", emotion: "surprised", topic: "Blunt, uninhibited, no coyness." },
+  { id: "playful", label: "playful", emotion: "mischievous", topic: "Teasing and quick on their feet." },
+  { id: "bold", label: "bold", emotion: "surprised", topic: "Blunt, uninhibited, and direct." },
   { id: "roleplay", label: "roleplay", emotion: "thinking", topic: "In character, in scene, in detail." },
 ] as const;
 
-/** A message plus who said it and when — the chat log renders Discord-style rows. */
-interface Entry extends ChatMessage {
-  at: number;
-  /** Assistant lines she wrote herself, with no model behind her. */
-  local?: boolean;
+type EditorTab = "character" | "generation" | "images" | "profile";
+
+const newID = () => crypto.randomUUID().replaceAll("-", "");
+const timeOf = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+const defaultOptions = (): ChatOptions => ({ temperature: 0.8, top_p: 0.95, repetition_penalty: 1.1, max_tokens: 400 });
+
+function emptyWorkspace(): ChatWorkspace {
+  return { profile: { displayName: "", persona: "" }, characters: [], conversations: [], images: [] };
 }
 
-const timeOf = (ms: number) =>
-  new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+function optionNumber(options: ChatOptions | undefined, key: string, fallback: number): number {
+  const value = options?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function characterFromCard(parsed: Record<string, unknown>, fallbackName: string): ChatCharacter {
+  const data = ((parsed.data && typeof parsed.data === "object") ? parsed.data : parsed) as Record<string, unknown>;
+  const text = (key: string, fallback = "") => typeof data[key] === "string" ? data[key] as string : fallback;
+  return {
+    id:newID(), name:text("name", fallbackName), description:text("description"), personality:text("personality"),
+    scenario:text("scenario"), firstMessage:text("first_mes", text("firstMessage")), exampleDialogue:text("mes_example", text("exampleDialogue")),
+    systemPrompt:text("system_prompt", text("systemPrompt")), creatorNotes:text("creator_notes", text("creatorNotes")), promptWeight:1, defaultMode:"roleplay",
+  };
+}
+
+/** SillyTavern PNG cards store base64 JSON in a PNG tEXt chunk named `chara`. */
+async function characterFromPNG(file: File): Promise<ChatCharacter | null> {
+  if (!file.name.toLowerCase().endsWith(".png")) return null;
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const view = new DataView(bytes.buffer); let offset = 8;
+  while (offset + 12 <= bytes.length) {
+    const length = view.getUint32(offset); const type = new TextDecoder().decode(bytes.subarray(offset + 4, offset + 8));
+    if (offset + 12 + length > bytes.length) break;
+    if (type === "tEXt") {
+      const raw = new TextDecoder().decode(bytes.subarray(offset + 8, offset + 8 + length));
+      const split = raw.indexOf("\0");
+      if (split > 0 && raw.slice(0, split) === "chara") {
+        const json = new TextDecoder().decode(Uint8Array.from(atob(raw.slice(split + 1)), (char) => char.charCodeAt(0)));
+        return characterFromCard(JSON.parse(json) as Record<string, unknown>, file.name.replace(/\.png$/i, ""));
+      }
+    }
+    offset += length + 12;
+  }
+  return null;
+}
+
+/** Safe, tiny chat formatter: quotes are speech, **double stars** are actions. */
+function formatted(text: string): TemplateResult {
+  const token = /(\*\*[^*\n]+\*\*|\*[^*\n]+\*|~~[^~\n]+~~|`[^`\n]+`|"[^"\n]+")/g;
+  const chunks = text.split(token);
+  return html`${chunks.map((part) => {
+    if (part.startsWith("**") && part.endsWith("**")) return html`<strong class="action">${part.slice(2, -2)}</strong>`;
+    if (part.startsWith("*") && part.endsWith("*")) return html`<em>${part.slice(1, -1)}</em>`;
+    if (part.startsWith("~~") && part.endsWith("~~")) return html`<s>${part.slice(2, -2)}</s>`;
+    if (part.startsWith("`") && part.endsWith("`")) return html`<code>${part.slice(1, -1)}</code>`;
+    if (part.startsWith('"') && part.endsWith('"')) return html`<span class="speech">${part}</span>`;
+    return part;
+  })}`;
+}
 
 @customElement("oppai-chat")
 export class OppaiChat extends LitElement {
-  /** The signed-in user, for the message author line. */
   @property({ attribute: false }) user?: User;
 
   @state() private status: ChatStatus | null = null;
-  @state() private mode = "sweet";
-  @state() private emotion: LibbyEmotion = "happy";
-  // Intensity is Libby's session horniness meter (see libby-meter.ts): persistent
-  // across the app, nudged by library adds, and set by hand in the settings panel.
-  @state() private intensity = getIntensity();
-  /** The settings panel is folded away until asked for — the chat is the point. */
-  @state() private settingsOpen = false;
-  @state() private advancedOptions = "{}";
-
-  private onMeter = (e: Event) =>
-    (this.intensity = (e as CustomEvent<{ intensity: number }>).detail.intensity);
-  @state() private entries: Entry[] = [];
+  @state() private workspace: ChatWorkspace = emptyWorkspace();
+  @state() private characterID = "libby";
+  @state() private conversationID = "";
   @state() private draft = "";
   @state() private busy = false;
-  @state() private error = "";
+  @state() private loading = true;
+  @state() private settingsOpen = false;
+  @state() private editorTab: EditorTab = "character";
+  @state() private notice = "";
+  @state() private noticeError = false;
+  @state() private imageTags = "";
+  @state() private models: ChatModels | null = null;
+  @state() private selectedModel = "";
+  @state() private modelBusy = false;
+  @query(".log") private log?: HTMLElement;
+  private saveTimer = 0;
   private idleTimer = 0;
-
-  private armIdle = () => {
-    window.clearTimeout(this.idleTimer);
-    this.idleTimer = window.setTimeout(() => {
-      if (this.busy || document.visibilityState !== "visible") { this.armIdle(); return; }
-      const line = libbyReact("idle", { intensity: this.intensity });
-      this.emotion = line.emotion;
-      this.entries = [...this.entries, { role: "assistant", content: line.message, at: Date.now(), local: true }];
-      void this.scrollToEnd();
-      this.armIdle();
-    }, 60_000);
-  };
+  private noticeTimer = 0;
+  private resize?: ResizeObserver;
 
   static styles = [iconStyles, motionStyles, css`
-    /* Discord's information architecture, expressed with OppaiLib's live theme. */
-    :host {
-      display: block;
-      height: 100%;
-      --dc-rail: var(--md-sys-color-surface-container-lowest);
-      --dc-side: var(--md-sys-color-surface-container-low);
-      --dc-main: var(--md-sys-color-surface);
-      --dc-hover: var(--md-sys-color-surface-container-high);
-      --dc-input: var(--md-sys-color-surface-container-highest);
-      --dc-text: var(--md-sys-color-on-surface);
-      --dc-bright: var(--md-sys-color-on-surface);
-      --dc-muted: var(--md-sys-color-on-surface-variant);
-      --dc-accent: var(--md-sys-color-primary);
-      --dc-on-accent: var(--md-sys-color-on-primary);
-      --dc-line: var(--md-sys-color-outline-variant);
-      --dc-online: var(--md-sys-color-tertiary);
-      color: var(--dc-text);
-      font: 400 15px/1.375 "gg sans", "Noto Sans", Roboto, system-ui, sans-serif;
-    }
-    .client {
-      display: grid;
-      grid-template-columns: 72px 240px 1fr 232px;
-      height: calc(100vh - 120px);
-      border-radius: 12px;
-      overflow: hidden;
-      border: 1px solid var(--dc-line);
-      background: var(--dc-main);
-    }
-
-    /* ── server rail ─────────────────────────────────────────────────────── */
-    .rail { background: var(--dc-rail); display: flex; flex-direction: column;
-      align-items: center; gap: 8px; padding: 12px 0; }
-    .guild { width: 48px; height: 48px; border-radius: 16px; background: var(--dc-side);
-      display: grid; place-items: center; overflow: hidden; cursor: pointer;
-      transition: border-radius .15s, background .15s; }
-    .guild.on { border-radius: 14px; background: var(--dc-accent); }
-    .guild img { width: 100%; height: 100%; object-fit: cover; }
-    .guild .material-symbols-rounded { color: var(--dc-bright); font-size: 22px; }
-    .rail-sep { width: 32px; height: 2px; background: var(--dc-line); border-radius: 1px; }
-
-    /* ── channel sidebar ─────────────────────────────────────────────────── */
-    .side { background: var(--dc-side); display: flex; flex-direction: column; min-width: 0; }
-    .guild-head { height: 48px; padding: 0 16px; display: flex; align-items: center;
-      font-weight: 600; color: var(--dc-bright); border-bottom: 1px solid var(--dc-line);
-      box-shadow: 0 1px 0 rgba(0,0,0,.2); font-size: 15px; }
-    .cat { padding: 16px 8px 4px 16px; font-size: 12px; font-weight: 600;
-      letter-spacing: .02em; text-transform: uppercase; color: var(--dc-muted); }
-    .chan { display: flex; align-items: center; gap: 6px; margin: 1px 8px; padding: 6px 8px;
-      border: 0; border-radius: 4px; background: transparent; color: var(--dc-muted);
-      font: inherit; font-size: 15px; font-weight: 500; width: calc(100% - 16px);
-      text-align: left; cursor: pointer; }
-    .chan:hover { background: var(--dc-hover); color: var(--dc-text); }
-    .chan.on { background: var(--dc-hover); color: var(--dc-bright); }
-    .chan .hash { font-size: 19px; color: var(--dc-muted); font-weight: 400; }
-    .side-foot { margin-top: auto; background: var(--dc-rail); padding: 8px; display: flex;
-      align-items: center; gap: 8px; }
-    .me-avatar { width: 32px; height: 32px; border-radius: 50%; background: var(--dc-accent);
-      color: var(--dc-on-accent); display: grid; place-items: center; font-size: 12px; font-weight: 700; }
-    .me-name { font-size: 14px; font-weight: 600; color: var(--dc-bright);
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .me-sub { font-size: 12px; color: var(--dc-muted); }
-
-    /* ── main column ─────────────────────────────────────────────────────── */
-    .main { display: flex; flex-direction: column; min-width: 0; background: var(--dc-main); }
-    .top { height: 48px; display: flex; align-items: center; gap: 8px; padding: 0 16px;
-      border-bottom: 1px solid var(--dc-line); box-shadow: 0 1px 0 rgba(0,0,0,.2); }
-    .top .hash { font-size: 22px; color: var(--dc-muted); }
-    .top .name { font-weight: 600; color: var(--dc-bright); }
-    .top .topic { font-size: 13px; color: var(--dc-muted); border-left: 1px solid var(--dc-line);
-      margin-left: 8px; padding-left: 12px; overflow: hidden; text-overflow: ellipsis;
-      white-space: nowrap; }
-    .top .gear { margin-left: auto; border: 0; background: transparent; color: var(--dc-muted);
-      cursor: pointer; border-radius: 4px; padding: 4px; display: grid; place-items: center; }
-    .top .gear:hover, .top .gear.on { color: var(--dc-bright); background: var(--dc-hover); }
-
-    .log { flex: 1; overflow-y: auto; padding: 16px 0 24px; display: flex;
-      flex-direction: column; }
-    .row { display: grid; grid-template-columns: 56px 1fr; padding: 2px 16px 2px 0;
-      align-items: start; }
-    .row:hover { background: rgba(2,2,2,.06); }
-    .row.grouped { margin-top: 0; }
-    .row.first { margin-top: 17px; }
-    .avatar { grid-column: 1; justify-self: center; width: 40px; height: 40px;
-      border-radius: 50%; overflow: hidden; background: var(--dc-input); margin-top: 2px; }
-    .avatar img { width: 100%; height: 100%; object-fit: cover; object-position: top center; }
-    .avatar.initials { display: grid; place-items: center; background: var(--dc-accent);
-      color: var(--dc-on-accent); font-size: 15px; font-weight: 700; }
-    .stamp { grid-column: 1; justify-self: end; padding-right: 4px; font-size: 11px;
-      color: var(--dc-muted); opacity: 0; line-height: 22px; }
-    .row:hover .stamp { opacity: 1; }
-    .body { grid-column: 2; min-width: 0; }
-    .who { display: flex; align-items: baseline; gap: 8px; }
-    .who .author { font-size: 15px; font-weight: 500; color: var(--dc-bright); }
-    .who .author.libby { color: var(--dc-accent); }
-    .tag { background: var(--dc-accent); color: var(--dc-on-accent); font-size: 10px; font-weight: 600;
-      border-radius: 3px; padding: 1px 4px; text-transform: uppercase; letter-spacing: .02em; }
-    .tag.offline { background: var(--dc-line); color: var(--dc-bright); }
-    .when { font-size: 12px; color: var(--dc-muted); }
-    .text { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--dc-text); }
-    .typing { display: flex; align-items: center; gap: 6px; padding: 4px 16px 0 56px;
-      font-size: 13px; color: var(--dc-muted); }
-    .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--dc-muted);
-      animation: blink 1.2s infinite; }
-    .dot:nth-child(2) { animation-delay: .2s; }
-    .dot:nth-child(3) { animation-delay: .4s; }
-    @keyframes blink { 0%, 60%, 100% { opacity: .3; } 30% { opacity: 1; } }
-
-    /* Channel intro, Discord's "Welcome to #channel" block. */
-    .intro { padding: 16px 16px 8px; }
-    .intro .badge { width: 68px; height: 68px; border-radius: 50%; background: var(--dc-input);
-      display: grid; place-items: center; margin-bottom: 8px; }
-    .intro .badge .material-symbols-rounded { font-size: 40px; color: var(--dc-bright); }
-    .intro h2 { margin: 0 0 4px; font-size: 28px; font-weight: 700; color: var(--dc-bright); }
-    .intro p { margin: 0; color: var(--dc-muted); font-size: 15px; }
-
-    /* ── composer ────────────────────────────────────────────────────────── */
-    form { padding: 0 16px 22px; }
-    .composer { display: flex; align-items: flex-end; gap: 10px; background: var(--dc-input);
-      border-radius: 8px; padding: 10px 14px; }
-    textarea { flex: 1; resize: none; border: 0; outline: 0; background: transparent;
-      color: var(--dc-text); font: inherit; max-height: 140px; min-height: 22px;
-      line-height: 22px; padding: 0; }
-    textarea::placeholder { color: var(--dc-muted); }
-    .send { border: 0; background: transparent; color: var(--dc-muted); cursor: pointer;
-      display: grid; place-items: center; padding: 0; }
-    .send:hover:not(:disabled) { color: var(--dc-bright); }
-    .send:disabled { opacity: .4; cursor: default; }
-    .error { color: var(--md-sys-color-error); font-size: 13px; padding: 0 16px 8px; }
-
-    /* ── members sidebar (Libby) ─────────────────────────────────────────── */
-    .members { background: var(--dc-side); display: flex; flex-direction: column;
-      padding: 12px 8px; gap: 8px; overflow: hidden; }
-    .members .cat { padding: 4px 8px; }
-    .member { display: flex; align-items: center; gap: 10px; padding: 4px 8px;
-      border-radius: 4px; }
-    .member .pip { width: 32px; height: 32px; border-radius: 50%; overflow: hidden;
-      background: var(--dc-input); position: relative; }
-    .member .pip img { width: 100%; height: 100%; object-fit: cover; object-position: top center; }
-    .member .who2 { min-width: 0; }
-    .member .n { font-size: 14px; font-weight: 600; color: var(--dc-accent); }
-    .member .s { font-size: 12px; color: var(--dc-muted); overflow: hidden;
-      text-overflow: ellipsis; white-space: nowrap; }
-    .portrait { flex: 1; min-height: 0; display: grid; place-items: end center; }
-    .portrait img { max-width: 100%; max-height: 100%; object-fit: contain;
-      object-position: bottom; }
-
-    /* ── settings panel (folded away by default) ─────────────────────────── */
-    .settings { background: var(--dc-side); border-bottom: 1px solid var(--dc-line); padding: 14px 16px;
-      display: grid; gap: 12px; }
-    .settings h3 { margin: 0; font-size: 12px; font-weight: 700; text-transform: uppercase;
-      letter-spacing: .02em; color: var(--dc-muted); }
-    .chips { display: flex; flex-wrap: wrap; gap: 6px; }
-    .chip { border: 1px solid var(--dc-line); background: transparent; color: var(--dc-text);
-      border-radius: 4px; font: inherit; font-size: 13px; padding: 4px 10px; cursor: pointer; }
-    .chip:hover { background: var(--dc-hover); }
-    .chip.on { background: var(--dc-accent); border-color: var(--dc-accent); color: var(--dc-on-accent); }
-    .heat { display: flex; align-items: center; gap: 8px; }
-    .heat input { flex: 1; accent-color: var(--dc-accent); }
-    .heat .val { font-size: 13px; color: var(--dc-muted); min-width: 78px; }
-    textarea.advanced { width: 100%; min-height: 92px; max-height: 220px; box-sizing: border-box;
-      border: 1px solid var(--dc-line); border-radius: 6px; padding: 8px; margin-top: 6px;
-      background: var(--dc-input); color: var(--dc-text); font: 12px/1.45 ui-monospace, monospace; }
-    .advanced-help { margin-top: 5px; color: var(--dc-muted); font-size: 12px; }
-
-    @media (max-width: 1100px) { .client { grid-template-columns: 72px 220px 1fr; }
-      .members { display: none; } }
-    @media (max-width: 780px) { .client { grid-template-columns: 1fr; height: auto; }
-      .rail, .side { display: none; }
-      .main { min-height: 70vh; } }
+    :host { display:block; height:100%; color:var(--md-sys-color-on-surface); font:400 15px/1.375 "gg sans","Noto Sans",Roboto,system-ui,sans-serif;
+      --rail:var(--md-sys-color-surface-container-lowest); --side:var(--md-sys-color-surface-container-low);
+      --main:var(--md-sys-color-surface); --hover:var(--md-sys-color-surface-container-high);
+      --input:var(--md-sys-color-surface-container-highest); --muted:var(--md-sys-color-on-surface-variant);
+      --line:var(--md-sys-color-outline-variant); --accent:var(--md-sys-color-primary); --on-accent:var(--md-sys-color-on-primary); }
+    button,input,textarea,select { font:inherit; }
+    button { color:inherit; }
+    .client { display:grid; grid-template-columns:72px 250px minmax(0,1fr) 230px; height:calc(100dvh - 120px); min-height:560px;
+      border:1px solid var(--line); border-radius:12px; overflow:hidden; background:var(--main); }
+    .rail { background:var(--rail); padding:12px 0; display:flex; flex-direction:column; align-items:center; gap:8px; overflow-y:auto; }
+    .guild { position:relative; width:48px; height:48px; flex:0 0 48px; border:0; border-radius:50%; background:var(--input); display:grid;
+      place-items:center; overflow:hidden; cursor:pointer; transition:.15s; }
+    .guild:hover,.guild.on { border-radius:14px; background:var(--accent); }
+    .guild.on::before { content:""; position:fixed; margin-left:-60px; width:4px; height:38px; border-radius:0 4px 4px 0; background:var(--md-sys-color-on-surface); }
+    .guild img,.avatar img,.member-avatar img { width:100%; height:100%; object-fit:cover; object-position:top center; }
+    .initial { font-weight:700; color:var(--on-accent); background:var(--accent); }
+    .rail-sep { width:32px; height:2px; background:var(--line); }
+    .side { min-width:0; display:flex; flex-direction:column; background:var(--side); }
+    .side-head,.top { height:48px; flex:0 0 48px; display:flex; align-items:center; border-bottom:1px solid var(--line); box-shadow:0 1px 0 rgba(0,0,0,.16); }
+    .side-head { padding:0 12px; gap:8px; font-weight:650; }
+    .side-head button,.icon-btn { border:0; background:transparent; border-radius:5px; padding:5px; display:grid; place-items:center; cursor:pointer; color:var(--muted); }
+    .side-head button:hover,.icon-btn:hover,.icon-btn.on { background:var(--hover); color:var(--md-sys-color-on-surface); }
+    .cat { padding:15px 10px 5px 16px; color:var(--muted); font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; display:flex; }
+    .cat button { margin-left:auto; border:0; background:transparent; cursor:pointer; color:var(--muted); }
+    .convos { overflow-y:auto; min-height:0; }
+    .convo { width:calc(100% - 16px); margin:1px 8px; padding:7px 8px; border:0; border-radius:5px; background:transparent; color:var(--muted);
+      display:flex; align-items:center; gap:7px; cursor:pointer; text-align:left; min-width:0; }
+    .convo:hover,.convo.on { color:var(--md-sys-color-on-surface); background:var(--hover); }
+    .convo span:nth-child(2) { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .side-foot { margin-top:auto; background:var(--rail); padding:8px; display:flex; align-items:center; gap:8px; }
+    .me-avatar { width:32px; height:32px; border-radius:50%; display:grid; place-items:center; }
+    .me-copy { min-width:0; flex:1; } .me-name { font-size:13px; font-weight:650; overflow:hidden; text-overflow:ellipsis; }
+    .me-sub { font-size:11px; color:var(--muted); }
+    .main { display:flex; min-width:0; min-height:0; flex-direction:column; background:var(--main); position:relative; }
+    .top { padding:0 14px; gap:8px; }
+    .top .hash { color:var(--muted); font-size:21px; }.top .name { font-weight:650; }.topic { color:var(--muted); font-size:13px; padding-left:10px;
+      margin-left:4px; border-left:1px solid var(--line); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .top-actions { margin-left:auto; display:flex; }
+    .log { min-height:0; flex:1 1 0; overflow-y:auto; overflow-anchor:auto; padding:12px 0 20px; scroll-behavior:smooth; }
+    .intro { padding:20px 16px 12px; }.intro .round { width:68px; height:68px; border-radius:50%; background:var(--input); display:grid; place-items:center; overflow:hidden; }
+    .intro .round img { width:100%; height:100%; object-fit:cover; }.intro h2 { font-size:27px; margin:9px 0 3px; }.intro p { color:var(--muted); margin:0; }
+    .row { display:grid; grid-template-columns:56px minmax(0,1fr); padding:2px 44px 2px 0; position:relative; }
+    .row.first { margin-top:15px; }.row:hover { background:color-mix(in srgb,var(--md-sys-color-on-surface) 5%,transparent); }
+    .avatar { grid-column:1; justify-self:center; width:40px; height:40px; border-radius:50%; overflow:hidden; display:grid; place-items:center; margin-top:2px; }
+    .stamp { grid-column:1; justify-self:end; opacity:0; color:var(--muted); font-size:10px; padding-right:4px; line-height:22px; }.row:hover .stamp { opacity:1; }
+    .message { grid-column:2; min-width:0; }.who { display:flex; align-items:baseline; gap:7px; }.author { font-weight:550; }.author.friend { color:var(--accent); }
+    .bot { color:var(--on-accent); background:var(--accent); padding:1px 4px; border-radius:3px; font-size:9px; font-weight:700; }.when { color:var(--muted); font-size:11px; }
+    .text { white-space:pre-wrap; overflow-wrap:anywhere; }.text .action { font-style:italic; font-weight:700; color:color-mix(in srgb,var(--accent) 72%,var(--md-sys-color-on-surface)); }
+    .text .speech { color:var(--md-sys-color-on-surface); }.text code { background:var(--input); padding:1px 4px; border-radius:3px; }.text s { opacity:.7; }
+    .sent-image { display:block; max-width:min(460px,100%); max-height:420px; border-radius:8px; margin-top:7px; object-fit:contain; background:var(--input); }
+    .message-actions { opacity:0; position:absolute; right:8px; top:-8px; display:flex; border:1px solid var(--line); border-radius:5px; overflow:hidden; background:var(--side); }
+    .row:hover .message-actions { opacity:1; }.message-actions button { border:0; background:transparent; padding:4px; cursor:pointer; color:var(--muted); }.message-actions button:hover { color:inherit; background:var(--hover); }
+    .typing { padding:6px 16px 0 56px; color:var(--muted); font-size:13px; }.typing b { color:var(--md-sys-color-on-surface); }
+    .notice { margin:4px 16px 8px 56px; padding:8px 12px; border-left:3px solid var(--accent); background:var(--side); border-radius:3px; font-size:13px; }
+    .notice.error { border-color:var(--md-sys-color-error); color:var(--md-sys-color-error); }
+    form.composer-form { padding:0 16px 20px; }.composer { display:flex; align-items:flex-end; gap:9px; background:var(--input); border-radius:8px; padding:10px 12px; }
+    .composer textarea { resize:none; border:0; outline:0; background:transparent; color:inherit; max-height:140px; min-height:22px; line-height:22px; flex:1; padding:0; }
+    .composer button { align-self:flex-end; }.format-help { color:var(--muted); font-size:10px; padding:4px 2px 0; }
+    .members { min-width:0; background:var(--side); padding:12px 8px; overflow-y:auto; }.member { display:flex; align-items:center; gap:9px; padding:6px 8px; border-radius:5px; }
+    .member:hover { background:var(--hover); }.member-avatar { width:34px; height:34px; border-radius:50%; overflow:hidden; display:grid; place-items:center; }
+    .member-name { font-size:13px; font-weight:650; color:var(--accent); }.member-status { font-size:11px; color:var(--muted); }
+    .settings { position:absolute; inset:48px 0 auto 0; z-index:5; max-height:calc(100% - 48px); overflow:auto; background:var(--side); border-bottom:1px solid var(--line); box-shadow:0 10px 28px rgba(0,0,0,.28); }
+    .tabs { display:flex; gap:3px; padding:10px 12px 0; border-bottom:1px solid var(--line); }.tab { border:0; background:transparent; color:var(--muted); padding:7px 10px; cursor:pointer; border-bottom:2px solid transparent; }
+    .tab.on { color:inherit; border-color:var(--accent); }.panel { padding:14px 16px 18px; display:grid; gap:11px; }.grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    label { display:grid; gap:4px; color:var(--muted); font-size:11px; font-weight:650; text-transform:uppercase; }.field,select { box-sizing:border-box; width:100%; color:var(--md-sys-color-on-surface);
+      background:var(--input); border:1px solid var(--line); border-radius:5px; padding:8px; outline:0; text-transform:none; font-weight:400; }
+    textarea.field { min-height:66px; resize:vertical; }.range { display:grid; grid-template-columns:1fr 48px; gap:8px; align-items:center; }.range input { accent-color:var(--accent); }.range output { text-align:right; color:inherit; }
+    .panel-actions { display:flex; flex-wrap:wrap; gap:7px; }.primary,.secondary,.danger { border:1px solid var(--line); border-radius:5px; padding:7px 11px; cursor:pointer; background:transparent; }
+    .primary { background:var(--accent); border-color:var(--accent); color:var(--on-accent); }.danger { color:var(--md-sys-color-error); }.file { position:relative; overflow:hidden; }.file input { position:absolute; inset:0; opacity:0; cursor:pointer; }
+    .image-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:9px; }.image-card { background:var(--input); border-radius:7px; overflow:hidden; position:relative; }
+    .image-card img { width:100%; height:110px; object-fit:cover; }.image-card div { padding:6px; font-size:11px; overflow-wrap:anywhere; }.image-card button { position:absolute; right:4px; top:4px; border:0; border-radius:50%; background:rgba(0,0,0,.7); color:white; cursor:pointer; }
+    .empty { color:var(--muted); font-size:13px; }
+    @media(max-width:1120px){.client{grid-template-columns:72px 230px minmax(0,1fr)}.members{display:none}}
+    @media(max-width:760px){:host{height:auto}.client{grid-template-columns:1fr;height:calc(100dvh - 78px);min-height:520px;border-radius:0}.rail,.side,.members{display:none}.topic{display:none}.grid{grid-template-columns:1fr}.top{padding-left:8px}.row{padding-right:36px}}
   `];
 
   connectedCallback() {
     super.connectedCallback();
-    window.addEventListener("oppai-libby-meter", this.onMeter);
     void this.load();
   }
+
   disconnectedCallback() {
     super.disconnectedCallback();
-    window.removeEventListener("oppai-libby-meter", this.onMeter);
-    window.clearTimeout(this.idleTimer);
+    window.clearTimeout(this.saveTimer); window.clearTimeout(this.idleTimer); window.clearTimeout(this.noticeTimer);
+    this.resize?.disconnect();
+  }
+
+  protected firstUpdated() {
+    this.resize = new ResizeObserver(() => void this.scrollToEnd(false));
+    if (this.log) this.resize.observe(this.log);
+  }
+
+  private get activeCharacter(): ChatCharacter | undefined {
+    return this.workspace.characters.find((character) => character.id === this.characterID) ?? this.workspace.characters[0];
+  }
+
+  private get activeConversation(): ChatConversation | undefined {
+    return this.workspace.conversations.find((conversation) => conversation.id === this.conversationID);
+  }
+
+  private conversationsFor(characterID = this.characterID): ChatConversation[] {
+    return this.workspace.conversations.filter((conversation) => conversation.characterId === characterID)
+      .sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
   private async load() {
-    try { this.status = await api.chatStatus(); }
-    catch (e) { this.error = (e as Error).message; }
+    try {
+      const [status, workspace] = await Promise.all([api.chatStatus(), api.chatWorkspace()]);
+      this.status = status; this.workspace = workspace;
+      this.characterID = workspace.characters[0]?.id ?? "libby";
+      const existing = this.conversationsFor(this.characterID)[0];
+      if (existing) this.activateConversation(existing.id);
+      else this.newConversation(false);
+      if (status.modelBackend) void this.refreshModels(true);
+    } catch (error) { this.say((error as Error).message, true); }
+    finally { this.loading = false; }
   }
 
-  private setMode(mode: string) {
-    if (mode === this.mode) return;
-    this.mode = mode;
-    // Switching channel puts her in that channel's pose, the way the mode picker
-    // used to. The log carries over — it's one conversation, not four.
-    this.emotion = normalizeEmotion(MODES.find((m) => m.id === mode)?.emotion);
+  private say(message: string, error = false) {
+    this.notice = message; this.noticeError = error;
+    window.clearTimeout(this.noticeTimer); this.noticeTimer = window.setTimeout(() => (this.notice = ""), 4200);
   }
 
-  private onKey(e: KeyboardEvent) {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void this.send(); }
+  private async refreshModels(quiet = false) {
+    try {
+      this.models = await api.chatModels();
+      this.selectedModel = this.models.loaded || this.models.models[0] || "";
+    } catch (error) { if (!quiet) this.say((error as Error).message, true); }
   }
 
-  private async scrollToEnd() {
+  private async loadModel() {
+    if (!this.selectedModel || this.modelBusy) return;
+    this.modelBusy = true; this.say(`Loading ${this.selectedModel}…`);
+    try {
+      await api.loadChatModel(this.selectedModel);
+      if (this.status) this.status = { ...this.status, enabled:true, model:this.selectedModel };
+      await this.refreshModels(true); this.say(`${this.selectedModel} is loaded.`);
+    } catch (error) { this.say((error as Error).message, true); }
+    finally { this.modelBusy = false; }
+  }
+
+  private async unloadModel() {
+    if (this.modelBusy) return;
+    this.modelBusy = true; this.say("Unloading chat model…");
+    try { await api.unloadChatModel(); if (this.status) this.status = { ...this.status, enabled:false }; await this.refreshModels(true); this.say("Chat model unloaded."); }
+    catch (error) { this.say((error as Error).message, true); }
+    finally { this.modelBusy = false; }
+  }
+
+  private touchWorkspace() {
+    this.workspace = { ...this.workspace, characters: [...this.workspace.characters], conversations: [...this.workspace.conversations], images: [...this.workspace.images] };
+    window.clearTimeout(this.saveTimer); this.saveTimer = window.setTimeout(() => void this.saveWorkspace(), 450);
+  }
+
+  private async saveWorkspace() {
+    window.clearTimeout(this.saveTimer);
+    try { this.workspace = await api.saveChatWorkspace(this.workspace); }
+    catch (error) { this.say(`Couldn't save chat: ${(error as Error).message}`, true); }
+  }
+
+  private async scrollToEnd(smooth = true) {
     await this.updateComplete;
-    this.renderRoot.querySelector(".log")?.scrollTo({ top: 1e9, behavior: "smooth" });
+    requestAnimationFrame(() => {
+      if (!this.log) return;
+      this.log.scrollTo({ top: this.log.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+    });
   }
+
+  private armIdle = () => {
+    window.clearTimeout(this.idleTimer);
+    if (this.characterID !== "libby") return;
+    this.idleTimer = window.setTimeout(() => {
+      if (this.busy || document.visibilityState !== "visible") return this.armIdle();
+      const conversation = this.activeConversation; if (!conversation) return;
+      const line = libbyReact("idle", { intensity: conversation.intensity });
+      conversation.emotion = line.emotion;
+      conversation.messages.push({ id:newID(), role:"assistant", content:line.message, at:Date.now() });
+      conversation.updatedAt = Date.now(); this.touchWorkspace(); void this.scrollToEnd(); this.armIdle();
+    }, 60_000);
+  };
+
+  private activateCharacter(id: string) {
+    this.characterID = id;
+    const conversation = this.conversationsFor(id)[0];
+    if (conversation) this.activateConversation(conversation.id); else this.newConversation();
+  }
+
+  private activateConversation(id: string) {
+    const conversation = this.workspace.conversations.find((item) => item.id === id); if (!conversation) return;
+    this.conversationID = id; this.characterID = conversation.characterId;
+    setIntensity(conversation.intensity); this.armIdle(); void this.scrollToEnd(false);
+  }
+
+  private newConversation(save = true) {
+    const character = this.activeCharacter; if (!character) return;
+    const now = Date.now();
+    let opener = character.firstMessage?.trim() ?? "";
+    let emotion: LibbyEmotion = normalizeEmotion(MODES.find((mode) => mode.id === character.defaultMode)?.emotion);
+    if (character.id === "libby" && !opener) { const line = libbyOpener(character.defaultMode, getIntensity()); opener = line.message; emotion = line.emotion; }
+    const conversation: ChatConversation = {
+      id:newID(), characterId:character.id, title:"New conversation", mode:character.defaultMode || "sweet",
+      emotion, intensity:character.id === "libby" ? getIntensity() : 1, progress:character.id === "libby" ? getIntensity() : 1, options:defaultOptions(),
+      messages:opener ? [{ id:newID(), role:"assistant", content:opener, at:now }] : [], createdAt:now, updatedAt:now,
+    };
+    this.workspace.conversations.push(conversation); this.conversationID = conversation.id;
+    this.touchWorkspace(); if (save) this.say(`Started a new chat with ${character.name}.`); this.armIdle(); void this.scrollToEnd(false);
+  }
+
+  private clearConversation() {
+    const conversation = this.activeConversation; if (!conversation || !confirm("Clear every message in this conversation?")) return;
+    conversation.messages = []; conversation.title = "New conversation"; conversation.updatedAt = Date.now(); this.touchWorkspace(); this.say("Conversation cleared.");
+  }
+
+  private deleteConversation(id: string) {
+    if (!confirm("Delete this conversation?")) return;
+    this.workspace.conversations = this.workspace.conversations.filter((conversation) => conversation.id !== id);
+    const next = this.conversationsFor()[0]; if (next) this.conversationID = next.id; else this.newConversation(false);
+    this.touchWorkspace();
+  }
+
+  private updateConversation(patch: Partial<ChatConversation>) {
+    const conversation = this.activeConversation; if (!conversation) return;
+    Object.assign(conversation, patch, { updatedAt:Date.now() });
+    if (patch.intensity != null) { conversation.progress = patch.intensity; setIntensity(patch.intensity); }
+    this.touchWorkspace();
+  }
+
+  private updateOption(key: string, value: number) {
+    const conversation = this.activeConversation; if (!conversation) return;
+    conversation.options = { ...(conversation.options ?? {}), [key]:value }; conversation.updatedAt = Date.now(); this.touchWorkspace();
+  }
+
+  private onKey(event: KeyboardEvent) { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void this.send(); } }
 
   private async send() {
-    const content = this.draft.trim();
-    if (!content || this.busy) return;
-    let options: Record<string, unknown> = {};
-    if (this.status?.enabled) {
-      try {
-        const parsed: unknown = JSON.parse(this.advancedOptions || "{}");
-        if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") throw new Error("not an object");
-        options = parsed as Record<string, unknown>;
-      } catch {
-        this.error = "Advanced text-generation options must be a JSON object.";
-        this.settingsOpen = true;
-        return;
-      }
-    }
-    this.armIdle();
-    const next: Entry[] = [...this.entries, { role: "user", content, at: Date.now() }];
-    this.entries = next; this.draft = ""; this.busy = true; this.error = "";
-    void this.scrollToEnd();
-
-    // No local LLM configured? Libby answers for herself rather than going quiet —
-    // her own voice reads the message and replies from the emotion/heat she's in.
+    const content = this.draft.trim(), conversation = this.activeConversation, character = this.activeCharacter;
+    if (!content || !conversation || !character || this.busy) return;
+    const userMessage: StoredChatMessage = { id:newID(), role:"user", content, at:Date.now() };
+    conversation.messages.push(userMessage); conversation.updatedAt = Date.now();
+    if (conversation.title === "New conversation") conversation.title = content.slice(0, 42);
+    this.draft = ""; this.busy = true; this.notice = ""; this.touchWorkspace(); this.armIdle(); void this.scrollToEnd();
     if (!this.status?.enabled) {
-      const line = libbyReply(content, this.mode, this.emotion, this.intensity);
-      // A beat of "typing", so she doesn't answer faster than thought.
-      await new Promise((r) => setTimeout(r, 350 + Math.random() * 450));
-      this.emotion = line.emotion;
-      this.intensity = setIntensity(line.intensity);
-      this.entries = [...next, { role: "assistant", content: line.message, at: Date.now(), local: true }];
-      this.busy = false;
-      void this.scrollToEnd();
-      return;
+      if (character.id !== "libby") { this.busy = false; this.say("Configure a local chat model in Settings to talk with custom friends.", true); return; }
+      const progression = applyProgression(conversation.progress ?? conversation.intensity, libbyHeatDelta(content, conversation.mode));
+      const line = libbyReply(content, conversation.mode, normalizeEmotion(conversation.emotion), progression.intensity, false);
+      await new Promise((resolve) => setTimeout(resolve, 350 + Math.random() * 450));
+      conversation.emotion = line.emotion; conversation.progress = progression.progress; conversation.intensity = setIntensity(progression.intensity);
+      conversation.messages.push({ id:newID(), role:"assistant", content:line.message, at:Date.now() });
+      conversation.updatedAt = Date.now(); this.busy = false; this.touchWorkspace(); void this.scrollToEnd(); return;
     }
-
     try {
-      // Lines Libby wrote herself (the opener, offline replies) are hers, not the
-      // model's — they stay out of the history we hand it.
-      const history: ChatMessage[] = next
-        .filter((e) => !e.local)
-        .map(({ role, content: text }) => ({ role, content: text }));
-      const result = await api.chat(this.mode, history, this.emotion, this.intensity, options);
-      this.emotion = normalizeEmotion(result.emotion ?? this.emotion);
-      // Persist the reply's intensity into the session meter so it carries across
-      // the app (the outfit tier Libby wears, the next screen she pops up on).
-      this.intensity = setIntensity(normalizeIntensity(result.intensity ?? this.intensity));
-      this.entries = [...next, { role: "assistant", content: result.message, at: Date.now() }];
-      void this.scrollToEnd();
-    } catch (e) { this.error = (e as Error).message; }
+      const history: ChatMessage[] = conversation.messages.map(({ role, content:text }) => ({ role, content:text }));
+      const result = await api.chat(conversation.mode, history, conversation.emotion, conversation.intensity, conversation.options, character.id);
+      conversation.emotion = normalizeEmotion(result.emotion ?? conversation.emotion);
+      const requested = normalizeIntensity(result.intensity ?? conversation.intensity);
+      const progression = applyProgression(conversation.progress ?? conversation.intensity, requested - conversation.intensity);
+      conversation.progress = progression.progress; conversation.intensity = setIntensity(progression.intensity);
+      conversation.messages.push({ id:newID(), role:"assistant", content:result.message, at:Date.now(), imageId:result.imageId || undefined });
+      conversation.updatedAt = Date.now(); this.touchWorkspace(); void this.scrollToEnd();
+    } catch (error) { this.say((error as Error).message, true); }
     finally { this.busy = false; }
   }
 
-  render() {
-    const assets = libbyAssetCandidates(this.emotion, this.intensity, loadLibbyOutfit());
-    // Hiding Libby drops her artwork; the client, the channels and her replies stay.
-    const hideLibby = loadHideLibby();
-    const channel = MODES.find((m) => m.id === this.mode) ?? MODES[0];
-    const me = this.user?.username ?? "You";
-    return html`
-      <div class="client" @pointerdown=${this.armIdle}>
-        ${this.renderRail(assets, hideLibby)}
-        ${this.renderSidebar(me)}
-        <section class="main">
-          <div class="top">
-            <span class="hash">#</span><span class="name">${channel.label}</span>
-            <span class="topic">${channel.topic}</span>
-            <button class="gear ${this.settingsOpen ? "on" : ""}" title="Libby settings"
-              aria-expanded=${this.settingsOpen} @click=${() => (this.settingsOpen = !this.settingsOpen)}>
-              <span class="material-symbols-rounded" style="font-size:20px;">settings</span>
-            </button>
-          </div>
-          ${this.settingsOpen ? this.renderSettings() : nothing}
-          <div class="log">
-            ${this.renderIntro(channel)}
-            ${this.entries.map((entry, i) => this.renderEntry(entry, this.entries[i - 1], assets, hideLibby, me))}
-            ${this.busy ? html`<div class="typing">
-              <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-              <b>Libby</b> is typing…
-            </div>` : nothing}
-          </div>
-          ${this.error ? html`<div class="error">${this.error}</div>` : nothing}
-          <form @submit=${(e: Event) => { e.preventDefault(); void this.send(); }}>
-            <div class="composer">
-              <textarea rows="1" placeholder=${`Message #${channel.label}`} .value=${this.draft}
-                ?disabled=${this.busy}
-                @input=${(e: Event) => { this.draft = (e.target as HTMLTextAreaElement).value; this.armIdle(); }}
-                @keydown=${this.onKey}></textarea>
-              <button class="send" title="Send" ?disabled=${!this.draft.trim() || this.busy}>
-                <span class="material-symbols-rounded">send</span>
-              </button>
-            </div>
-          </form>
-        </section>
-        ${this.renderMembers(assets, hideLibby)}
-      </div>`;
+  private editMessage(message: StoredChatMessage) {
+    const changed = prompt("Edit message", message.content)?.trim(); if (!changed || changed === message.content) return;
+    message.content = changed; const conversation = this.activeConversation; if (conversation) conversation.updatedAt = Date.now(); this.touchWorkspace();
   }
 
-  private renderRail(assets: string[], hideLibby: boolean) {
-    return html`<nav class="rail">
-      <div class="guild on" title="Libby">
-        ${hideLibby
-          ? html`<span class="material-symbols-rounded">forum</span>`
-          : html`<img src=${assets[0]} data-fallback-index="0" alt="Libby"
-              @error=${(e: Event) => applyImageFallback(e.target as HTMLImageElement, assets)} />`}
-      </div>
-      <div class="rail-sep"></div>
+  private deleteMessage(id: string) {
+    const conversation = this.activeConversation; if (!conversation) return;
+    conversation.messages = conversation.messages.filter((message) => message.id !== id); conversation.updatedAt = Date.now(); this.touchWorkspace();
+  }
+
+  private updateCharacter(field: keyof ChatCharacter, value: string | number) {
+    const character = this.activeCharacter; if (!character) return;
+    (character as unknown as Record<string, string | number>)[field] = value; this.touchWorkspace();
+  }
+
+  private addCharacter() {
+    const character: ChatCharacter = { id:newID(), name:"New friend", promptWeight:1, defaultMode:"sweet", firstMessage:"Hey! It's nice to meet you." };
+    this.workspace.characters.push(character); this.characterID = character.id; this.touchWorkspace(); this.newConversation(false); this.settingsOpen = true; this.editorTab = "character";
+  }
+
+  private deleteCharacter() {
+    const character = this.activeCharacter; if (!character || character.builtIn || !confirm(`Remove ${character.name} and all of their conversations?`)) return;
+    this.workspace.characters = this.workspace.characters.filter((item) => item.id !== character.id);
+    this.workspace.conversations = this.workspace.conversations.filter((item) => item.characterId !== character.id);
+    this.characterID = this.workspace.characters[0]?.id ?? "libby"; const next = this.conversationsFor()[0]; if (next) this.conversationID = next.id; else this.newConversation(false); this.touchWorkspace();
+  }
+
+  private async importCard(event: Event) {
+    const file = (event.target as HTMLInputElement).files?.[0]; if (!file) return;
+    try {
+      if (file.type.startsWith("image/")) {
+        const character = await characterFromPNG(file) ?? { id:newID(), name:file.name.replace(/\.[^.]+$/, "") || "New friend", promptWeight:1, defaultMode:"sweet" };
+        this.workspace.characters.push(character); this.characterID = character.id; await this.saveWorkspace();
+        const image = await api.uploadChatImage({ characterId:character.id, name:`${character.name} avatar`, imageData:await this.readDataURL(file), tags:["portrait"] });
+        this.workspace.images.push(image); character.avatarImageId = image.id; this.touchWorkspace(); this.newConversation(false); this.say("Friend added and image scanned."); return;
+      }
+      const character = characterFromCard(JSON.parse(await file.text()) as Record<string, unknown>, file.name.replace(/\.json$/i, ""));
+      this.workspace.characters.push(character); this.characterID = character.id; this.touchWorkspace(); this.newConversation(false); this.say(`${character.name} joined your friends.`);
+    } catch (error) { this.say(`Couldn't import card: ${(error as Error).message}`, true); }
+    finally { (event.target as HTMLInputElement).value = ""; }
+  }
+
+  private readDataURL(file: File): Promise<string> {
+    return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file); });
+  }
+
+  private async uploadImage(event: Event) {
+    const file = (event.target as HTMLInputElement).files?.[0], character = this.activeCharacter; if (!file || !character) return;
+    try {
+      this.say("Scanning image locally…");
+      const tags = this.imageTags.split(",").map((tag) => tag.trim()).filter(Boolean);
+      const image = await api.uploadChatImage({ characterId:character.id, name:file.name, imageData:await this.readDataURL(file), tags });
+      this.workspace.images.push(image); if (!character.avatarImageId) character.avatarImageId = image.id;
+      this.imageTags = ""; this.touchWorkspace(); this.say(`Image scanned: ${image.tags.join(", ") || "no content tags found"}.`);
+    } catch (error) { this.say((error as Error).message, true); }
+    finally { (event.target as HTMLInputElement).value = ""; }
+  }
+
+  private async deleteImage(image: ChatImage) {
+    if (!confirm(`Delete ${image.name}?`)) return;
+    try { await api.deleteChatImage(image.id); this.workspace.images = this.workspace.images.filter((item) => item.id !== image.id); const c = this.activeCharacter; if (c?.avatarImageId === image.id) c.avatarImageId = ""; this.touchWorkspace(); }
+    catch (error) { this.say((error as Error).message, true); }
+  }
+
+  private avatar(character: ChatCharacter, className: string) {
+    if (character.avatarImageId) return html`<span class=${className}><img src=${api.chatImageURL(character.avatarImageId)} alt="" /></span>`;
+    if (character.id === "libby" && !loadHideLibby()) {
+      const conversation = this.activeConversation; const assets = libbyAssetCandidates(normalizeEmotion(conversation?.emotion), conversation?.intensity ?? 1, loadLibbyOutfit());
+      return html`<span class=${className}><img src=${assets[0]} data-fallback-index="0" alt="Libby" @error=${(event:Event) => applyImageFallback(event.target as HTMLImageElement, assets)} /></span>`;
+    }
+    return html`<span class="${className} initial">${character.name.slice(0,2).toUpperCase()}</span>`;
+  }
+
+  private renderRail() {
+    return html`<nav class="rail" aria-label="Friends">
+      ${this.workspace.characters.map((character, index) => html`
+        ${index === 1 ? html`<span class="rail-sep"></span>` : nothing}
+        <button class="guild ${character.id === this.characterID ? "on" : ""}" title=${character.name} @click=${() => this.activateCharacter(character.id)}>
+          ${this.avatar(character, "member-avatar")}
+        </button>`)}
+      <button class="guild" title="Add a friend" @click=${this.addCharacter}><span class="material-symbols-rounded">add</span></button>
     </nav>`;
   }
 
-  private renderSidebar(me: string) {
-    return html`<nav class="side">
-      <div class="guild-head">Libby</div>
-      <div class="cat">Channels</div>
-      ${MODES.map((m) => html`<button class="chan ${m.id === this.mode ? "on" : ""}"
-        @click=${() => this.setMode(m.id)}><span class="hash">#</span>${m.label}</button>`)}
-      <div class="side-foot">
-        <div class="me-avatar">${me.slice(0, 2).toUpperCase()}</div>
-        <div style="min-width:0;">
-          <div class="me-name">${me}</div>
-          <div class="me-sub">${this.status?.enabled ? "Online" : "Offline mode"}</div>
-        </div>
+  private renderSidebar() {
+    const character = this.activeCharacter, me = this.workspace.profile.displayName || this.user?.username || "You";
+    return html`<aside class="side">
+      <div class="side-head"><span>${character?.name ?? "Chat"}</span><button title="New conversation" @click=${() => this.newConversation()}><span class="material-symbols-rounded">add</span></button></div>
+      <div class="cat"><span>Direct messages</span><button title="New conversation" @click=${() => this.newConversation()}>+</button></div>
+      <div class="convos">${this.conversationsFor().map((conversation) => html`
+        <button class="convo ${conversation.id === this.conversationID ? "on" : ""}" @click=${() => this.activateConversation(conversation.id)}>
+          <span class="material-symbols-rounded" style="font-size:18px">forum</span><span>${conversation.title}</span>
+        </button>`)}
       </div>
-    </nav>`;
-  }
-
-  /**
-   * The settings panel: hidden until the gear is pressed, and built from the
-   * emotion model the rest of the app uses now — the named emotions from
-   * LIBBY_EMOTIONS plus the 1–5 horniness meter that picks her art tier.
-   */
-  private renderSettings() {
-    return html`<div class="settings">
-      <div>
-        <h3>Emotion</h3>
-        <div class="chips">
-          ${LIBBY_EMOTIONS.map((m) => html`<button class="chip ${m === this.emotion ? "on" : ""}"
-            @click=${() => (this.emotion = m)}>
-            ${m[0].toUpperCase() + m.slice(1)}
-          </button>`)}
-        </div>
+      <div class="side-foot">${this.workspace.profile.avatarImageId
+        ? html`<span class="me-avatar"><img src=${api.chatImageURL(this.workspace.profile.avatarImageId)} alt="" /></span>`
+        : html`<span class="me-avatar initial">${me.slice(0,2).toUpperCase()}</span>`}
+        <div class="me-copy"><div class="me-name">${me}</div><div class="me-sub">${this.status?.enabled ? "Online" : "Local mode"}</div></div>
+        <button class="icon-btn" title="Profile" @click=${() => { this.settingsOpen = true; this.editorTab = "profile"; }}><span class="material-symbols-rounded">manage_accounts</span></button>
       </div>
-      <div>
-        <h3>Horniness</h3>
-        <div class="heat">
-          <input type="range" min="1" max="5" .value=${String(this.intensity)}
-            @input=${(e: Event) => (this.intensity = setIntensity(Number((e.target as HTMLInputElement).value)))} />
-          <span class="val">${this.intensity} / 5</span>
-        </div>
-      </div>
-      ${this.status?.advancedOptions ? html`<div>
-        <h3>text-generation-webui API</h3>
-        <textarea class="advanced" spellcheck="false" .value=${this.advancedOptions}
-          @input=${(e: Event) => (this.advancedOptions = (e.target as HTMLTextAreaElement).value)}
-          placeholder='{"temperature":0.7,"top_p":0.9,"top_k":20,"preset":"Libby"}'></textarea>
-        <div class="advanced-help">Any chat-completions field is passed through: presets, samplers,
-          character/template fields, grammar, stop strings, thinking controls, and future options.
-          OppaiLib keeps model, messages, and streaming under its control.</div>
-      </div>` : nothing}
-    </div>`;
-  }
-
-  private renderIntro(channel: (typeof MODES)[number]) {
-    return html`<div class="intro">
-      <div class="badge"><span class="material-symbols-rounded">tag</span></div>
-      <h2>Welcome to #${channel.label}!</h2>
-      <p>
-        ${channel.topic}
-        ${this.status?.enabled
-          ? html` Running on <b>${this.status.model}</b>.`
-          : html` No local LLM configured — Libby is answering on her own.`}
-      </p>
-    </div>`;
-  }
-
-  private renderEntry(entry: Entry, previous: Entry | undefined, assets: string[], hideLibby: boolean, me: string) {
-    // Discord groups consecutive messages from the same author within a few minutes:
-    // the follow-ups drop the avatar and header and just show a hover timestamp.
-    const grouped = !!previous && previous.role === entry.role && entry.at - previous.at < 5 * 60_000;
-    const libby = entry.role === "assistant";
-    const author = libby ? "Libby" : me;
-    return html`<div class="row ${grouped ? "grouped" : "first"}">
-      ${grouped
-        ? html`<span class="stamp">${timeOf(entry.at)}</span>`
-        : libby
-          ? html`<div class="avatar">
-              ${hideLibby
-                ? nothing
-                : html`<img src=${assets[0]} data-fallback-index="0" alt="Libby"
-                    @error=${(e: Event) => applyImageFallback(e.target as HTMLImageElement, assets)} />`}
-            </div>`
-          : html`<div class="avatar initials">${me.slice(0, 2).toUpperCase()}</div>`}
-      <div class="body">
-        ${grouped ? nothing : html`<div class="who">
-          <span class="author ${libby ? "libby" : ""}">${author}</span>
-          ${libby ? html`<span class="tag ${entry.local ? "offline" : ""}">
-            ${entry.local ? "Local" : "Bot"}</span>` : nothing}
-          <span class="when">${timeOf(entry.at)}</span>
-        </div>`}
-        <div class="text">${entry.content}</div>
-      </div>
-    </div>`;
-  }
-
-  private renderMembers(assets: string[], hideLibby: boolean) {
-    return html`<aside class="members">
-      <div class="cat">Online — 1</div>
-      <div class="member">
-        <div class="pip">
-          ${hideLibby
-            ? nothing
-            : html`<img src=${assets[0]} data-fallback-index="0" alt="Libby"
-                @error=${(e: Event) => applyImageFallback(e.target as HTMLImageElement, assets)} />`}
-        </div>
-        <div class="who2">
-          <div class="n">Libby</div>
-          <div class="s">${this.status?.enabled ? this.status.model : "Answering on her own"}</div>
-        </div>
-      </div>
-      ${hideLibby
-        ? nothing
-        : html`<div class="portrait">
-            <img src=${assets[0]} data-fallback-index="0" alt="Libby"
-              @error=${(e: Event) => applyImageFallback(e.target as HTMLImageElement, assets)} />
-          </div>`}
     </aside>`;
   }
 
-  /** Her opening line, written locally so a fresh channel is never empty. */
-  protected firstUpdated() {
-    const opener = libbyOpener(this.mode, this.intensity);
-    this.emotion = opener.emotion;
-    this.entries = [{ role: "assistant", content: opener.message, at: Date.now(), local: true }];
-    this.armIdle();
+  private renderSettings() {
+    const character = this.activeCharacter, conversation = this.activeConversation; if (!character || !conversation) return nothing;
+    return html`<section class="settings">
+      <div class="tabs">${(["character","generation","images","profile"] as EditorTab[]).map((tab) => html`
+        <button class="tab ${this.editorTab === tab ? "on" : ""}" @click=${() => (this.editorTab = tab)}>${tab}</button>`)}</div>
+      ${this.editorTab === "character" ? this.renderCharacterPanel(character) : nothing}
+      ${this.editorTab === "generation" ? this.renderGenerationPanel(conversation) : nothing}
+      ${this.editorTab === "images" ? this.renderImagesPanel(character) : nothing}
+      ${this.editorTab === "profile" ? this.renderProfilePanel() : nothing}
+    </section>`;
+  }
+
+  private field(label: string, key: keyof ChatCharacter, value: string, rows = 1) {
+    return html`<label>${label}${rows > 1
+      ? html`<textarea class="field" rows=${rows} .value=${value} @change=${(event:Event) => this.updateCharacter(key, (event.target as HTMLTextAreaElement).value)}></textarea>`
+      : html`<input class="field" .value=${value} @change=${(event:Event) => this.updateCharacter(key, (event.target as HTMLInputElement).value)} />`}</label>`;
+  }
+
+  private renderCharacterPanel(character: ChatCharacter) {
+    return html`<div class="panel">
+      <div class="grid">${this.field("Name", "name", character.name)}<label>Default mode<select .value=${character.defaultMode} @change=${(event:Event) => this.updateCharacter("defaultMode", (event.target as HTMLSelectElement).value)}>${MODES.map((mode) => html`<option value=${mode.id}>${mode.label}</option>`)}</select></label></div>
+      ${this.field("Description", "description", character.description ?? "", 2)}
+      <div class="grid">${this.field("Personality", "personality", character.personality ?? "", 3)}${this.field("Scenario", "scenario", character.scenario ?? "", 3)}</div>
+      ${this.field("First message", "firstMessage", character.firstMessage ?? "", 2)}
+      ${this.field("System prompt / card instructions", "systemPrompt", character.systemPrompt ?? "", 3)}
+      ${this.field("Example dialogue", "exampleDialogue", character.exampleDialogue ?? "", 3)}
+      ${this.field("Creator notes (not sent to model)", "creatorNotes", character.creatorNotes ?? "", 2)}
+      <label>Character-card weight <span class="range"><input type="range" min="0.1" max="2" step="0.05" .value=${String(character.promptWeight || 1)} @input=${(event:Event) => this.updateCharacter("promptWeight", Number((event.target as HTMLInputElement).value))}/><output>${(character.promptWeight || 1).toFixed(2)}</output></span></label>
+      <div class="panel-actions"><button class="primary" @click=${() => void this.saveWorkspace()}>Save card</button><label class="secondary file">Import SillyTavern JSON or portrait<input type="file" accept="application/json,.json,image/*" @change=${this.importCard}/></label>${character.builtIn ? html`<span class="empty">Libby's built-in card is editable.</span>` : html`<button class="danger" @click=${this.deleteCharacter}>Remove friend</button>`}</div>
+    </div>`;
+  }
+
+  private renderGenerationPanel(conversation: ChatConversation) {
+    const range = (label:string,key:string,min:number,max:number,step:number,fallback:number) => html`<label>${label}<span class="range"><input type="range" min=${min} max=${max} step=${step} .value=${String(optionNumber(conversation.options,key,fallback))} @input=${(event:Event) => this.updateOption(key,Number((event.target as HTMLInputElement).value))}/><output>${optionNumber(conversation.options,key,fallback)}</output></span></label>`;
+    return html`<div class="panel">
+      <label>Loaded model<div class="panel-actions"><select style="flex:1;min-width:180px" .value=${this.selectedModel} @change=${(event:Event)=>(this.selectedModel=(event.target as HTMLSelectElement).value)}>
+        ${this.models?.models.map((model)=>html`<option value=${model}>${model}${model===this.models?.loaded?" (loaded)":""}</option>`) ?? nothing}
+      </select><button class="primary" ?disabled=${!this.models?.supported||!this.selectedModel||this.modelBusy} @click=${()=>void this.loadModel()}>Load</button><button class="secondary" ?disabled=${!this.models?.supported||!this.models.loaded||this.modelBusy} @click=${()=>void this.unloadModel()}>Unload</button><button class="secondary" ?disabled=${this.modelBusy} @click=${()=>void this.refreshModels()}>Refresh</button></div></label>
+      ${this.models && !this.models.supported ? html`<div class="empty">This backend can list models but does not expose text-generation-webui load/unload controls.</div>` : nothing}
+      <div class="grid">
+      <label>Conversation mode<select .value=${conversation.mode} @change=${(event:Event) => this.updateConversation({mode:(event.target as HTMLSelectElement).value})}>${MODES.map((mode) => html`<option value=${mode.id}>${mode.label}</option>`)}</select></label>
+      <label>Displayed emotion<select .value=${conversation.emotion} @change=${(event:Event) => this.updateConversation({emotion:(event.target as HTMLSelectElement).value})}>${["neutral","happy","mischievous","surprised","thinking"].map((emotion) => html`<option>${emotion}</option>`)}</select></label>
+      ${range("Temperature","temperature",0,2,.05,.8)}${range("Top P","top_p",.05,1,.05,.95)}
+      ${range("Repetition penalty","repetition_penalty",1,2,.05,1.1)}${range("Max reply tokens","max_tokens",64,2048,32,400)}
+      <label>Horniness / intensity <span class="range"><input type="range" min="1" max="5" step="1" .value=${String(conversation.intensity)} @input=${(event:Event) => this.updateConversation({intensity:Number((event.target as HTMLInputElement).value)})}/><output>${conversation.intensity}/5</output></span></label>
+    </div>
+    <label>Advanced API options<textarea class="field" rows="5" .value=${JSON.stringify(conversation.options ?? {}, null, 2)} @change=${(event:Event) => { try { const parsed=JSON.parse((event.target as HTMLTextAreaElement).value) as ChatOptions; this.updateConversation({options:parsed}); } catch { this.say("Advanced options must be valid JSON.",true); } }}></textarea></label>
+    <div class="panel-actions"><button class="primary" @click=${() => void this.saveWorkspace()}>Save for this conversation</button><button class="secondary" @click=${() => { conversation.options=defaultOptions(); this.touchWorkspace(); }}>Reset controls</button></div></div>`;
+  }
+
+  private renderImagesPanel(character: ChatCharacter) {
+    const images = this.workspace.images.filter((image) => image.characterId === character.id);
+    return html`<div class="panel"><p class="empty">Images are scanned locally. A character may attach one when its tags match the current exchange.</p>
+      <div class="grid"><label>Extra matching tags<input class="field" placeholder="beach, happy, bedroom" .value=${this.imageTags} @input=${(event:Event) => (this.imageTags=(event.target as HTMLInputElement).value)}/></label>
+      <label class="secondary file" style="align-self:end;text-align:center">Upload and scan image<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" @change=${this.uploadImage}/></label></div>
+      <div class="image-grid">${images.map((image) => html`<article class="image-card"><img src=${api.chatImageURL(image.id)} alt=${image.name}/><button title="Delete" @click=${() => void this.deleteImage(image)}>×</button><div><b>${image.name}</b><br/>${image.tags.join(", ") || "No tags"}${character.avatarImageId === image.id ? html`<br/><b>Avatar</b>` : nothing}<br/><button class="secondary" @click=${() => this.updateCharacter("avatarImageId",image.id)}>Use avatar</button></div></article>`)}</div>
+      ${images.length ? nothing : html`<div class="empty">No images for ${character.name} yet.</div>`}
+    </div>`;
+  }
+
+  private renderProfilePanel() {
+    const profile = this.workspace.profile;
+    return html`<div class="panel"><p class="empty">This profile is shared by WebUI and APK and is included in character context.</p>
+      <label>Display name<input class="field" .value=${profile.displayName} @change=${(event:Event) => { profile.displayName=(event.target as HTMLInputElement).value; this.touchWorkspace(); }}/></label>
+      <label>Your persona<textarea class="field" rows="5" placeholder="How friends should know and address you…" .value=${profile.persona} @change=${(event:Event) => { profile.persona=(event.target as HTMLTextAreaElement).value; this.touchWorkspace(); }}></textarea></label>
+      <div class="panel-actions"><button class="primary" @click=${() => void this.saveWorkspace()}>Save profile</button></div></div>`;
+  }
+
+  private renderEntry(message: StoredChatMessage, previous?: StoredChatMessage) {
+    const character = this.activeCharacter; if (!character) return nothing;
+    const grouped = previous?.role === message.role && message.at - previous.at < 5*60_000;
+    const friend = message.role === "assistant", name = friend ? character.name : (this.workspace.profile.displayName || this.user?.username || "You");
+    return html`<article class="row ${grouped ? "" : "first"}">${grouped ? html`<span class="stamp">${timeOf(message.at)}</span>` : (friend ? this.avatar(character,"avatar") : html`<span class="avatar initial">${name.slice(0,2).toUpperCase()}</span>`)}
+      <div class="message">${grouped ? nothing : html`<div class="who"><span class="author ${friend ? "friend" : ""}">${name}</span>${friend ? html`<span class="bot">BOT</span>` : nothing}<span class="when">Today at ${timeOf(message.at)}</span></div>`}<div class="text">${formatted(message.content)}</div>${message.imageId ? html`<img class="sent-image" src=${api.chatImageURL(message.imageId)} alt="Image sent by ${name}"/>` : nothing}</div>
+      <span class="message-actions"><button title="Copy" @click=${() => void navigator.clipboard.writeText(message.content)}><span class="material-symbols-rounded" style="font-size:16px">content_copy</span></button><button title="Edit" @click=${() => this.editMessage(message)}><span class="material-symbols-rounded" style="font-size:16px">edit</span></button><button title="Delete" @click=${() => this.deleteMessage(message.id)}><span class="material-symbols-rounded" style="font-size:16px">delete</span></button></span>
+    </article>`;
+  }
+
+  render() {
+    const character=this.activeCharacter, conversation=this.activeConversation;
+    if (this.loading) return html`<div class="client"><section class="main" style="grid-column:1/-1;place-items:center;display:grid"><md-circular-progress indeterminate></md-circular-progress></section></div>`;
+    if (!character || !conversation) return html`<div class="client"><section class="main" style="grid-column:1/-1;padding:24px">Chat workspace is unavailable.</section></div>`;
+    const channel=MODES.find((mode)=>mode.id===conversation.mode)??MODES[0];
+    return html`<div class="client" @pointerdown=${this.armIdle}>${this.renderRail()}${this.renderSidebar()}
+      <main class="main"><header class="top"><span class="hash">@</span><span class="name">${character.name}</span><span class="topic">${channel.topic}</span><span class="top-actions"><button class="icon-btn" title="New conversation" @click=${() => this.newConversation()}><span class="material-symbols-rounded">add_comment</span></button><button class="icon-btn" title="Clear messages" @click=${this.clearConversation}><span class="material-symbols-rounded">delete_sweep</span></button><button class="icon-btn" title="Delete conversation" @click=${() => this.deleteConversation(conversation.id)}><span class="material-symbols-rounded">delete</span></button><button class="icon-btn ${this.settingsOpen?"on":""}" title="Chat settings" @click=${()=>(this.settingsOpen=!this.settingsOpen)}><span class="material-symbols-rounded">settings</span></button></span></header>
+        ${this.settingsOpen?this.renderSettings():nothing}
+        <section class="log"><div class="intro">${this.avatar(character,"round")}<h2>${character.name}</h2><p>${character.description || `This is the beginning of your conversation with ${character.name}.`}${this.status?.enabled?` Running on ${this.status.model}.`:" Local reply mode."}</p></div>
+          ${conversation.messages.map((message,index)=>this.renderEntry(message,conversation.messages[index-1]))}${this.busy?html`<div class="typing"><b>${character.name}</b> is typing…</div>`:nothing}
+        </section>${this.notice?html`<div class="notice ${this.noticeError?"error":""}" role=${this.noticeError?"alert":"status"}>${this.notice}</div>`:nothing}
+        <form class="composer-form" @submit=${(event:Event)=>{event.preventDefault();void this.send();}}><div class="composer"><textarea rows="1" placeholder=${`Message @${character.name}`} .value=${this.draft} @input=${(event:Event)=>(this.draft=(event.target as HTMLTextAreaElement).value)} @keydown=${this.onKey} ?disabled=${this.busy}></textarea><button class="icon-btn" type="submit" ?disabled=${!this.draft.trim()||this.busy}><span class="material-symbols-rounded">send</span></button></div><div class="format-help">"speech" · **action** · *emphasis* · ~~strike~~ · &#96;code&#96;</div></form>
+      </main><aside class="members"><div class="cat">Friends — ${this.workspace.characters.length}</div>${this.workspace.characters.map((friend)=>html`<div class="member" @click=${()=>this.activateCharacter(friend.id)}>${this.avatar(friend,"member-avatar")}<div><div class="member-name">${friend.name}</div><div class="member-status">${friend.id===this.characterID?"Active now":"Friend"}</div></div></div>`)}</aside>
+    </div>`;
   }
 }
 

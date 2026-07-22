@@ -6,15 +6,19 @@ import { logoSVG } from "../logo.js";
 import { applyImageFallback, inferErrorEmotion, libbyAssetCandidates,
   loadHideLibby, normalizeEmotion, normalizeIntensity, type LibbyEmotion } from "../libby.js";
 import { libbyReact } from "../libby-voice.js";
+import { getIntensity } from "../libby-meter.js";
+
+const loginGreeting = libbyReact("greeting", { intensity: getIntensity() });
+const loginEmotions: LibbyEmotion[] = ["happy", "neutral", "thinking", "mischievous", "surprised"];
 
 @customElement("oppai-login")
 export class OppaiLogin extends LitElement {
   @state() private error = "";
   @state() private busy = false;
-  @state() private libbyMessage = "Welcome! I'm Libby. I'll help if sign-in gives you trouble.";
+  @state() private libbyMessage = loginGreeting.message;
   @state() private libbyTone: "success" | "error" = "success";
-  @state() private libbyEmotion: LibbyEmotion = "happy";
-  @state() private libbyIntensity = 1;
+  @state() private libbyEmotion: LibbyEmotion = loginEmotions[Math.floor(Math.random() * loginEmotions.length)];
+  @state() private libbyIntensity = getIntensity();
   private libbyTimer?: number;
 
   static styles = [
@@ -39,8 +43,8 @@ export class OppaiLogin extends LitElement {
         position: absolute;
         right: 0;
         bottom: 0;
-        height: min(78vh, 620px);
-        aspect-ratio: 4 / 5;
+        width: min(48vw, 540px);
+        height: min(82vh, 720px);
         pointer-events: none;
         user-select: none;
       }
@@ -48,6 +52,8 @@ export class OppaiLogin extends LitElement {
         display: block;
         height: 100%;
         width: 100%;
+        object-fit: contain;
+        object-position: right bottom;
       }
       .libby.error img { filter: saturate(.82); }
       .libby-speech {
@@ -69,6 +75,7 @@ export class OppaiLogin extends LitElement {
         .libby {
           right: 50%;
           transform: translateX(50%);
+          width: min(88vw, 390px);
           height: min(42vh, 360px);
           opacity: 0.78;
         }

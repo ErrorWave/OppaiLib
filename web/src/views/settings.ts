@@ -13,6 +13,7 @@ import {
 import { KIND_META, type Kind, type ComicFit, loadComicFit, saveComicFit } from "../media-meta.js";
 import { loadHideLibby, loadLibbyOutfit, saveHideLibby, saveLibbyOutfit } from "../libby.js";
 import type { LibbyOutfit } from "../api.js";
+import { LIBBY_PROGRESSION_MULTIPLIERS, getProgressionMultiplier, setProgressionMultiplier } from "../libby-meter.js";
 
 /** Libby's emotion slots, in the order the outfit editor lays them out. */
 const LIBBY_EMOTIONS: { id: string; label: string; hint: string }[] = [
@@ -787,6 +788,22 @@ export class OppaiSettings extends LitElement {
                 saveHideLibby(this.hideLibby);
               }}
             ></button>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="field-text">
+            <div class="field-label">Mood progression speed</div>
+            <div class="field-help">
+              Controls how quickly normal app activity moves Libby between tiers. Chat tabs keep
+              their own progress. Manual mood changes still apply immediately.
+            </div>
+          </div>
+          <div class="field-control seg">
+            ${LIBBY_PROGRESSION_MULTIPLIERS.map((value) => html`<button
+              class=${getProgressionMultiplier() === value ? "on" : ""}
+              @click=${() => { setProgressionMultiplier(value); this.requestUpdate(); }}
+            >${value}×</button>`)}
           </div>
         </div>
 

@@ -95,11 +95,11 @@ object LibbyVoice {
             listOf("You can't even type. I know the feeling.", "Wrong. We're both a mess right now.", "No — deep breath. Try again."),
         ),
         Event.GREETING to listOf(
-            listOf("Hi. What are we doing?", "Hey. What's the plan?", "Hello, you."),
-            listOf("Hey you. What are we up to?", "Hi — I was hoping you'd show up.", "There you are. What now?"),
-            listOf("Mmh, hi. What are we in the mood for?", "Hey. I've got ideas.", "Hi. Ask me for something."),
-            listOf("Ohh, hi. I was *just* thinking about you.", "Hey. I'm in a mood, fair warning.", "Hi. Say something interesting."),
-            listOf("Hi. Please say something. Anything.", "You're here. Good. I need the distraction.", "Hi — I'm not doing great at behaving."),
+            listOf("Hi. What are we doing?", "Hey. What's the plan?", "Hello, you.", "Welcome in — I kept everything tidy.", "Oh! There you are.", "Ready when you are."),
+            listOf("Hey you. What are we up to?", "Hi — I was hoping you'd show up.", "There you are. What now?", "Back for another look?", "I had a feeling you'd be here."),
+            listOf("Mmh, hi. What are we in the mood for?", "Hey. I've got ideas.", "Hi. Ask me for something.", "You caught me thinking about the collection.", "So… where should we start?"),
+            listOf("Ohh, hi. I was *just* thinking about you.", "Hey. I'm in a mood, fair warning.", "Hi. Say something interesting.", "There you are — perfect timing.", "I may have gotten a little impatient."),
+            listOf("Hi. Please say something. Anything.", "You're here. Good. I need the distraction.", "Hi — I'm not doing great at behaving.", "Finally. Come keep me company.", "I was about to come looking for you."),
         ),
         Event.IDLE to listOf(
             listOf("Still here.", "Take your time.", "I'm around."),
@@ -316,8 +316,8 @@ object LibbyVoice {
      * tail. The returned intensity is the meter *after* this exchange — callers
      * should store it (see [LibbyMeter.set]) so her art and her next line agree.
      */
-    fun reply(text: String, mode: String, emotion: String, intensity: Int): Line {
-        val heat = clamp(intensity + heatDelta(text, mode))
+    fun reply(text: String, mode: String, emotion: String, intensity: Int, advance: Boolean = true): Line {
+        val heat = clamp(intensity + if (advance) heatDelta(text, mode) else 0)
         val intent = detectIntent(text.trim())
         val body = pick("reply:$intent:$heat", tier(replies.getValue(intent), heat))
         val tail = pick("tail:$mode:$heat", listOf("", modeTails[mode]?.getOrNull(heat - 1) ?: ""))

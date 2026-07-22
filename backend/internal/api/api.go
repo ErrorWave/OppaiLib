@@ -43,6 +43,8 @@ type Server struct {
 	genCache     *genCache
 	characterDir string // encrypted character-library records + thumbnails
 	libbyDir     string // encrypted Libby outfit records + emotion art
+	chatDir      string // encrypted per-user chat workspaces + tagged character images
+	chatMu       sync.Mutex
 
 	thumbSem  chan struct{} // bounds concurrent ffmpeg thumbnail jobs
 	thumbWarn sync.Once     // warn once if ffmpeg is missing
@@ -86,6 +88,7 @@ func NewServer(cfg *config.Config, database *db.DB, store *storage.Store, sc *sc
 		genCache:     newGenCache(),
 		characterDir: filepath.Join(cfg.ConfigDir, "characters"),
 		libbyDir:     filepath.Join(cfg.ConfigDir, "libby"),
+		chatDir:      filepath.Join(cfg.ConfigDir, "chat"),
 
 		pageCache:    newResolveCache[[]string](sourcePagesTTL),
 		commentCache: newResolveCache[[]sources.Comment](sourceCommentsTTL),
@@ -216,9 +219,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/media/{id}/gallery", s.requireAuth(s.handleUploadGameGallery))
 	mux.HandleFunc("DELETE /api/media/{id}/gallery/{media}", s.requireAuth(s.handleRemoveGameGallery))
 
-	// Libby chat proxies only to the operator-configured local OpenAI-compatible
-	// endpoint. Conversation history lives in the clients, not in OppaiLib's DB.
+	// Chat workspaces are encrypted per user and shared by the WebUI and Android app.
+	// Character images are scanned locally before being made available to a character.
 	mux.HandleFunc("GET /api/chat/status", s.requireAuth(s.handleChatStatus))
+	mux.HandleFunc("GET /api/chat/workspace", s.requireAuth(s.handleGetChatWorkspace))
+	mux.HandleFunc("GET /api/chat/models", s.requireAuth(s.handleChatModels))
+	mux.HandleFunc("POST /api/chat/models/load", s.requireAuth(s.handleLoadChatModel))
+	mux.HandleFunc("POST /api/chat/models/unload", s.requireAuth(s.handleUnloadChatModel))
+	mux.HandleFunc("PUT /api/chat/workspace", s.requireAuth(s.handlePutChatWorkspace))
+	mux.HandleFunc("POST /api/chat/images", s.requireAuth(s.handleUploadChatImage))
+	mux.HandleFunc("GET /api/chat/images/{id}", s.requireAuth(s.handleGetChatImage))
+	mux.HandleFunc("DELETE /api/chat/images/{id}", s.requireAuth(s.handleDeleteChatImage))
 	mux.HandleFunc("POST /api/chat", s.requireAuth(s.handleChat))
 
 	mux.HandleFunc("POST /api/scrape", s.requireAuth(s.handleScrape))

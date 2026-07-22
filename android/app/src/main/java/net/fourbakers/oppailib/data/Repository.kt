@@ -40,7 +40,10 @@ class Repository(private val appContext: Context, val prefs: Prefs) {
     @Volatile lateinit var imageLoader: ImageLoader
         private set
 
-    init { rebuild() }
+    init {
+        LibbyMeter.setMultiplier(prefs.libbyProgressionMultiplier)
+        rebuild()
+    }
 
     val hasSession: Boolean get() = prefs.token != null
     val canBiometricReauth: Boolean get() = prefs.biometricLock && prefs.hasReauthCredential
@@ -96,6 +99,9 @@ class Repository(private val appContext: Context, val prefs: Prefs) {
 
     fun characterThumbUrl(id: String): String =
         "${baseUrl}api/imagegen/characters/${URLEncoder.encode(id, "UTF-8")}/thumb"
+
+    fun chatImageUrl(id: String): String =
+        "${baseUrl}api/chat/images/${URLEncoder.encode(id, "UTF-8")}"
 
     /** An InvokeAI gallery image's thumbnail, streamed through the server. */
     fun galleryThumbUrl(name: String): String =

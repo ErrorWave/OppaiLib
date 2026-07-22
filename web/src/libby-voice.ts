@@ -111,11 +111,11 @@ const REACTIONS: Record<LibbyEvent, Tiered> = {
     ["You can't even type. I know the feeling.", "Wrong. We're both a mess right now.", "No — deep breath. Try again."],
   ],
   greeting: [
-    ["Hi. What are we doing?", "Hey. What's the plan?", "Hello, you."],
-    ["Hey you. What are we up to?", "Hi — I was hoping you'd show up.", "There you are. What now?"],
-    ["Mmh, hi. What are we in the mood for?", "Hey. I've got ideas.", "Hi. Ask me for something."],
-    ["Ohh, hi. I was *just* thinking about you.", "Hey. I'm in a mood, fair warning.", "Hi. Say something interesting."],
-    ["Hi. Please say something. Anything.", "You're here. Good. I need the distraction.", "Hi — I'm not doing great at behaving."],
+    ["Hi. What are we doing?", "Hey. What's the plan?", "Hello, you.", "Welcome in — I kept everything tidy.", "Oh! There you are.", "Ready when you are."],
+    ["Hey you. What are we up to?", "Hi — I was hoping you'd show up.", "There you are. What now?", "Back for another look?", "I had a feeling you'd be here."],
+    ["Mmh, hi. What are we in the mood for?", "Hey. I've got ideas.", "Hi. Ask me for something.", "You caught me thinking about the collection.", "So… where should we start?"],
+    ["Ohh, hi. I was *just* thinking about you.", "Hey. I'm in a mood, fair warning.", "Hi. Say something interesting.", "There you are — perfect timing.", "I may have gotten a little impatient."],
+    ["Hi. Please say something. Anything.", "You're here. Good. I need the distraction.", "Hi — I'm not doing great at behaving.", "Finally. Come keep me company.", "I was about to come looking for you."],
   ],
   idle: [
     ["Still here.", "Take your time.", "I'm around."],
@@ -330,8 +330,8 @@ export function libbyHeatDelta(text: string, mode: string): number {
  * The returned intensity is the meter *after* this exchange — callers should
  * store it (see setIntensity) so her art and her next line agree.
  */
-export function libbyReply(text: string, mode: string, emotion: string, intensity: number): LibbyLine {
-  const nextIntensity = normalizeIntensity(intensity + libbyHeatDelta(text, mode));
+export function libbyReply(text: string, mode: string, emotion: string, intensity: number, advance = true): LibbyLine {
+  const nextIntensity = normalizeIntensity(intensity + (advance ? libbyHeatDelta(text, mode) : 0));
   const intent = detectIntent(text.trim());
   const body = pick(`reply:${intent}:${nextIntensity}`, tier(REPLIES[intent], nextIntensity));
   const tail = pick(`tail:${mode}:${nextIntensity}`, [

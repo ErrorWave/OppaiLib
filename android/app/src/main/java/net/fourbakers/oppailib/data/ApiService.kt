@@ -25,6 +25,27 @@ interface ApiService {
     @POST("api/chat")
     suspend fun chat(@Body body: ChatRequest): ChatResponse
 
+    @GET("api/chat/models")
+    suspend fun chatModels(): ChatModels
+
+    @POST("api/chat/models/load")
+    suspend fun loadChatModel(@Body body: LoadChatModelRequest): LoadChatModelResponse
+
+    @POST("api/chat/models/unload")
+    suspend fun unloadChatModel()
+
+    @GET("api/chat/workspace")
+    suspend fun chatWorkspace(): ChatWorkspace
+
+    @PUT("api/chat/workspace")
+    suspend fun saveChatWorkspace(@Body body: ChatWorkspace): ChatWorkspace
+
+    @POST("api/chat/images")
+    suspend fun uploadChatImage(@Body body: ChatImageUpload): ChatImage
+
+    @DELETE("api/chat/images/{id}")
+    suspend fun deleteChatImage(@Path("id") id: String)
+
     @GET("api/imagegen/tags")
     suspend fun booruTags(@Query("q") query: String): TagSuggestions
 

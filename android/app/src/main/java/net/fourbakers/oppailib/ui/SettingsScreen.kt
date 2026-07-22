@@ -3,6 +3,7 @@ package net.fourbakers.oppailib.ui
 import android.content.Context
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -51,6 +52,7 @@ import net.fourbakers.oppailib.data.ApkInfo
 import net.fourbakers.oppailib.data.PasswordRequest
 import net.fourbakers.oppailib.data.Prefs
 import net.fourbakers.oppailib.data.Repository
+import net.fourbakers.oppailib.data.LibbyMeter
 import net.fourbakers.oppailib.data.Stats
 import net.fourbakers.oppailib.data.VideoFit
 import net.fourbakers.oppailib.util.AppUpdate
@@ -74,6 +76,7 @@ fun SettingsScreen(repo: Repository, onBack: () -> Unit, onLogout: () -> Unit) {
     var backBuffer by remember { mutableStateOf(prefs.keepBackBuffer) }
     var rtl by remember { mutableStateOf(prefs.comicRtl) }
     var hideLibby by remember { mutableStateOf(prefs.hideLibby) }
+    var libbyProgression by remember { mutableFloatStateOf(prefs.libbyProgressionMultiplier) }
     var biometric by remember { mutableStateOf(prefs.biometricLock) }
     var server by remember { mutableStateOf(prefs.serverUrl ?: "") }
 
@@ -187,6 +190,21 @@ fun SettingsScreen(repo: Repository, onBack: () -> Unit, onLogout: () -> Unit) {
                 "Take the mascot out of error popups and Chat. Messages still show; only the artwork goes.",
                 hideLibby,
             ) { hideLibby = it; prefs.hideLibby = it }
+            Text("Mood progression speed", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 12.dp))
+            Text(
+                "Normal activity accumulates at this rate; each chat keeps its own progression.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                LibbyMeter.MULTIPLIERS.forEach { option ->
+                    FilterChip(
+                        selected = libbyProgression == option,
+                        onClick = { libbyProgression = option; prefs.libbyProgressionMultiplier = option; LibbyMeter.setMultiplier(option) },
+                        label = { Text("${option}×") },
+                    )
+                }
+            }
             LibbyOutfitsSection(repo)
 
             SectionHeader("Library")

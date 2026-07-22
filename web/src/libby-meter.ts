@@ -1,50 +1,61 @@
-// Libby's "horniness" meter: a per-session intensity, 1–5, shared across the app.
-// It is the persistent backing for the chat's intensity slider — deliberately
-// session-scoped (sessionStorage), a mood for this sitting that starts fresh next
-// time. Three things move it: the user sets it by hand (the chat slider), chatting
-// with Libby (the model's replies carry an intensity), and adding items to the
-// library. It also selects which tier of an outfit's art Libby wears (see
-// libbyAssetCandidates in libby.ts), so hornier = a hotter outfit tier.
-//
-// Values line up with the server's five outfit art tiers: intensity i ↔ level i-1.
+// Libby's session progression. The visible art still uses five integer tiers, but
+// movement is accumulated as a float so 0.5× means two ordinary nudges per tier.
+const INTENSITY_KEY = "oppai_libby_intensity";
+const PROGRESS_KEY = "oppai_libby_progress";
+const MULTIPLIER_KEY = "oppai_libby_progression_multiplier";
 
-const KEY = "oppai_libby_intensity";
-
-/** Intensity runs 1..5, matching normalizeIntensity() and the five art tiers. */
 export const LIBBY_MAX_INTENSITY = 5;
+export const LIBBY_PROGRESSION_MULTIPLIERS = [0.25, 0.5, 1, 2] as const;
+
+export function getProgressionMultiplier(): number {
+  const value = Number(localStorage.getItem(MULTIPLIER_KEY) ?? "0.5");
+  return LIBBY_PROGRESSION_MULTIPLIERS.includes(value as never) ? value : 0.5;
+}
+
+export function setProgressionMultiplier(value: number): number {
+  const selected = LIBBY_PROGRESSION_MULTIPLIERS.includes(value as never) ? value : 0.5;
+  localStorage.setItem(MULTIPLIER_KEY, String(selected));
+  window.dispatchEvent(new CustomEvent("oppai-libby-progression", { detail: { multiplier: selected } }));
+  return selected;
+}
+
+export function applyProgression(progress: number, delta: number): { progress: number; intensity: number } {
+  const next = Math.max(1, Math.min(LIBBY_MAX_INTENSITY, progress + delta * getProgressionMultiplier()));
+  return { progress: next, intensity: Math.max(1, Math.min(LIBBY_MAX_INTENSITY, Math.floor(next + 1e-6))) };
+}
+
+function getProgress(): number {
+  const stored = Number(sessionStorage.getItem(PROGRESS_KEY));
+  if (Number.isFinite(stored) && stored >= 1 && stored <= LIBBY_MAX_INTENSITY) return stored;
+  const legacy = Number(sessionStorage.getItem(INTENSITY_KEY) ?? "1");
+  return Number.isFinite(legacy) ? Math.max(1, Math.min(LIBBY_MAX_INTENSITY, legacy)) : 1;
+}
 
 export function getIntensity(): number {
-  const raw = sessionStorage.getItem(KEY);
-  const v = raw === null ? 1 : Number(raw);
-  return Number.isFinite(v) ? clamp(v) : 1;
+  return applyProgression(getProgress(), 0).intensity;
 }
 
-/** Sets the intensity to an absolute value (the chat slider / model replies). */
+/** Direct controls and model synchronization set an exact tier. */
 export function setIntensity(value: number): number {
-  return store(value);
+  const exact = Math.max(1, Math.min(LIBBY_MAX_INTENSITY, Math.round(value)));
+  return store(exact, exact);
 }
 
-/** Nudges the intensity up (library adds, bolder chat). */
+/** Program events move by the configured fractional multiplier. */
 export function bumpIntensity(delta = 1): number {
-  return store(getIntensity() + delta);
+  const next = applyProgression(getProgress(), delta);
+  return store(next.progress, next.intensity);
 }
 
-/** The outfit art tier (0..4) for an intensity (1..5). */
 export function tierForIntensity(value: number = getIntensity()): number {
-  return clamp(value) - 1;
+  return Math.max(1, Math.min(LIBBY_MAX_INTENSITY, Math.round(value))) - 1;
 }
 
-function store(value: number): number {
-  const v = clamp(value);
+function store(progress: number, intensity: number): number {
   try {
-    sessionStorage.setItem(KEY, String(v));
-  } catch {
-    /* ignore quota / private-mode errors */
-  }
-  window.dispatchEvent(new CustomEvent("oppai-libby-meter", { detail: { intensity: v } }));
-  return v;
-}
-
-function clamp(v: number): number {
-  return Math.max(1, Math.min(LIBBY_MAX_INTENSITY, Math.round(v)));
+    sessionStorage.setItem(PROGRESS_KEY, String(progress));
+    sessionStorage.setItem(INTENSITY_KEY, String(intensity));
+  } catch { /* private-mode storage can be unavailable */ }
+  window.dispatchEvent(new CustomEvent("oppai-libby-meter", { detail: { intensity, progress } }));
+  return intensity;
 }

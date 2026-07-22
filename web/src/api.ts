@@ -124,6 +124,13 @@ export interface ChatStatus {
   model?: string;
   modes: string[];
   advancedOptions?: boolean;
+  modelBackend?: boolean;
+}
+
+export interface ChatModels {
+  models: string[];
+  loaded: string;
+  supported: boolean;
 }
 
 /** Any text-generation-webui ChatCompletionRequest field not owned by OppaiLib. */
@@ -133,6 +140,65 @@ export interface ChatResponse {
   message: string;
   emotion?: string;
   intensity?: number;
+  imageId?: string;
+}
+
+export interface ChatProfile {
+  displayName: string;
+  persona: string;
+  avatarImageId?: string;
+}
+
+export interface ChatCharacter {
+  id: string;
+  name: string;
+  description?: string;
+  personality?: string;
+  scenario?: string;
+  firstMessage?: string;
+  exampleDialogue?: string;
+  systemPrompt?: string;
+  creatorNotes?: string;
+  avatarImageId?: string;
+  promptWeight: number;
+  defaultMode: string;
+  builtIn?: boolean;
+}
+
+export interface StoredChatMessage extends ChatMessage {
+  id: string;
+  at: number;
+  imageId?: string;
+}
+
+export interface ChatConversation {
+  id: string;
+  characterId: string;
+  title: string;
+  mode: string;
+  emotion: string;
+  intensity: number;
+  progress?: number;
+  options?: ChatOptions;
+  messages: StoredChatMessage[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ChatImage {
+  id: string;
+  characterId: string;
+  name: string;
+  tags: string[];
+  mime: string;
+  createdAt: number;
+}
+
+export interface ChatWorkspace {
+  profile: ChatProfile;
+  characters: ChatCharacter[];
+  conversations: ChatConversation[];
+  images: ChatImage[];
 }
 
 // Environment/build facts the Settings screen shows but can't change — these come
@@ -756,11 +822,29 @@ export const api = {
     }),
 
   chatStatus: () => request<ChatStatus>("/api/chat/status", {}, 12_000),
-  chat: (mode: string, messages: ChatMessage[], emotion = "neutral", intensity = 1, options: ChatOptions = {}) =>
+  chat: (mode: string, messages: ChatMessage[], emotion = "neutral", intensity = 1,
+    options: ChatOptions = {}, characterId = "libby") =>
     request<ChatResponse>("/api/chat", {
       method: "POST",
-      body: JSON.stringify({ mode, messages, emotion, intensity, options }),
+      body: JSON.stringify({ mode, messages, emotion, intensity, options, characterId }),
     }, 125_000),
+  chatWorkspace: () => request<ChatWorkspace>("/api/chat/workspace"),
+  chatModels: () => request<ChatModels>("/api/chat/models", {}, 20_000),
+  loadChatModel: (modelName: string, args: Record<string, unknown> = {}) =>
+    request<{ status: string; loaded: string }>("/api/chat/models/load", {
+      method: "POST", body: JSON.stringify({ modelName, args }),
+    }, 10 * 60_000),
+  unloadChatModel: () => request<{ status: string }>("/api/chat/models/unload", { method: "POST" }, 130_000),
+  saveChatWorkspace: (workspace: ChatWorkspace) =>
+    request<ChatWorkspace>("/api/chat/workspace", {
+      method: "PUT",
+      body: JSON.stringify(workspace),
+    }),
+  uploadChatImage: (body: { characterId: string; name: string; imageData: string; tags?: string[] }) =>
+    request<ChatImage>("/api/chat/images", { method: "POST", body: JSON.stringify(body) }, 120_000),
+  deleteChatImage: (id: string) =>
+    request<{ status: string }>(`/api/chat/images/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  chatImageURL: (id: string) => `/api/chat/images/${encodeURIComponent(id)}`,
   loraThumbURL: (name: string) => `/api/imagegen/lora-thumb?name=${encodeURIComponent(name)}`,
 
   // ── character library ──────────────────────────────────────────────────────

@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -36,6 +37,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
@@ -359,7 +361,7 @@ private fun AppRoot(
             )
         }
         if (mascotMessage.isNotBlank()) {
-            MascotPopup(mascotMessage, mascotEmotion, repo, Modifier.align(Alignment.BottomEnd))
+            MascotPopup(mascotMessage, mascotEmotion, repo, Modifier.align(Alignment.TopEnd))
         }
     }
 
@@ -377,36 +379,33 @@ private fun AppRoot(
     }
 }
 
-// This popup is the app's error surface, so hiding Libby keeps the bubble and drops
-// only the artwork. A worn outfit swaps the art (its "neutral" pose), falling back
-// to the bundled mascot when the outfit lacks one.
+// App feedback is presented like a compact incoming text instead of a character
+// covering the content. Hiding Libby drops only the small sender avatar.
 @Composable
 private fun MascotPopup(message: String, emotion: String, repo: Repository, modifier: Modifier = Modifier) {
     val hideLibby = repo.prefs.hideLibby
     Row(
-        modifier = modifier.padding(end = 8.dp, bottom = 8.dp),
-        verticalAlignment = Alignment.Bottom,
+        modifier = modifier.padding(end = 10.dp, top = 64.dp),
+        verticalAlignment = Alignment.Top,
         horizontalArrangement = Arrangement.End,
     ) {
-        Surface(
-            shape = MaterialTheme.shapes.large,
-            tonalElevation = 6.dp,
-            shadowElevation = 8.dp,
-            modifier = Modifier.widthIn(max = 240.dp).padding(bottom = if (hideLibby) 16.dp else 72.dp),
-        ) {
-            Text(message, modifier = Modifier.padding(14.dp), style = MaterialTheme.typography.bodyMedium)
-        }
         if (!hideLibby) {
-            // Libby reacts at whatever horniness tier the session has reached, through
-            // the same portrait (and fallback chain) Chat uses.
             val meter by LibbyMeter.value.collectAsState()
             LibbyPortrait(
                 repo = repo,
                 emotion = emotion,
                 tier = LibbyMeter.tier(meter),
                 fallbackAsset = mascotAsset(emotion, LibbyMeter.tier(meter)),
-                modifier = Modifier.size(width = 150.dp, height = 220.dp),
+                modifier = Modifier.size(40.dp).clip(CircleShape),
             )
+        }
+        Surface(
+            shape = MaterialTheme.shapes.large,
+            tonalElevation = 6.dp,
+            shadowElevation = 8.dp,
+            modifier = Modifier.widthIn(max = 280.dp).padding(start = if (hideLibby) 0.dp else 8.dp),
+        ) {
+            Text(message, modifier = Modifier.padding(14.dp), style = MaterialTheme.typography.bodyMedium)
         }
     }
 }

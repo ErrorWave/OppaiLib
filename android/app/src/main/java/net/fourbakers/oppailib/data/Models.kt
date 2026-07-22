@@ -184,6 +184,7 @@ data class ChatRequest(
     val emotion: String = "neutral",
     val intensity: Int = 1,
     val options: JsonObject = JsonObject(emptyMap()),
+    val characterId: String = "libby",
 )
 
 @Serializable
@@ -191,6 +192,7 @@ data class ChatResponse(
     val message: String,
     val emotion: String = "neutral",
     val intensity: Int = 1,
+    val imageId: String = "",
 )
 
 @Serializable
@@ -199,6 +201,97 @@ data class ChatStatus(
     val model: String = "",
     val modes: List<String> = emptyList(),
     val advancedOptions: Boolean = false,
+    val modelBackend: Boolean = false,
+)
+
+@Serializable
+data class ChatModels(
+    val models: List<String> = emptyList(),
+    val loaded: String = "",
+    val supported: Boolean = false,
+)
+
+@Serializable
+data class LoadChatModelRequest(
+    val modelName: String,
+    val args: JsonObject = JsonObject(emptyMap()),
+)
+
+@Serializable
+data class LoadChatModelResponse(val status: String = "", val loaded: String = "")
+
+@Serializable
+data class ChatProfile(
+    val displayName: String = "",
+    val persona: String = "",
+    val avatarImageId: String = "",
+)
+
+@Serializable
+data class ChatCharacter(
+    val id: String,
+    val name: String,
+    val description: String = "",
+    val personality: String = "",
+    val scenario: String = "",
+    val firstMessage: String = "",
+    val exampleDialogue: String = "",
+    val systemPrompt: String = "",
+    val creatorNotes: String = "",
+    val avatarImageId: String = "",
+    val promptWeight: Double = 1.0,
+    val defaultMode: String = "sweet",
+    val builtIn: Boolean = false,
+)
+
+@Serializable
+data class StoredChatMessage(
+    val id: String,
+    val role: String,
+    val content: String,
+    val at: Long,
+    val imageId: String = "",
+)
+
+@Serializable
+data class ChatConversation(
+    val id: String,
+    val characterId: String,
+    val title: String = "New conversation",
+    val mode: String = "sweet",
+    val emotion: String = "neutral",
+    val intensity: Int = 1,
+    val progress: Double = intensity.toDouble(),
+    val options: JsonObject = JsonObject(emptyMap()),
+    val messages: List<StoredChatMessage> = emptyList(),
+    val createdAt: Long,
+    val updatedAt: Long,
+)
+
+@Serializable
+data class ChatImage(
+    val id: String,
+    val characterId: String,
+    val name: String,
+    val tags: List<String> = emptyList(),
+    val mime: String = "image/jpeg",
+    val createdAt: Long = 0,
+)
+
+@Serializable
+data class ChatWorkspace(
+    val profile: ChatProfile = ChatProfile(),
+    val characters: List<ChatCharacter> = emptyList(),
+    val conversations: List<ChatConversation> = emptyList(),
+    val images: List<ChatImage> = emptyList(),
+)
+
+@Serializable
+data class ChatImageUpload(
+    val characterId: String,
+    val name: String,
+    val imageData: String,
+    val tags: List<String> = emptyList(),
 )
 
 // ── image generation ─────────────────────────────────────────────────────────

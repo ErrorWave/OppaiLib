@@ -22,10 +22,11 @@ type chatMessage struct {
 }
 
 type chatRequest struct {
-	Mode      string        `json:"mode"`
-	Messages  []chatMessage `json:"messages"`
-	Emotion   string        `json:"emotion,omitempty"`
-	Intensity int           `json:"intensity,omitempty"`
+	Mode        string        `json:"mode"`
+	Messages    []chatMessage `json:"messages"`
+	CharacterID string        `json:"characterId,omitempty"`
+	Emotion     string        `json:"emotion,omitempty"`
+	Intensity   int           `json:"intensity,omitempty"`
 	// Options is a future-proof pass-through for text-generation-webui's full
 	// ChatCompletionRequest surface (samplers, presets, character fields,
 	// templates, grammar, thinking controls, stop strings, and new additions).
@@ -50,6 +51,7 @@ func (s *Server) handleChatStatus(w http.ResponseWriter, r *http.Request) {
 		"model":           cur.ChatModel,
 		"modes":           []string{"sweet", "playful", "bold", "roleplay"},
 		"advancedOptions": cur.ChatEnabled,
+		"modelBackend":    cur.ChatURL != "",
 	})
 }
 
@@ -86,7 +88,33 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	} else if in.Intensity > 5 {
 		in.Intensity = 5
 	}
-	modePrompt += fmt.Sprintf(" Your current displayed emotion is %s at intensity %d of 5; let that subtly color your wording without announcing the setting.", emotion, in.Intensity)
+	var ws chatWorkspace
+	var character chatCharacter
+	if u, userOK := s.chatUser(r); userOK {
+		s.chatMu.Lock()
+		ws, _ = s.readChatWorkspace(u.ID)
+		s.chatMu.Unlock()
+		if selected, found := findChatCharacter(ws, in.CharacterID); found {
+			character = selected
+		}
+	}
+	if character.ID == "" {
+		character = defaultLibbyCard()
+	}
+	if character.ID != "libby" {
+		modePrompt = "You are roleplaying the adult character described below. Stay in character, respond naturally, and follow the selected style. Never involve minors, coercion, or real-person sexual exploitation. Selected style: " + in.Mode + "."
+	}
+	cardParts := []string{"Character name: " + character.Name}
+	for label, value := range map[string]string{"Description": character.Description, "Personality": character.Personality, "Scenario": character.Scenario, "Character instructions": character.SystemPrompt, "Example dialogue": character.ExampleDialogue} {
+		if strings.TrimSpace(value) != "" {
+			cardParts = append(cardParts, label+": "+value)
+		}
+	}
+	modePrompt += "\n\n" + strings.Join(cardParts, "\n")
+	if ws.Profile.DisplayName != "" || ws.Profile.Persona != "" {
+		modePrompt += fmt.Sprintf("\nUser profile name: %s\nUser persona: %s", ws.Profile.DisplayName, ws.Profile.Persona)
+	}
+	modePrompt += fmt.Sprintf("\nTreat the character-card prompt strength as %.2f. Your current displayed emotion is %s at intensity %d of 5; let that subtly color your wording without announcing the setting.", character.PromptWeight, emotion, in.Intensity)
 	if len(in.Messages) == 0 || len(in.Messages) > maxChatMessages {
 		writeErr(w, http.StatusBadRequest, "chat history must contain 1 to 80 messages")
 		return
@@ -117,7 +145,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	payload, _ := json.Marshal(payloadMap)
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cur.ChatURL+"/v1/chat/completions", bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, chatBackendBase(cur.ChatURL)+"/v1/chat/completions", bytes.NewReader(payload))
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, "invalid local LLM URL")
 		return
@@ -156,10 +184,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		strings.Contains(strings.ToLower(in.Messages[len(in.Messages)-1].Content), "flirt") && in.Intensity < 5 {
 		in.Intensity++
 	}
+	imageID := matchingChatImage(ws, character.ID, in.Messages[len(in.Messages)-1].Content+" "+reply)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"message":   reply,
 		"emotion":   emotion,
 		"intensity": in.Intensity,
+		"imageId":   imageID,
 	})
 }
 

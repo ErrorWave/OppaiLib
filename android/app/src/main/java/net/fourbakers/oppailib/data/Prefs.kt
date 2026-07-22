@@ -61,6 +61,10 @@ class Prefs(context: Context) {
         get() = sp.getString(KEY_LIBBY_OUTFIT, "") ?: ""
         set(v) = sp.edit().putString(KEY_LIBBY_OUTFIT, v).apply()
 
+    var libbyProgressionMultiplier: Float
+        get() = sp.getFloat(KEY_LIBBY_PROGRESSION, .5f).takeIf(LibbyMeter.MULTIPLIERS::contains) ?: .5f
+        set(v) = sp.edit().putFloat(KEY_LIBBY_PROGRESSION, v.takeIf(LibbyMeter.MULTIPLIERS::contains) ?: .5f).apply()
+
     var reauthUsername: String?
         get() = sp.getString(KEY_REAUTH_USER, null)
         private set(v) = sp.edit().putString(KEY_REAUTH_USER, v).apply()
@@ -188,6 +192,7 @@ class Prefs(context: Context) {
         private const val KEY_BIOMETRIC = "biometric_lock"
         private const val KEY_HIDE_LIBBY = "hide_libby"
         private const val KEY_LIBBY_OUTFIT = "libby_outfit"
+        private const val KEY_LIBBY_PROGRESSION = "libby_progression_multiplier"
         private const val KEY_REAUTH_USER = "reauth_username"
         private const val KEY_REAUTH_PASSWORD = "reauth_password"
         private const val KEY_COMIC_RTL = "comic_rtl"

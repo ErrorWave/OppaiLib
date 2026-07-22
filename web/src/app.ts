@@ -38,25 +38,27 @@ export class OppaiApp extends LitElement {
     .mascot-talk {
       position: fixed;
       right: 18px;
-      bottom: 0;
+      top: 72px;
       z-index: 200;
       display: flex;
-      align-items: flex-end;
+      align-items: flex-start;
       pointer-events: none;
       animation: pop-in 0.3s ease-out both;
     }
     .mascot-talk img {
-      width: min(210px, 34vw);
-      max-height: 38vh;
-      object-fit: contain;
-      object-position: bottom;
-      transform-origin: 55% 100%;
+      order: -1;
+      width: 42px;
+      height: 42px;
+      border-radius: 50%;
+      object-fit: cover;
+      object-position: top center;
+      background: var(--md-sys-color-surface-container-highest);
     }
     .speech {
       max-width: min(300px, 58vw);
-      margin: 0 -18px 120px 0;
-      padding: 12px 16px;
-      border-radius: 18px 18px 4px 18px;
+      margin: 0 0 0 9px;
+      padding: 9px 12px;
+      border-radius: 4px 14px 14px 14px;
       background: var(--md-sys-color-surface-container-high);
       color: var(--md-sys-color-on-surface);
       border: 1px solid var(--md-sys-color-outline-variant);
@@ -65,12 +67,13 @@ export class OppaiApp extends LitElement {
     }
     .mascot-talk.error .speech { border-color: var(--md-sys-color-error); }
     /* Libby hidden: the bubble alone, tucked to the corner without the mascot's footprint. */
-    .mascot-talk.plain .speech { margin: 0 0 18px 0; }
-    .libby-name { display: block; color: var(--md-sys-color-error); font-size: 11px; font-weight: 700; }
+    .mascot-talk.plain .speech { margin: 0; }
+    .libby-name { display: block; color: var(--md-sys-color-primary); font-size: 11px; font-weight: 700; }
     @keyframes pop-in { from { opacity: 0; transform: translateY(24px) scale(.94); } }
     @media (max-width: 600px) {
-      .mascot-talk img { width: 150px; }
-      .speech { margin-bottom: 100px; }
+      .mascot-talk { top: 64px; right: 10px; }
+      .mascot-talk img { width: 36px; height: 36px; }
+      .speech { max-width: 70vw; }
     }
   `;
 
