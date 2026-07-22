@@ -48,6 +48,10 @@ func (s *Server) handleChatStatus(w http.ResponseWriter, r *http.Request) {
 	cur := s.settings.Get()
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	probe := s.probeChatBackend(ctx)
+	// Probed rather than assumed: only text-generation-webui exposes the internal
+	// endpoints, and offering load/unload against a backend that lacks them would
+	// surface controls that can only ever fail.
+	controllable := cur.ChatURL != "" && s.chatBackendControllable(ctx)
 	cancel()
 	model := probe.Loaded
 	if model == "" {
@@ -61,7 +65,7 @@ func (s *Server) handleChatStatus(w http.ResponseWriter, r *http.Request) {
 		"modes":           []string{"sweet", "playful", "bold", "roleplay"},
 		"advancedOptions": probe.Ready,
 		"modelBackend":    cur.ChatURL != "",
-		"modelManagement": false,
+		"modelManagement": controllable,
 	})
 }
 

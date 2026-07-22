@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>OppaiLib</Name>
-  <Version>0.3.1</Version>
+  <Version>0.3.2</Version>
   <Repository>ghcr.io/errorwave/oppailib:latest</Repository>
   <Registry>https://github.com/ErrorWave/OppaiLib/pkgs/container/oppailib</Registry>
   <Network>bridge</Network>

@@ -84,10 +84,16 @@ func TestChatModelLifecycle(t *testing.T) {
 			_, _ = w.Write([]byte(`{"model_name":"` + loaded + `"}`))
 		case "POST /v1/internal/model/load":
 			mutations++
-			http.Error(w, "must not be called", http.StatusInternalServerError)
+			var body struct {
+				ModelName string `json:"model_name"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			loaded = body.ModelName
+			_, _ = w.Write([]byte(`{}`))
 		case "POST /v1/internal/model/unload":
 			mutations++
-			http.Error(w, "must not be called", http.StatusInternalServerError)
+			loaded = ""
+			_, _ = w.Write([]byte(`{}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -100,20 +106,68 @@ func TestChatModelLifecycle(t *testing.T) {
 	cur.ChatModel = loaded
 	s.settings.Set(cur)
 	h := s.Handler()
-	if rec := do(t, h, token, http.MethodGet, "/api/chat/models", ""); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"supported":false`) {
+	if rec := do(t, h, token, http.MethodGet, "/api/chat/models", ""); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"supported":true`) {
 		t.Fatalf("list models: %d %s", rec.Code, rec.Body)
 	}
-	if rec := do(t, h, token, http.MethodPost, "/api/chat/models/load", `{"modelName":"new.gguf"}`); rec.Code != http.StatusConflict {
-		t.Fatalf("load model: %d %s, want safe refusal", rec.Code, rec.Body)
+	if rec := do(t, h, token, http.MethodPost, "/api/chat/models/load", `{"modelName":"new.gguf"}`); rec.Code != http.StatusOK {
+		t.Fatalf("load model: %d %s", rec.Code, rec.Body)
 	}
-	if s.settings.Get().ChatModel != "old.gguf" {
-		t.Fatalf("configured model changed = %q", s.settings.Get().ChatModel)
+	if loaded != "new.gguf" {
+		t.Fatalf("loaded model = %q, want new.gguf", loaded)
 	}
-	if rec := do(t, h, token, http.MethodPost, "/api/chat/models/unload", `{}`); rec.Code != http.StatusConflict || loaded != "old.gguf" {
-		t.Fatalf("unload model: %d %s loaded=%q", rec.Code, rec.Body, loaded)
+	if rec := do(t, h, token, http.MethodPost, "/api/chat/models/unload", `{}`); rec.Code != http.StatusOK {
+		t.Fatalf("unload model: %d %s", rec.Code, rec.Body)
 	}
-	if mutations != 0 {
-		t.Fatalf("OppaiLib sent %d unsafe lifecycle requests", mutations)
+	if loaded != "" {
+		t.Fatalf("model still resident after unload = %q", loaded)
+	}
+	if mutations != 2 {
+		t.Fatalf("lifecycle requests = %d, want 2 (one load, one unload)", mutations)
+	}
+}
+
+// An empty model name would otherwise reach text-generation-webui and unload
+// whatever is resident, which is not what "load" should ever do.
+func TestChatModelLoadRejectsEmptyName(t *testing.T) {
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			t.Errorf("backend must not be called for an empty model name: %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"model_names":["a.gguf"]}`))
+	}))
+	defer llm.Close()
+
+	s, token := newTestServer(t)
+	cur := s.settings.Get()
+	cur.ChatURL = llm.URL + "/v1"
+	s.settings.Set(cur)
+	if rec := do(t, s.Handler(), token, http.MethodPost, "/api/chat/models/load", `{"modelName":"  "}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("load with blank name: %d %s, want 400", rec.Code, rec.Body)
+	}
+}
+
+// A backend with no internal endpoints (llama.cpp, vLLM) must be reported as
+// uncontrollable rather than being offered controls that can only fail.
+func TestChatModelControlUnsupportedBackend(t *testing.T) {
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"local"}]}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer llm.Close()
+
+	s, token := newTestServer(t)
+	cur := s.settings.Get()
+	cur.ChatURL = llm.URL + "/v1"
+	s.settings.Set(cur)
+	h := s.Handler()
+	if rec := do(t, h, token, http.MethodGet, "/api/chat/models", ""); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"supported":false`) {
+		t.Fatalf("list models: %d %s, want supported:false", rec.Code, rec.Body)
+	}
+	if rec := do(t, h, token, http.MethodPost, "/api/chat/models/load", `{"modelName":"local"}`); rec.Code != http.StatusConflict {
+		t.Fatalf("load against uncontrollable backend: %d %s, want 409", rec.Code, rec.Body)
 	}
 }
 

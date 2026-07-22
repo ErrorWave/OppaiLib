@@ -279,6 +279,14 @@ export class OppaiLibrary extends LitElement {
         overflow-y: auto;
         padding: 28px 32px 60px;
       }
+      /* Chat is a full-bleed client, not a card inside the library shell: it
+         owns its own scrolling regions, so the shell's padding and scrollbar
+         would produce a nested-scroller feel and a visible inset frame. */
+      main.flush {
+        padding: 0;
+        overflow: hidden;
+        min-height: 0;
+      }
 
       /* Home */
       .greeting {
@@ -943,7 +951,7 @@ export class OppaiLibrary extends LitElement {
       ${this.renderNav()}
       <div class="main-col">
         ${this.renderHeader(headerTitle, hasSearch, isViewer, isSettings)}
-        <main>
+        <main class=${isChat ? "flush" : ""}>
           ${isHome ? this.renderHome() : nothing}
           ${isSettings ? html`<oppai-settings .user=${this.user}></oppai-settings>` : nothing}
           ${isBrowse

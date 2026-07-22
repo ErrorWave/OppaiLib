@@ -96,6 +96,8 @@ export class OppaiChat extends LitElement {
   @state() private noticeError = false;
   @state() private imageTags = "";
   @state() private models: ChatModels | null = null;
+  @state() private modelChoice = "";
+  @state() private modelBusy = false;
   @state() private mobileNavOpen = false;
   @query(".log") private log?: HTMLElement;
   private saveTimer = 0;
@@ -111,9 +113,11 @@ export class OppaiChat extends LitElement {
       --line:var(--md-sys-color-outline-variant); --accent:var(--md-sys-color-primary); --on-accent:var(--md-sys-color-on-primary); }
     button,input,textarea,select { font:inherit; }
     button { color:inherit; }
-    .client { position:relative; display:grid; grid-template-columns:64px 272px minmax(0,1fr); height:calc(100dvh - 112px); min-height:580px;
-      border:1px solid var(--line); border-radius:18px; overflow:hidden; background:var(--main); box-shadow:0 18px 52px rgba(0,0,0,.12); }
-    .rail { background:var(--rail); padding:12px 0; display:flex; flex-direction:column; align-items:center; gap:8px; overflow-y:auto; border-right:1px solid var(--line); }
+    /* Full-bleed: no border, radius, or shadow. The chat fills its pane and reads
+       as the application itself rather than a framed client embedded in one. */
+    .client { position:relative; display:grid; grid-template-columns:64px 272px minmax(0,1fr); height:100%; min-height:0;
+      overflow:hidden; background:var(--main); }
+    .rail { background:var(--rail); padding:12px 0; display:flex; flex-direction:column; align-items:center; gap:8px; overflow-y:auto; }
     .guild { position:relative; width:44px; height:44px; flex:0 0 44px; border:0; border-radius:50%; background:var(--input); display:grid;
       place-items:center; overflow:hidden; cursor:pointer; transition:.15s; }
     .guild:hover,.guild.on { border-radius:14px; background:var(--accent); }
@@ -188,9 +192,10 @@ export class OppaiChat extends LitElement {
     .image-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:9px; }.image-card { background:var(--input); border-radius:7px; overflow:hidden; position:relative; }
     .image-card img { width:100%; height:110px; object-fit:cover; }.image-card div { padding:6px; font-size:11px; overflow-wrap:anywhere; }.image-card button { position:absolute; right:4px; top:4px; border:0; border-radius:50%; background:rgba(0,0,0,.7); color:white; cursor:pointer; }
     .empty { color:var(--muted); font-size:13px; }.nav-scrim { display:none; }
+    .model-row { display:flex; align-items:center; gap:9px; }.model-row strong { min-width:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; text-transform:none; }
     @media(max-width:900px){.client{grid-template-columns:60px 236px minmax(0,1fr)}.side-head{padding-left:12px}}
     @media(max-width:700px){
-      :host{height:auto}.client{display:block;height:calc(100dvh - 72px);min-height:520px;border:0;border-radius:0;box-shadow:none}.main{height:100%}
+      .client{display:block;height:100%;min-height:0}.main{height:100%}
       .rail,.side{display:none;position:absolute;top:0;bottom:0;z-index:12}.client.nav-open .rail{display:flex;left:0;width:60px}.client.nav-open .side{display:flex;left:60px;width:min(286px,calc(100% - 60px))}
       .client.nav-open .nav-scrim{display:block;position:absolute;inset:0;z-index:11;border:0;background:rgba(0,0,0,.55)}
       .mobile-nav{display:grid!important}.top{padding-left:4px;gap:7px}.quick-mode{max-width:96px;padding-left:8px}.topic{max-width:130px}.grid{grid-template-columns:1fr}
@@ -520,12 +525,63 @@ export class OppaiChat extends LitElement {
     </div>`;
   }
 
+  /** Loads a model, then re-probes. Long-running: the backend caps it at 10 minutes. */
+  private async loadModel() {
+    const target = this.modelChoice || this.models?.models[0];
+    if (!target || this.modelBusy) return;
+    this.modelBusy = true; this.say(`Loading ${target}… this can take a few minutes.`);
+    try {
+      await api.loadChatModel(target);
+      await this.refreshModels(true);
+      this.say(`Loaded ${this.models?.loaded || target}.`);
+    } catch (error) { this.say((error as Error).message, true); }
+    finally { this.modelBusy = false; }
+  }
+
+  /** Unloading frees VRAM but leaves the backend with no model, so it is confirmed. */
+  private async unloadModel() {
+    if (this.modelBusy || !confirm("Unload the current model? Chat stops working until a model is loaded again.")) return;
+    this.modelBusy = true; this.say("Unloading…");
+    try {
+      await api.unloadChatModel();
+      await this.refreshModels(true);
+      this.say("Model unloaded.");
+    } catch (error) { this.say((error as Error).message, true); }
+    finally { this.modelBusy = false; }
+  }
+
+  private renderModelControls() {
+    const models = this.models?.models ?? [], loaded = this.models?.loaded || this.status?.model || "";
+    return html`<label>Text-generation backend
+      <div class="model-row">
+        <strong>${loaded || "No model loaded"}</strong>
+        <button class="secondary" ?disabled=${this.modelBusy} @click=${() => void this.refreshModels()}>Refresh</button>
+      </div>
+    </label>
+    ${this.models?.supported === false
+      ? html`<div class="empty">This backend serves an OpenAI-compatible API but does not expose model load/unload. Manage the model where it runs.</div>`
+      : html`
+        <label>Model
+          <select class="field" ?disabled=${this.modelBusy || !models.length}
+            .value=${this.modelChoice || loaded}
+            @change=${(event: Event) => (this.modelChoice = (event.target as HTMLSelectElement).value)}>
+            ${models.length ? nothing : html`<option value="">No models found</option>`}
+            ${models.map((model) => html`<option value=${model} ?selected=${model === (this.modelChoice || loaded)}>${model}</option>`)}
+          </select>
+        </label>
+        <div class="panel-actions">
+          <button class="primary" ?disabled=${this.modelBusy || !models.length} @click=${() => void this.loadModel()}>
+            ${this.modelBusy ? "Working…" : "Load model"}
+          </button>
+          <button class="danger" ?disabled=${this.modelBusy || !loaded} @click=${() => void this.unloadModel()}>Unload</button>
+        </div>
+        ${this.modelBusy ? html`<div class="empty">Loading a large model can take several minutes. Leaving this page will not cancel it.</div>` : nothing}`}`;
+  }
+
   private renderGenerationPanel(conversation: ChatConversation) {
     const range = (label:string,key:string,min:number,max:number,step:number,fallback:number) => html`<label>${label}<span class="range"><input type="range" min=${min} max=${max} step=${step} .value=${String(optionNumber(conversation.options,key,fallback))} @input=${(event:Event) => this.updateOption(key,Number((event.target as HTMLInputElement).value))}/><output>${optionNumber(conversation.options,key,fallback)}</output></span></label>`;
     return html`<div class="panel">
-      <label>Text-generation backend<div class="panel-actions"><strong>${this.models?.loaded || this.status?.model || "No model loaded"}</strong><button class="secondary" @click=${()=>void this.refreshModels()}>Refresh status</button></div></label>
-      <div class="empty">Load or unload models in text-generation-webui’s own WebUI. OppaiLib deliberately keeps model management read-only so it cannot destabilize the Docker container.</div>
-      ${this.models?.models.length ? html`<label>Models visible to the backend<select disabled><option>${this.models.models.join(" · ")}</option></select></label>` : nothing}
+      ${this.renderModelControls()}
       <div class="grid">
       <label>Conversation mode<select .value=${conversation.mode} @change=${(event:Event) => this.updateConversation({mode:(event.target as HTMLSelectElement).value})}>${MODES.map((mode) => html`<option value=${mode.id}>${mode.label}</option>`)}</select></label>
       <label>Displayed emotion<select .value=${conversation.emotion} @change=${(event:Event) => this.updateConversation({emotion:(event.target as HTMLSelectElement).value})}>${["neutral","happy","mischievous","surprised","thinking"].map((emotion) => html`<option>${emotion}</option>`)}</select></label>

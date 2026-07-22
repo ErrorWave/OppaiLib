@@ -46,6 +46,11 @@ type Server struct {
 	chatDir      string // encrypted per-user chat workspaces + tagged character images
 	chatMu       sync.Mutex
 
+	// Model load/unload is serialized process-wide. Two concurrent loads against
+	// text-generation-webui race each other and can leave the backend with the
+	// API alive but no model resident, so only one mutation is ever in flight.
+	modelMu sync.Mutex
+
 	thumbSem  chan struct{} // bounds concurrent ffmpeg thumbnail jobs
 	thumbWarn sync.Once     // warn once if ffmpeg is missing
 
