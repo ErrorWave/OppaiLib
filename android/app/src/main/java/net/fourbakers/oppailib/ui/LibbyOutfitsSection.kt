@@ -40,7 +40,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import net.fourbakers.oppailib.data.LibbyEmotionRequest
 import net.fourbakers.oppailib.data.LibbyVoice
 import net.fourbakers.oppailib.data.LibbyOutfit
@@ -314,12 +316,18 @@ private fun OutfitEditorDialog(
     )
 }
 
-/** Reads a picked image into the data-URL form the server's upload endpoints take. */
-internal fun uriToDataUrl(context: android.content.Context, uri: Uri): String {
+/**
+ * Reads a picked image into the data-URL form the server's upload endpoints take.
+ *
+ * Suspending and pinned to IO: reading up to 8 MB and base64-encoding it into a ~11 MB
+ * string is entirely synchronous work, and on the main thread it stalls the UI for as
+ * long as it takes. Every caller is already inside a coroutine.
+ */
+internal suspend fun uriToDataUrl(context: android.content.Context, uri: Uri): String = withContext(Dispatchers.IO) {
     val resolver = context.contentResolver
     val mime = resolver.getType(uri) ?: "image/png"
     val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
         ?: error("Couldn't read the image")
     require(bytes.size <= 8 * 1024 * 1024) { "The image is larger than 8 MB" }
-    return "data:$mime;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
+    "data:$mime;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
 }

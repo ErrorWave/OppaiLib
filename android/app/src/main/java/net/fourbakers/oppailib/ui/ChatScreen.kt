@@ -14,6 +14,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -86,9 +91,11 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.doubleOrNull
@@ -129,12 +136,66 @@ private data class ChatMode(val id: String, val label: String, val emotion: Stri
 private val chatModes = listOf(
     ChatMode("sweet", "sweet", "happy"), ChatMode("playful", "playful", "mischievous"),
     ChatMode("bold", "bold", "surprised"), ChatMode("roleplay", "roleplay", "thinking"),
+    ChatMode("horny", "horny", "mischievous"),
 )
 private val chatEmotions = listOf("neutral", "happy", "mischievous", "surprised", "thinking")
 private fun chatID() = UUID.randomUUID().toString().replace("-", "")
 private val chatStamp = SimpleDateFormat("h:mm a", Locale.getDefault())
 private fun timeOf(ms: Long) = chatStamp.format(Date(ms))
 private fun baseOptions() = buildJsonObject { put("temperature", .8); put("top_p", .95); put("repetition_penalty", 1.1); put("max_tokens", 400) }
+
+/**
+ * What the typing indicator is doing right now.
+ *
+ * TYPING shows the dots; THINKING clears them while leaving the turn in progress —
+ * which is what a pause mid-message looks like from the other side of a chat window.
+ * The reply is already in hand by then; this is purely about when the user sees it.
+ */
+private enum class TypingPhase { IDLE, TYPING, THINKING }
+
+/**
+ * Holds a finished reply back for as long as it would plausibly have taken to write,
+ * so the character reads as someone typing rather than a service responding. The
+ * phone-side mirror of the web client's typeLikeAPerson.
+ *
+ * Three things are being imitated. Reading what you said before starting. Typing time
+ * that scales with what she actually wrote. And second thoughts: sometimes the dots
+ * stop partway, sit quiet for a beat, and start again — the shape a message that got
+ * half-typed, deleted, and rewritten leaves in a chat window.
+ *
+ * The generation time already spent counts against all of it, so a slow model does not
+ * pay twice; on a slow backend this adds nothing at all. The total is capped because
+ * charm wears off fast when you are waiting for it.
+ */
+private suspend fun typeLikeAPerson(text: String, spentMs: Long, phase: (TypingPhase) -> Unit) {
+    fun jitter(base: Double) = base * (0.7 + Math.random() * 0.6)
+    // ~22 characters a second, which reads as a quick but human phone typist.
+    val budget = minOf(7000.0, jitter(420.0 + text.length * 45.0))
+    var remaining = (budget - spentMs).coerceAtLeast(0.0)
+    if (remaining < 120) { phase(TypingPhase.IDLE); return }
+
+    phase(TypingPhase.THINKING)
+    val reading = minOf(remaining, jitter(500.0))
+    delay(reading.toLong())
+    remaining -= reading
+
+    // Longer messages are likelier to get rewritten, and never on a one-liner: an
+    // eight-word reply that visibly took three attempts is a tell, not a texture.
+    if (text.length > 90 && remaining > 900 && Math.random() < 0.35) {
+        val firstAttempt = remaining * (0.3 + Math.random() * 0.3)
+        phase(TypingPhase.TYPING)
+        delay(firstAttempt.toLong())
+        phase(TypingPhase.THINKING)
+        val reconsider = jitter(650.0)
+        delay(reconsider.toLong())
+        remaining -= firstAttempt + reconsider
+    }
+    if (remaining > 0) {
+        phase(TypingPhase.TYPING)
+        delay(remaining.toLong())
+    }
+    phase(TypingPhase.IDLE)
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -146,12 +207,14 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
     var conversationId by remember { mutableStateOf("") }
     var draft by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
+    var typingPhase by remember { mutableStateOf(TypingPhase.IDLE) }
     var message by remember { mutableStateOf("") }
     var settingsOpen by remember { mutableStateOf(false) }
     var settingsTab by remember { mutableStateOf("character") }
     var addFriend by remember { mutableStateOf(false) }
     var friendName by remember { mutableStateOf("") }
     var imageTags by remember { mutableStateOf("") }
+    var uploading by remember { mutableStateOf(false) }
     var overflowOpen by remember { mutableStateOf(false) }
     var saveJob by remember { mutableStateOf<Job?>(null) }
     val intensity by LibbyMeter.value.collectAsState()
@@ -197,20 +260,32 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
         save(ws.copy(characters = ws.characters.map { if (it.id == characterId) transform(it) else it }))
     }
 
+    // Reading the file, base64-encoding it, and letting the converter serialize the
+    // resulting ~11 MB string are all synchronous, and all of it used to run on the
+    // main thread — which is why picking a large image froze the whole app until the
+    // upload finished. None of it touches the UI, so all of it belongs on IO.
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         val ws = workspace; val char = currentCharacter(ws)
-        if (uri != null && ws != null && char != null) scope.launch {
+        if (uri != null && ws != null && char != null && !uploading) scope.launch {
+            uploading = true
             message = "Scanning image locally…"
+            val tags = imageTags.split(",").map(String::trim).filter(String::isNotBlank)
             runCatching {
-                val bytes = context.contentResolver.openInputStream(uri)!!.use { it.readBytes() }
-                require(bytes.size <= 8 * 1024 * 1024) { "Image must be 8 MB or smaller" }
-                val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
-                val data = "data:$mime;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
-                repo.api.uploadChatImage(ChatImageUpload(char.id, "Character image", data, imageTags.split(",").map(String::trim).filter(String::isNotBlank)))
+                withContext(Dispatchers.IO) {
+                    val bytes = context.contentResolver.openInputStream(uri)!!.use { it.readBytes() }
+                    require(bytes.size <= 8 * 1024 * 1024) { "Image must be 8 MB or smaller" }
+                    val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
+                    val data = "data:$mime;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
+                    repo.api.uploadChatImage(ChatImageUpload(char.id, "Character image", data, tags))
+                }
             }.onSuccess { image ->
-                val chars = ws.characters.map { if (it.id == char.id && it.avatarImageId.isBlank()) it.copy(avatarImageId = image.id) else it }
-                save(ws.copy(characters = chars, images = ws.images + image)); imageTags = ""; message = "Image scanned: ${image.tags.joinToString().ifBlank { "no content tags" }}"
+                // The workspace may have moved on while the upload was in flight, so this
+                // merges into the current one rather than the snapshot taken at pick time.
+                val latest = workspace ?: ws
+                val chars = latest.characters.map { if (it.id == char.id && it.avatarImageId.isBlank()) it.copy(avatarImageId = image.id) else it }
+                save(latest.copy(characters = chars, images = latest.images + image)); imageTags = ""; message = "Image scanned: ${image.tags.joinToString().ifBlank { "no content tags" }}"
             }.onFailure { message = it.message ?: "Image upload failed" }
+            uploading = false
         }
     }
 
@@ -218,9 +293,11 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
         val ws = workspace
         if (uri != null && ws != null) scope.launch {
             runCatching {
-                val bytes = context.contentResolver.openInputStream(uri)!!.use { it.readBytes() }
-                importedChatCharacter(bytes)
-            }.onSuccess { char -> val next = newConversation(ws.copy(characters = ws.characters + char), char); save(next); message = "${char.name} joined your friends." }
+                withContext(Dispatchers.IO) {
+                    val bytes = context.contentResolver.openInputStream(uri)!!.use { it.readBytes() }
+                    importedChatCharacter(bytes)
+                }
+            }.onSuccess { char -> val latest = workspace ?: ws; val next = newConversation(latest.copy(characters = latest.characters + char), char); save(next); message = "${char.name} joined your friends." }
                 .onFailure { message = "Couldn't import that character card." }
         }
     }
@@ -240,10 +317,12 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
     }
 
     val active = currentConversation(workspace)
-    LaunchedEffect(active?.messages?.size, busy) {
-        // Intro is index 0, so N messages end at index N; typing is N+1.
-        val target = (active?.messages?.size ?: 0) + if (busy) 1 else 0
-        if (target >= 0) list.animateScrollToItem(target)
+    LaunchedEffect(active?.messages?.size, typingPhase) {
+        // The intro only occupies index 0 while the log is empty, so the last row is
+        // simply the item count minus one — plus the typing line when it is showing.
+        val rows = (active?.messages?.size ?: 0).coerceAtLeast(1) +
+            if (busy && typingPhase == TypingPhase.TYPING) 1 else 0
+        list.animateScrollToItem(rows - 1)
     }
 
     fun sendMessage() {
@@ -259,23 +338,40 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
             if (status?.enabled != true) {
                 if (char.id != "libby") { message = status?.message?.ifBlank { null } ?: "Load a model in text-generation-webui, then refresh backend status."; busy = false; return@launch }
                 val progression = LibbyMeter.applyProgression(pending.progress, LibbyVoice.heatDelta(text, pending.mode))
-                val line = LibbyVoice.reply(text, pending.mode, pending.emotion, progression.second, advance = false); delay(350)
+                val line = LibbyVoice.reply(text, pending.mode, pending.emotion, progression.second, advance = false)
+                typeLikeAPerson(line.message, 0) { typingPhase = it }
                 LibbyMeter.set(progression.second)
                 val done = pending.copy(emotion = line.emotion, intensity = progression.second, progress = progression.first, messages = pending.messages + StoredChatMessage(chatID(), "assistant", line.message, System.currentTimeMillis()), updatedAt = System.currentTimeMillis())
                 save(workspace!!.copy(conversations = workspace!!.conversations.map { if (it.id == done.id) done else it })); busy = false; return@launch
             }
             val history = pending.messages.map { ChatMessage(it.role, it.content) }
+            val startedAt = System.currentTimeMillis()
+            typingPhase = TypingPhase.TYPING
             val generation = runCatching { repo.api.chat(ChatRequest(pending.mode, history, pending.emotion, pending.intensity, pending.options, char.id)) }
             generation
                 .onSuccess { reply ->
-                    val progression = LibbyMeter.applyProgression(pending.progress, reply.intensity - pending.intensity)
-                    LibbyMeter.set(progression.second)
-                    val done = pending.copy(emotion = reply.emotion, intensity = progression.second, progress = progression.first, messages = pending.messages + StoredChatMessage(chatID(), "assistant", reply.message, System.currentTimeMillis(), reply.imageId), updatedAt = System.currentTimeMillis())
+                    // Whatever the model already spent counts as time she was "writing", so
+                    // this only ever tops the wait up to something human — never adds a full
+                    // delay on top of a slow generation.
+                    typeLikeAPerson(reply.message, System.currentTimeMillis() - startedAt) { typingPhase = it }
+                    // A mood the character named is a decision, not drift, so it lands
+                    // where it asked. Running it through the progression multiplier is what
+                    // used to halve every deliberate swing: a jump from 1 to 5 arrived as a
+                    // 3, and the scene never caught up.
+                    val (progress, level) = if (reply.declared) {
+                        val stated = reply.intensity.coerceIn(1, LibbyMeter.MAX)
+                        stated.toDouble() to stated
+                    } else {
+                        LibbyMeter.applyProgression(pending.progress, reply.intensity - pending.intensity)
+                    }
+                    LibbyMeter.set(level)
+                    val done = pending.copy(emotion = reply.emotion, intensity = level, progress = progress, messages = pending.messages + StoredChatMessage(chatID(), "assistant", reply.message, System.currentTimeMillis(), reply.imageId), updatedAt = System.currentTimeMillis())
                     val latest = workspace ?: ws; save(latest.copy(conversations = latest.conversations.map { if (it.id == done.id) done else it }))
                 }.onFailure { error ->
                     status = runCatching { repo.api.chatStatus() }.getOrNull() ?: status
                     message = status?.takeIf { !it.enabled }?.message?.ifBlank { null } ?: error.message ?: "Chat failed"
                 }
+            typingPhase = TypingPhase.IDLE
             busy = false
         }
     }
@@ -299,7 +395,12 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
     ) {
         val ws = workspace; val char = currentCharacter(ws); val convo = currentConversation(ws)
         if (ws == null || char == null || convo == null) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-        else Column(Modifier.fillMaxSize().background(ChatColors.main)) {
+        // The activity draws edge to edge, so without this the top bar sits under the
+        // status bar and — because adjustResize does nothing once the window stops
+        // fitting system windows — the keyboard covers the composer you are typing in.
+        // safeDrawing is the one that unions bars, cutout, and IME, so a raised keyboard
+        // does not also pay for the navigation bar it is covering.
+        else Column(Modifier.fillMaxSize().background(ChatColors.main).windowInsetsPadding(WindowInsets.safeDrawing)) {
             Row(Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = ChatColors.muted) }
                 IconButton(onClick = { scope.launch { drawer.open() } }) { Icon(Icons.Filled.Menu, "Friends and conversations", tint = ChatColors.muted) }
@@ -332,9 +433,11 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
                 )
             }
             LazyColumn(state = list, modifier = Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(bottom = 12.dp)) {
-                item { ChatIntro(repo, char, convo, status) }
+                // The intro card is a placeholder for an empty log, not a permanent
+                // header — once there is conversation to read, it is only taking room.
+                if (convo.messages.isEmpty()) item { ChatIntro(repo, char, convo, status) }
                 itemsIndexed(convo.messages, key = { _, item -> item.id }) { index, item -> ChatMessageRow(repo, ws, char, item, convo.messages.getOrNull(index - 1)) }
-                if (busy) item { Text("${char.name} is typing…", color = ChatColors.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 68.dp, top = 8.dp)) }
+                if (busy && typingPhase == TypingPhase.TYPING) item { Text("${char.name} is typing…", color = ChatColors.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 68.dp, top = 8.dp)) }
             }
             if (message.isNotBlank()) Text(message, color = if (message.contains("fail", true) || message.contains("couldn", true)) ChatColors.danger else ChatColors.muted, fontSize = 13.sp, modifier = Modifier.fillMaxWidth().background(ChatColors.side).padding(10.dp))
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -353,7 +456,7 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
         val convo = currentConversation(ws) ?: return
         ModalBottomSheet(onDismissRequest = { settingsOpen = false }) {
             ChatSettings(
-                repo, ws, char, convo, settingsTab, imageTags, models,
+                repo, ws, char, convo, settingsTab, imageTags, models, uploading,
                 onTab = { settingsTab = it }, onCharacter = { updateCharacter { _ -> it } }, onConversation = { replacement -> updateConversation { replacement } },
                 onProfile = { save(ws.copy(profile = it)) }, onImageTags = { imageTags = it }, onPickImage = { imagePicker.launch("image/*") },
                 onImport = { cardImporter.launch("*/*") }, onDeleteImage = { image -> scope.launch { runCatching { repo.api.deleteChatImage(image.id) }; save(ws.copy(images = ws.images - image, characters = ws.characters.map { if (it.avatarImageId == image.id) it.copy(avatarImageId = "") else it })) } },
@@ -417,14 +520,15 @@ private fun ChatDrawer(
 
 @Composable
 private fun ChatSettings(
-    repo: Repository, ws: ChatWorkspace, char: ChatCharacter, convo: ChatConversation, tab: String, imageTags: String, models: ChatModels?,
+    repo: Repository, ws: ChatWorkspace, char: ChatCharacter, convo: ChatConversation, tab: String, imageTags: String, models: ChatModels?, uploading: Boolean,
     onTab: (String) -> Unit, onCharacter: (ChatCharacter) -> Unit, onConversation: (ChatConversation) -> Unit,
     onProfile: (net.fourbakers.oppailib.data.ChatProfile) -> Unit, onImageTags: (String) -> Unit, onPickImage: () -> Unit,
     onImport: () -> Unit, onDeleteImage: (ChatImage) -> Unit,
     onRefreshModels: () -> Unit,
 ) {
     var advancedOptions by remember(convo.id) { mutableStateOf(convo.options.toString()) }
-    Column(Modifier.fillMaxWidth().fillMaxHeight(.9f).verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, bottom = 32.dp)) {
+    // The sheet is full of text fields, so it has to give way to the keyboard as well.
+    Column(Modifier.fillMaxWidth().fillMaxHeight(.9f).imePadding().navigationBarsPadding().verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, bottom = 32.dp)) {
         Text("Chat settings", fontSize = 22.sp, fontWeight = FontWeight.Bold)
         Text("Character, model, images, and your shared profile", color = ChatColors.muted, fontSize = 12.sp, modifier = Modifier.padding(bottom = 10.dp))
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) { listOf("character", "generation", "images", "profile").forEach { name -> Text(name.replaceFirstChar(Char::uppercase), color = if (tab == name) MaterialTheme.colorScheme.onPrimary else ChatColors.text, modifier = Modifier.clip(RoundedCornerShape(5.dp)).background(if (tab == name) ChatColors.accent else ChatColors.input).clickable { onTab(name) }.padding(horizontal = 11.dp, vertical = 7.dp)) } }
@@ -435,6 +539,8 @@ private fun ChatSettings(
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { TextField(char.personality, { onCharacter(char.copy(personality = it)) }, label = { Text("Personality") }, maxLines = 3, modifier = Modifier.weight(1f)); TextField(char.scenario, { onCharacter(char.copy(scenario = it)) }, label = { Text("Scenario") }, maxLines = 3, modifier = Modifier.weight(1f)) }
                 TextField(char.systemPrompt, { onCharacter(char.copy(systemPrompt = it)) }, label = { Text("System prompt") }, maxLines = 3, modifier = Modifier.fillMaxWidth())
                 TextField(char.firstMessage, { onCharacter(char.copy(firstMessage = it)) }, label = { Text("First message") }, maxLines = 2, modifier = Modifier.fillMaxWidth())
+                TextField(char.exampleDialogue, { onCharacter(char.copy(exampleDialogue = it)) }, label = { Text("Example dialogue") }, maxLines = 4, modifier = Modifier.fillMaxWidth())
+                Text("{{char}} and {{user}} are filled in with the character's name and your profile name. Examples are used as a voice reference, never replayed as conversation.", color = ChatColors.muted, fontSize = 11.sp)
                 Text("Default mode", color = ChatColors.muted, fontSize = 12.sp); Row(Modifier.horizontalScroll(rememberScrollState())) { chatModes.forEach { mode -> Text(mode.label, modifier = Modifier.clip(RoundedCornerShape(4.dp)).background(if (char.defaultMode == mode.id) ChatColors.accent else ChatColors.input).clickable { onCharacter(char.copy(defaultMode = mode.id)) }.padding(10.dp, 6.dp)) } }
                 Text("Card weight ${"%.2f".format(char.promptWeight)}", color = ChatColors.muted); Slider(char.promptWeight.toFloat(), { onCharacter(char.copy(promptWeight = it.toDouble())) }, valueRange = .1f..2f)
                 OutlinedButton(onClick = onImport) { Text("Import SillyTavern JSON") }
@@ -459,7 +565,10 @@ private fun ChatSettings(
             "images" -> Column(Modifier.fillMaxWidth().padding(top = 8.dp)) {
                 Text("Uploads are scanned locally and sent only when tags match the chat.", color = ChatColors.muted, fontSize = 12.sp)
                 TextField(imageTags, onImageTags, label = { Text("Extra tags: beach, happy…") }, modifier = Modifier.fillMaxWidth())
-                Button(onClick = onPickImage, modifier = Modifier.padding(vertical = 5.dp)) { Text("Upload and scan") }
+                Button(onClick = onPickImage, enabled = !uploading, modifier = Modifier.padding(vertical = 5.dp)) {
+                    if (uploading) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
+                    Text(if (uploading) "  Scanning…" else "Upload and scan")
+                }
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) { ws.images.filter { it.characterId == char.id }.forEach { image -> Column(Modifier.width(110.dp)) { AsyncImage(repo.chatImageUrl(image.id), image.name, imageLoader = repo.imageLoader, modifier = Modifier.size(110.dp).clip(RoundedCornerShape(7.dp))); Text(image.tags.joinToString().ifBlank { "No tags" }, fontSize = 10.sp, maxLines = 2); TextButton(onClick = { onDeleteImage(image) }) { Text("Delete", color = ChatColors.danger) } } } }
             }
             "profile" -> Column(Modifier.fillMaxWidth().padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {

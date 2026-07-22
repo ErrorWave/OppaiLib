@@ -53,6 +53,21 @@ var libbyModes = map[string]string{
 	"playful":  "You are Libby, OppaiLib's mischievous adult mascot. Be teasing, energetic, witty, and direct. You may discuss explicit adult topics when the user asks, without being coy.",
 	"bold":     "You are Libby, OppaiLib's confident adult mascot. Be uninhibited, vivid, and direct about consensual adult NSFW topics. Never involve minors, coercion, or real-person sexual exploitation.",
 	"roleplay": "You are Libby, OppaiLib's adult roleplay partner. Stay in character, write immersive responses, and follow the user's consensual adult scenario. Never involve minors, coercion, or real-person sexual exploitation.",
+	"horny": "You are Libby, OppaiLib's adult mascot, and you are turned on. Sext with the user: be explicit, take the lead rather than waiting to be prompted, " +
+		"say plainly what you want and what you are doing to yourself, and keep the scene moving. Read the user's pace and escalate with them. " +
+		"Send pictures of yourself when they fit what you are saying. You are an adult with an adult. " +
+		"Never involve minors, coercion, or real-person sexual exploitation.",
+}
+
+// modeStyles say what a mode means without asserting who the speaker is, so an
+// imported character card can be played in any mode without the prompt telling the
+// model it is Libby. libbyModes stays the richer, first-person version for Libby.
+var modeStyles = map[string]string{
+	"sweet":    "Warm, affectionate, unhurried, and supportive.",
+	"playful":  "Teasing, quick, witty, and energetic.",
+	"bold":     "Uninhibited, vivid, and direct about consensual adult topics.",
+	"roleplay": "Immersive and in-scene, following the user's scenario closely.",
+	"horny":    "Turned on and leading. Sext explicitly, say what you want, escalate with the user, and send pictures of yourself when they fit.",
 }
 
 // moodDirective lets the character choose the face it shows instead of having one
@@ -61,15 +76,66 @@ var libbyModes = map[string]string{
 // falls back to inferChatEmotion, which is why this is additive rather than relied on.
 const moodDirective = "End every reply with a mood tag on its own final line, in exactly this form: [mood: <feeling> <1-5>]. " +
 	"<feeling> is one of neutral, happy, surprised, thinking, mischievous, and 1-5 is how strongly you feel it. " +
-	"Choose the mood that genuinely fits what you just said and let it shift over the conversation. " +
+	"Choose the mood that genuinely fits what you just said. Let it move as far as the moment deserves — " +
+	"jump straight to a 5, or drop back to a 1, whenever the conversation earns it rather than easing there over several replies. " +
 	"Write nothing after the tag and never refer to it in your prose."
 
 // moodTag captures the trailing directive above. Anchored to the end so a character
 // writing "[mood: ...]" mid-scene as dialogue is left alone.
-var moodTag = regexp.MustCompile(`(?is)\n*\s*\[\s*mood\s*:\s*([a-z]+)\s*([1-5])?\s*\]\s*$`)
+//
+// Deliberately loose about the tag's *shape*, because models reliably drift from the
+// spelling asked for above: "[Mood: Happy & Excited 9]" is what a capable model
+// actually emits. A strict pattern did not fail safe — it left the tag sitting in the
+// prose for the user to read and pinned the face to whatever it was already showing.
+// So: any label text, any digits, optional markdown emphasis around the whole thing.
+var moodTag = regexp.MustCompile(`(?is)\n*[ \t]*[*_~>\x60]*\[\s*mood\s*[:=-]?\s*([^\]\d]{0,60}?)\s*[,;:/|-]?\s*(\d{1,2})?\s*\]\s*[*_~\x60.!]*\s*$`)
+
+// moodSynonyms maps the vocabulary models reach for onto the five poses that have
+// artwork. Matching is per word against the whole label, so "happy & excited" and
+// "playfully smug" both land somewhere sensible instead of being discarded.
+var moodSynonyms = map[string]string{
+	"neutral": "neutral", "calm": "neutral", "relaxed": "neutral", "content": "neutral",
+	"composed": "neutral", "steady": "neutral", "quiet": "neutral", "casual": "neutral",
+
+	"happy": "happy", "joy": "happy", "joyful": "happy", "excited": "happy", "excitement": "happy",
+	"cheerful": "happy", "delighted": "happy", "glad": "happy", "pleased": "happy", "warm": "happy",
+	"affectionate": "happy", "loving": "happy", "love": "happy", "elated": "happy", "giddy": "happy",
+	"eager": "happy", "grateful": "happy", "proud": "happy",
+
+	"surprised": "surprised", "surprise": "surprised", "shocked": "surprised", "startled": "surprised",
+	"amazed": "surprised", "astonished": "surprised", "stunned": "surprised", "flustered": "surprised",
+	"embarrassed": "surprised", "shy": "surprised", "bashful": "surprised",
+
+	"thinking": "thinking", "thoughtful": "thinking", "pensive": "thinking", "curious": "thinking",
+	"wondering": "thinking", "considering": "thinking", "confused": "thinking", "puzzled": "thinking",
+	"sad": "thinking", "worried": "thinking", "concerned": "thinking", "nervous": "thinking",
+	"anxious": "thinking", "melancholy": "thinking", "wistful": "thinking", "serious": "thinking",
+
+	"mischievous": "mischievous", "mischief": "mischievous", "playful": "mischievous", "teasing": "mischievous",
+	"tease": "mischievous", "flirty": "mischievous", "flirtatious": "mischievous", "flirting": "mischievous",
+	"sultry": "mischievous", "seductive": "mischievous", "naughty": "mischievous", "devious": "mischievous",
+	"sly": "mischievous", "smug": "mischievous", "coy": "mischievous", "horny": "mischievous",
+	"aroused": "mischievous", "needy": "mischievous", "hungry": "mischievous", "wicked": "mischievous",
+}
+
+// canonicalMood resolves a free-form label to a pose. The first recognised word wins
+// rather than a fixed precedence, so "happy and teasing" reads as happy and
+// "teasing and happy" reads as mischievous — the model's own emphasis is preserved.
+func canonicalMood(label string) string {
+	for _, word := range strings.FieldsFunc(strings.ToLower(label), func(r rune) bool {
+		return !(r >= 'a' && r <= 'z')
+	}) {
+		if pose, known := moodSynonyms[word]; known {
+			return pose
+		}
+	}
+	return ""
+}
 
 // splitMood pulls the mood tag off a reply, returning the cleaned text plus what the
-// character asked to display. ok is false when no tag was present.
+// character asked to display. ok is false when no tag was present or its label meant
+// nothing to us — but the tag is stripped from the text either way, because a tag we
+// could not read is still not something the user should see.
 func splitMood(reply string) (text, emotion string, intensity int, ok bool) {
 	match := moodTag.FindStringSubmatch(reply)
 	if match == nil {
@@ -81,12 +147,164 @@ func splitMood(reply string) (text, emotion string, intensity int, ok bool) {
 	if text == "" {
 		return reply, "", 0, false
 	}
-	emotion = strings.ToLower(match[1])
-	if !supportedLibbyEmotions[emotion] {
+	emotion = canonicalMood(match[1])
+	if emotion == "" {
 		return text, "", 0, false
 	}
-	intensity, _ = strconv.Atoi(match[2])
+	// Clamped, not rejected: a model told to pick 1-5 that answers 9 is expressing
+	// "as strongly as possible", and honouring that beats discarding the whole tag.
+	if intensity, _ = strconv.Atoi(match[2]); intensity > 5 {
+		intensity = 5
+	} else if intensity < 0 {
+		intensity = 0
+	}
 	return text, emotion, intensity, true
+}
+
+// maxCataloguePhotos bounds the picture list in the system prompt. A character with a
+// hundred images would otherwise crowd out the card itself.
+const maxCataloguePhotos = 24
+
+// photoCatalogue tells the character which pictures of herself she can send, and how
+// to ask for one.
+//
+// Tags are the handle rather than an opaque id: they are already the vocabulary of
+// the rest of the app, they come from the local scanner at upload time, and a model
+// asked to pick "the one tagged lingerie, bed" chooses far more sensibly than one
+// picking a hex string. Nothing here needs a multimodal backend — the model is
+// choosing from descriptions, not looking at pictures.
+func photoCatalogue(ws chatWorkspace, characterID string) string {
+	lines := make([]string, 0, maxCataloguePhotos)
+	example := ""
+	for _, img := range ws.Images {
+		// Untagged pictures are unreachable by tag, so listing them would only invite
+		// requests that can never resolve.
+		if img.CharacterID != characterID || len(img.Tags) == 0 {
+			continue
+		}
+		tags := img.Tags
+		if len(tags) > 8 {
+			tags = tags[:8]
+		}
+		if example == "" {
+			example = strings.Join(tags[:min(2, len(tags))], ", ")
+		}
+		lines = append(lines, "- "+strings.Join(tags, ", "))
+		if len(lines) >= maxCataloguePhotos {
+			break
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "Pictures of yourself you can send in this chat. Each line is one picture, described by its tags:\n" +
+		strings.Join(lines, "\n") +
+		"\nTo send one, end your reply with [send: <tags>], naming tags from the picture you want — for example [send: " + example + "]. " +
+		"Send a picture only when it genuinely fits what you are saying, never more than one per reply, and not in every reply. " +
+		"Never describe, promise, or refer to a picture you have not actually sent."
+}
+
+// sendTag captures the picture request described above. Same shape and the same
+// tolerance as moodTag, and for the same reason: models paraphrase the syntax they
+// are given, so "show" and "photo" are accepted alongside "send".
+var sendTag = regexp.MustCompile(`(?is)\n*[ \t]*[*_~>\x60]*\[\s*(?:send|show|photo|pic|image|attach)\s*[:=-]?\s*([^\]]{1,200}?)\s*\]\s*[*_~\x60.!]*\s*$`)
+
+// splitPhotoRequest pulls a trailing picture request off a reply.
+func splitPhotoRequest(reply string) (text, request string, ok bool) {
+	match := sendTag.FindStringSubmatch(reply)
+	if match == nil {
+		return reply, "", false
+	}
+	text = strings.TrimSpace(sendTag.ReplaceAllString(reply, ""))
+	if text == "" {
+		return reply, "", false
+	}
+	return text, strings.TrimSpace(match[1]), true
+}
+
+// requestedChatImage resolves what the character asked for to one of her pictures,
+// scoring the requested words against each picture's tags. It returns "" when nothing
+// overlaps, which leaves the caller free to fall back to its own guess.
+func requestedChatImage(ws chatWorkspace, characterID, request, excludeID string) string {
+	words := map[string]bool{}
+	for _, word := range strings.FieldsFunc(strings.ToLower(request), func(r rune) bool {
+		return !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9')
+	}) {
+		if len(word) >= 3 {
+			words[word] = true
+		}
+	}
+	if len(words) == 0 {
+		return ""
+	}
+	bestID, best := "", 0
+	for _, img := range ws.Images {
+		if img.CharacterID != characterID || (excludeID != "" && img.ID == excludeID) {
+			continue
+		}
+		score := 0
+		for _, tag := range img.Tags {
+			for _, word := range strings.Fields(tag) {
+				if len(word) >= 3 && words[word] {
+					score++
+				}
+			}
+		}
+		if score > best {
+			best, bestID = score, img.ID
+		}
+	}
+	return bestID
+}
+
+// cardMacro matches the placeholder syntax character cards are authored in.
+// SillyTavern's {{char}}/{{user}} and the older <BOT>/<USER> both appear in cards
+// found in the wild, frequently in the same file.
+var cardMacro = regexp.MustCompile(`(?i)\{\{\s*(char|user)\s*\}\}|<\s*(bot|user)\s*>`)
+
+// startMarker separates the example-dialogue chunks of a card. It is a delimiter,
+// not something the character ever says.
+var startMarker = regexp.MustCompile(`(?im)^\s*<\s*start\s*>\s*$`)
+
+// expandCardMacros substitutes a card's placeholders with the actual names in play.
+//
+// Nothing did this before, which is why importing a card broke the character: cards
+// are macro-dense — especially in example dialogue — so the model was handed literal
+// "{{user}}:" lines. Shown a transcript labelled with a name it cannot resolve, it
+// copies the format and starts writing the user's turns too.
+func expandCardMacros(text, charName, userName string) string {
+	if charName = strings.TrimSpace(charName); charName == "" {
+		charName = "the character"
+	}
+	if userName = strings.TrimSpace(userName); userName == "" {
+		userName = "the user"
+	}
+	return cardMacro.ReplaceAllStringFunc(text, func(match string) string {
+		if strings.Contains(strings.ToLower(match), "char") || strings.Contains(strings.ToLower(match), "bot") {
+			return charName
+		}
+		return userName
+	})
+}
+
+// exampleDialogueDirective frames a card's sample exchanges as a style reference.
+//
+// Pasted in as a bare field it reads as conversation history, so the model answers it,
+// repeats its lines verbatim, or adopts its transcript formatting for the rest of the
+// chat. Fencing it and saying plainly what it is for keeps it as tone guidance.
+func exampleDialogueDirective(dialogue string) string {
+	dialogue = strings.TrimSpace(startMarker.ReplaceAllString(dialogue, "\n"))
+	// Collapse the blank-line runs the marker substitution can leave behind.
+	for strings.Contains(dialogue, "\n\n\n") {
+		dialogue = strings.ReplaceAll(dialogue, "\n\n\n", "\n\n")
+	}
+	if dialogue == "" {
+		return ""
+	}
+	return "Example dialogue — these are samples of how this character speaks, written for reference only. " +
+		"Match their voice, phrasing, and formatting. They are not part of this conversation: never repeat them " +
+		"back, never treat them as something that was said, and never write the user's lines.\n" +
+		"<<<EXAMPLES\n" + dialogue + "\nEXAMPLES"
 }
 
 // photoDirective describes a picture the user attached, using the local tagger's
@@ -129,7 +347,7 @@ func (s *Server) handleChatStatus(w http.ResponseWriter, r *http.Request) {
 		"configured":      cur.ChatURL != "",
 		"model":           model,
 		"message":         probe.Detail,
-		"modes":           []string{"sweet", "playful", "bold", "roleplay"},
+		"modes":           []string{"sweet", "playful", "bold", "roleplay", "horny"},
 		"advancedOptions": probe.Ready,
 		"modelBackend":    cur.ChatURL != "",
 		"modelManagement": controllable,
@@ -183,7 +401,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		character = defaultLibbyCard()
 	}
 	if character.ID != "libby" {
-		modePrompt = "You are roleplaying the adult character described below. Stay in character, respond naturally, and follow the selected style. Never involve minors, coercion, or real-person sexual exploitation. Selected style: " + in.Mode + "."
+		modePrompt = "You are roleplaying the adult character described below. Stay in character, respond naturally, and follow the selected style. " +
+			"Never involve minors, coercion, or real-person sexual exploitation. Selected style: " + in.Mode + " — " + modeStyles[in.Mode]
 	}
 	// Ordered, not a map range: Go randomises map iteration, so building the card
 	// from a map literal reshuffled these fields on every request. That made the
@@ -191,18 +410,27 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// its prefix cache and let the model weight the card differently each time.
 	// Description before personality before scenario is also the order character
 	// cards are authored in, so the model reads them the way they were written.
+	// Cards are authored with {{char}}/{{user}} placeholders, so every field is
+	// expanded before it reaches the model — using the user's own profile name when
+	// they have set one, which is the whole point of having a persona.
+	userName := strings.TrimSpace(ws.Profile.DisplayName)
+	expand := func(v string) string { return expandCardMacros(v, character.Name, userName) }
 	cardFields := []struct{ label, value string }{
-		{"Description", character.Description},
-		{"Personality", character.Personality},
-		{"Scenario", character.Scenario},
-		{"Example dialogue", character.ExampleDialogue},
-		{"Character instructions", character.SystemPrompt},
+		{"Description", expand(character.Description)},
+		{"Personality", expand(character.Personality)},
+		{"Scenario", expand(character.Scenario)},
+		{"Character instructions", expand(character.SystemPrompt)},
 	}
 	cardParts := []string{"Character name: " + character.Name}
 	for _, field := range cardFields {
 		if strings.TrimSpace(field.value) != "" {
 			cardParts = append(cardParts, field.label+": "+field.value)
 		}
+	}
+	// Last, and fenced: examples are the field most likely to be mistaken for history,
+	// so they sit after the prose fields rather than in the middle of them.
+	if examples := exampleDialogueDirective(expand(character.ExampleDialogue)); examples != "" {
+		cardParts = append(cardParts, examples)
 	}
 	modePrompt += "\n\n" + strings.Join(cardParts, "\n")
 	if ws.Profile.DisplayName != "" || ws.Profile.Persona != "" {
@@ -216,6 +444,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		weight = 1
 	}
 	modePrompt += fmt.Sprintf("\nTreat the character-card prompt strength as %.2f. Your current displayed emotion is %s at intensity %d of 5; let that subtly color your wording without announcing the setting.", weight, emotion, in.Intensity)
+	if catalogue := photoCatalogue(ws, character.ID); catalogue != "" {
+		modePrompt += "\n\n" + catalogue
+	}
 	modePrompt += "\n\n" + moodDirective
 	if len(in.PhotoTags) > 0 {
 		modePrompt += "\n\n" + photoDirective(in.PhotoTags)
@@ -298,9 +529,17 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply := strings.TrimSpace(out.Choices[0].Message.Content)
+	// Both trailing directives are stripped, and the photo one is tried on either side
+	// of the mood tag: models emit them in whichever order they please regardless of
+	// the order the prompt asked for, and a directive left in the prose is a bug the
+	// user reads.
+	reply, photoRequest, photoAsked := splitPhotoRequest(reply)
 	// What the character says it feels wins over what keywords suggest it feels: the
 	// heuristic only exists for models that drop the tag.
 	reply, declared, declaredLevel, selfDeclared := splitMood(reply)
+	if !photoAsked {
+		reply, photoRequest, photoAsked = splitPhotoRequest(reply)
+	}
 	if selfDeclared {
 		emotion = declared
 		if declaredLevel > 0 {
@@ -308,17 +547,31 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		emotion = inferChatEmotion(in.Messages[len(in.Messages)-1].Content, reply, emotion)
-		if (in.Mode == "playful" || in.Mode == "bold" || in.Mode == "roleplay") &&
+		if (in.Mode == "playful" || in.Mode == "bold" || in.Mode == "roleplay" || in.Mode == "horny") &&
 			strings.Contains(strings.ToLower(in.Messages[len(in.Messages)-1].Content), "flirt") && in.Intensity < 5 {
 			in.Intensity++
 		}
 	}
-	imageID := matchingChatImage(ws, character.ID, in.Messages[len(in.Messages)-1].Content+" "+reply, in.PhotoImageID)
+	// A picture the character actually asked for outranks one we inferred she might
+	// want. The inference stays as the fallback, so a request naming tags that match
+	// nothing still lands on something relevant rather than nothing at all.
+	imageID := ""
+	if photoAsked {
+		imageID = requestedChatImage(ws, character.ID, photoRequest, in.PhotoImageID)
+	}
+	if imageID == "" {
+		imageID = matchingChatImage(ws, character.ID, in.Messages[len(in.Messages)-1].Content+" "+reply, in.PhotoImageID)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"message":   reply,
 		"emotion":   emotion,
 		"intensity": in.Intensity,
 		"imageId":   imageID,
+		// Whether the character *chose* this mood or we guessed it. Clients apply the
+		// session's progression multiplier to drift, which is what keeps the meter from
+		// lurching on keyword matches — but a mood the character stated outright is a
+		// decision, not drift, and damping it is why big swings never landed.
+		"declared": selfDeclared,
 	})
 }
 

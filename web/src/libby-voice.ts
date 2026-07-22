@@ -167,7 +167,7 @@ export function libbyReact(event: LibbyEvent, opts: { intensity?: number; count?
 // ── the local chat engine ────────────────────────────────────────────────────
 
 /** How hard each chat mode pushes the meter per exchange. */
-const MODE_HEAT: Record<string, number> = { sweet: 0, playful: 1, bold: 1, roleplay: 1 };
+const MODE_HEAT: Record<string, number> = { sweet: 0, playful: 1, bold: 1, roleplay: 1, horny: 2 };
 
 /** A conversational intent we can answer without a model behind us. */
 type Intent =
@@ -300,12 +300,15 @@ const REPLY_MOODS: Record<Intent, readonly LibbyEmotion[]> = {
   chatter: ["neutral", "happy", "mischievous", "mischievous", "mischievous"],
 };
 
-/** Occasional mode-flavoured tails, so the four channels don't read alike. */
+/** Occasional mode-flavoured tails, so the channels don't read alike. */
 const MODE_TAILS: Record<string, readonly string[]> = {
   sweet: ["", "", "", " I'm glad you're here.", " No rush, either."],
   playful: ["", "", " Your turn.", " Don't make me come get you.", " Try to keep up."],
   bold: ["", "", " I'm not going to pretend otherwise.", " I'd rather be blunt with you.", " Say the word."],
   roleplay: ["", "", " *she leans in*", " *she watches you closely*", " *she shifts, restless*"],
+  // This mode starts at heat 2, so the first two rungs are never reached in practice.
+  // Kept aligned with the others so an index is always a valid rung.
+  horny: ["", "", " Come here.", " I've been thinking about you all day.", " Don't keep me waiting."],
 };
 
 function detectIntent(text: string): Intent {

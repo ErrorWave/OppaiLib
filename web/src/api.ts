@@ -144,6 +144,10 @@ export interface ChatResponse {
   emotion?: string;
   intensity?: number;
   imageId?: string;
+  /** True when the character stated its own mood rather than one being inferred.
+      A stated mood is applied as-is; an inferred one drifts by the session
+      multiplier. Absent from older servers, which is treated as inferred. */
+  declared?: boolean;
 }
 
 export interface ChatProfile {

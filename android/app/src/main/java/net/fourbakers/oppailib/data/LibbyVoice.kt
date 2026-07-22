@@ -153,7 +153,7 @@ object LibbyVoice {
     // ── the local chat engine ────────────────────────────────────────────────
 
     /** How hard each chat mode pushes the meter per exchange. */
-    private val modeHeat = mapOf("sweet" to 0, "playful" to 1, "bold" to 1, "roleplay" to 1)
+    private val modeHeat = mapOf("sweet" to 0, "playful" to 1, "bold" to 1, "roleplay" to 1, "horny" to 2)
 
     private enum class Intent {
         GREETING, HOW_ARE_YOU, COMPLIMENT, FLIRT, THANKS, BYE,
@@ -288,12 +288,15 @@ object LibbyVoice {
         Intent.CHATTER to listOf("neutral", "happy", "mischievous", "mischievous", "mischievous"),
     )
 
-    /** Occasional mode-flavoured tails, so the four channels don't read alike. */
+    /** Occasional mode-flavoured tails, so the channels don't read alike. */
     private val modeTails = mapOf(
         "sweet" to listOf("", "", "", " I'm glad you're here.", " No rush, either."),
         "playful" to listOf("", "", " Your turn.", " Don't make me come get you.", " Try to keep up."),
         "bold" to listOf("", "", " I'm not going to pretend otherwise.", " I'd rather be blunt with you.", " Say the word."),
         "roleplay" to listOf("", "", " *she leans in*", " *she watches you closely*", " *she shifts, restless*"),
+        // This mode starts at heat 2, so the first two rungs are never reached in practice.
+        // Kept aligned with the others so an index is always a valid rung.
+        "horny" to listOf("", "", " Come here.", " I've been thinking about you all day.", " Don't keep me waiting."),
     )
 
     private fun detectIntent(text: String): Intent =

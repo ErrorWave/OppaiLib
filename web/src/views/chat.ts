@@ -20,6 +20,7 @@ const MODES = [
   { id: "playful", label: "playful", emotion: "mischievous", topic: "Teasing and quick on their feet." },
   { id: "bold", label: "bold", emotion: "surprised", topic: "Blunt, uninhibited, and direct." },
   { id: "roleplay", label: "roleplay", emotion: "thinking", topic: "In character, in scene, in detail." },
+  { id: "horny", label: "horny", emotion: "mischievous", topic: "Explicit, leading, and sending pictures." },
 ] as const;
 
 type EditorTab = "character" | "model" | "images" | "profile";
@@ -141,6 +142,15 @@ export class OppaiChat extends LitElement {
   @state() private stageOpen = true;
   /** A picture the user has attached but not yet sent. */
   @state() private pendingPhoto: PendingPhoto | null = null;
+  /**
+   * What the typing indicator is doing right now.
+   *
+   * "typing" shows the dots; "thinking" clears them while leaving the turn in
+   * progress — which is what a pause mid-message looks like from the other side of a
+   * chat window. The reply is already in hand by then; this is purely about when the
+   * user gets to see it.
+   */
+  @state() private typingPhase: "idle" | "typing" | "thinking" = "idle";
   /** The full-screen sprite view. Text chat keeps running underneath it. */
   @state() private callOpen = false;
   @state() private callSeconds = 0;
@@ -737,6 +747,53 @@ export class OppaiChat extends LitElement {
     try { await api.deleteChatImage(photo.imageId); } catch { /* The gallery entry is already gone locally. */ }
   }
 
+  private pause(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Holds a finished reply back for as long as it would plausibly have taken to
+   * write, so the character reads as someone typing rather than a service responding.
+   *
+   * Three things are being imitated. Reading what you said before starting. Typing
+   * time that scales with what she actually wrote. And second thoughts: sometimes the
+   * dots stop partway, sit quiet for a beat, and start again — the shape a message
+   * that got half-typed, deleted, and rewritten leaves in a chat window.
+   *
+   * The generation time already spent counts against all of it, so a slow model does
+   * not pay twice; on a slow backend this adds nothing at all. The total is capped
+   * because charm wears off fast when you are waiting for it.
+   */
+  private async typeLikeAPerson(text: string, spentMs: number) {
+    const jitter = (base: number) => base * (0.7 + Math.random() * 0.6);
+    // ~22 characters a second, which reads as a quick but human phone typist.
+    const budget = Math.min(7000, jitter(420 + text.length * 45));
+    let remaining = Math.max(0, budget - spentMs);
+    if (remaining < 120) return;
+
+    this.typingPhase = "thinking";
+    const reading = Math.min(remaining, jitter(500));
+    await this.pause(reading);
+    remaining -= reading;
+
+    // Longer messages are likelier to get rewritten, and never on a one-liner: an
+    // eight-word reply that visibly took three attempts is a tell, not a texture.
+    if (text.length > 90 && remaining > 900 && Math.random() < 0.35) {
+      const firstAttempt = remaining * (0.3 + Math.random() * 0.3);
+      this.typingPhase = "typing";
+      await this.pause(firstAttempt);
+      this.typingPhase = "thinking";
+      const reconsider = jitter(650);
+      await this.pause(reconsider);
+      remaining -= firstAttempt + reconsider;
+    }
+    if (remaining > 0) {
+      this.typingPhase = "typing";
+      await this.pause(remaining);
+    }
+    this.typingPhase = "idle";
+  }
+
   /**
    * Produces one assistant turn from the conversation's own history and appends it.
    *
@@ -759,9 +816,9 @@ export class OppaiChat extends LitElement {
       const line = continuation
         ? libbyReact("idle", { intensity: progression.intensity })
         : libbyReply(seed, conversation.mode, normalizeEmotion(conversation.emotion), progression.intensity, false);
-      await new Promise((resolve) => setTimeout(resolve, 350 + Math.random() * 450));
+      await this.typeLikeAPerson(line.message, 0);
       const live = this.liveConversation(conversationID);
-      if (!live) { this.busy = false; return false; }
+      if (!live) { this.busy = false; this.typingPhase = "idle"; return false; }
       live.emotion = line.emotion; live.progress = progression.progress; live.intensity = setIntensity(progression.intensity);
       live.messages.push({ id:newID(), role:"assistant", content:line.message, at:Date.now() });
       live.updatedAt = Date.now(); this.busy = false; this.touchWorkspace(); void this.scrollToEnd(); return true;
@@ -771,15 +828,28 @@ export class OppaiChat extends LitElement {
       // A nudge, not a message: it steers this one request and is never stored, so
       // the log stays a record of what was actually said.
       if (continuation) history.push({ role:"user", content:"(Continue the scene on your own. Speak or act again without waiting for a reply, and do not answer for me.)" });
+      const startedAt = Date.now();
+      this.typingPhase = "typing";
       const result = await api.chat(conversation.mode, history, conversation.emotion, conversation.intensity, conversation.options, character.id, photoTags, photoImageID);
+      // Whatever the model already spent counts as time she was "writing", so this
+      // only ever tops the wait up to something human — never adds a full delay on
+      // top of a slow generation.
+      await this.typeLikeAPerson(result.message, Date.now() - startedAt);
       // Deleting the conversation mid-generation is the one case with nowhere to
       // put the reply; dropping it is correct, and the user asked for that.
       const live = this.liveConversation(conversationID);
       if (!live) return false;
       live.emotion = normalizeEmotion(result.emotion ?? live.emotion);
       const requested = normalizeIntensity(result.intensity ?? live.intensity);
-      const progression = applyProgression(live.progress ?? live.intensity, requested - live.intensity);
-      live.progress = progression.progress; live.intensity = setIntensity(progression.intensity);
+      if (result.declared) {
+        // The character named this mood, so it lands where it asked. Running it
+        // through the drift multiplier is what used to halve every deliberate swing:
+        // a jump from 1 to 5 arrived as a 3, and the scene never caught up.
+        live.progress = requested; live.intensity = setIntensity(requested);
+      } else {
+        const progression = applyProgression(live.progress ?? live.intensity, requested - live.intensity);
+        live.progress = progression.progress; live.intensity = setIntensity(progression.intensity);
+      }
       live.messages.push({ id:newID(), role:"assistant", content:result.message, at:Date.now(), imageId:result.imageId || undefined });
       live.updatedAt = Date.now(); this.touchWorkspace(); void this.scrollToEnd();
       return true;
@@ -787,10 +857,11 @@ export class OppaiChat extends LitElement {
       if (this.status?.configured || this.status?.modelBackend) {
         try { this.status = await api.chatStatus(); } catch { /* Keep the generation error when the readiness check also fails. */ }
       }
+      this.typingPhase = "idle";
       this.say(!this.status?.enabled && this.status?.message ? this.status.message : (error as Error).message, true);
       return false;
     }
-    finally { this.busy = false; }
+    finally { this.busy = false; this.typingPhase = "idle"; }
   }
 
   /**
@@ -1035,17 +1106,18 @@ export class OppaiChat extends LitElement {
    * needs the room.
    */
   /**
-   * The picture to show for a character at a given mood.
+   * The artwork to show for a character at a given mood.
    *
-   * Libby has a drawn sprite per emotion and intensity, so she is the one who can
-   * actually emote; anyone else has a single card portrait and simply holds it.
-   * `preferSprite` is what the call uses: an emotion-reactive pose is the whole
-   * point there, so her wardrobe outranks a portrait that would never change.
+   * Sprites only — deliberately not the character's pfp. A pfp is a face for the
+   * message log, and blowing it up to fill the stage and the call screen meant
+   * setting one changed the character everywhere at once. Somewhere that is supposed
+   * to react to mood is the wrong place for a picture that cannot.
+   *
+   * So this is the emotion-reactive wardrobe or nothing: today only Libby has one,
+   * which is why other characters currently have no stage art and cannot be called.
    */
-  private spriteFor(character: ChatCharacter, emotion: LibbyEmotion, intensity: number, preferSprite = false): string[] {
-    const wardrobe = character.id === "libby" ? libbyAssetCandidates(emotion, intensity, loadLibbyOutfit()) : [];
-    const portrait = character.avatarImageId ? [api.chatImageURL(character.avatarImageId)] : [];
-    return preferSprite && wardrobe.length ? wardrobe : [...portrait, ...wardrobe];
+  private spriteFor(character: ChatCharacter, emotion: LibbyEmotion, intensity: number): string[] {
+    return character.id === "libby" ? libbyAssetCandidates(emotion, intensity, loadLibbyOutfit()) : [];
   }
 
   // --- Video call -----------------------------------------------------------
@@ -1057,7 +1129,7 @@ export class OppaiChat extends LitElement {
   private startCall() {
     const character = this.activeCharacter;
     if (!character) return;
-    if (!this.spriteFor(character, "neutral", 1, true).length) {
+    if (!this.spriteFor(character, "neutral", 1).length) {
       this.say(`${character.name} has no picture to show — set one on their character card first.`, true);
       return;
     }
@@ -1076,7 +1148,7 @@ export class OppaiChat extends LitElement {
   private renderCall(character: ChatCharacter, conversation: ChatConversation) {
     if (!this.callOpen) return nothing;
     const emotion = normalizeEmotion(conversation.emotion), intensity = normalizeIntensity(conversation.intensity);
-    const assets = this.spriteFor(character, emotion, intensity, true);
+    const assets = this.spriteFor(character, emotion, intensity);
     const spoken = [...conversation.messages].reverse().find((message) => message.role === "assistant");
     const clock = `${Math.floor(this.callSeconds / 60)}:${String(this.callSeconds % 60).padStart(2, "0")}`;
     return html`<div class="call" role="dialog" aria-modal="true" aria-label=${`Video call with ${character.name}`}>
@@ -1471,8 +1543,8 @@ export class OppaiChat extends LitElement {
         ${this.settingsOpen?this.renderSettings():nothing}
         ${this.status?.modelBackend && !this.status.enabled ? html`<div class="backend-state" role="status"><strong>Text generation offline.</strong> ${this.status.message || "Load a model in text-generation-webui, then refresh status."}</div>` : nothing}
         ${this.renderAutopilotBar(character)}
-        <section class="log"><div class="intro">${this.avatar(character,"round")}<h2>${character.name}</h2><p>${character.description || `This is the beginning of your conversation with ${character.name}.`}${this.status?.enabled?` Running on ${this.status.model}.`:character.id === "libby" ? " Libby is using built-in local replies." : " Connect a local model to start chatting."}</p></div>
-          ${conversation.messages.map((message,index)=>this.renderEntry(message,conversation.messages[index-1]))}${this.busy?html`<div class="typing"><span class="dots"><i></i><i></i><i></i></span><b>${character.name}</b> is typing…</div>`:nothing}
+        <section class="log">${conversation.messages.length ? nothing : html`<div class="intro">${this.avatar(character,"round")}<h2>${character.name}</h2><p>${character.description || `This is the beginning of your conversation with ${character.name}.`}${this.status?.enabled?` Running on ${this.status.model}.`:character.id === "libby" ? " Libby is using built-in local replies." : " Connect a local model to start chatting."}</p></div>`}
+          ${conversation.messages.map((message,index)=>this.renderEntry(message,conversation.messages[index-1]))}${this.busy&&this.typingPhase==="typing"?html`<div class="typing"><span class="dots"><i></i><i></i><i></i></span><b>${character.name}</b> is typing…</div>`:nothing}
         </section>${this.notice?html`<div class="notice ${this.noticeError?"error":""}" role=${this.noticeError?"alert":"status"}>${this.notice}</div>`:nothing}
         <form class="composer-form" @submit=${(event:Event)=>{event.preventDefault();void this.send();}}>
           ${this.pendingPhoto ? html`<div class="attachment"><img src=${api.chatImageURL(this.pendingPhoto.imageId)} alt=${`Attached photo: ${this.pendingPhoto.name}`}/>

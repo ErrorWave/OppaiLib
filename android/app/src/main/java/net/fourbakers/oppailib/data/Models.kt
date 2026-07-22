@@ -193,6 +193,12 @@ data class ChatResponse(
     val emotion: String = "neutral",
     val intensity: Int = 1,
     val imageId: String = "",
+    /**
+     * True when the character stated its own mood rather than one being inferred.
+     * A stated mood is applied as-is; an inferred one drifts by the session
+     * multiplier. Absent from older servers, which is treated as inferred.
+     */
+    val declared: Boolean = false,
 )
 
 @Serializable

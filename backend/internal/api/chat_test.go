@@ -205,3 +205,139 @@ func TestChatStatusReportsReachableBackendWithNoLoadedModel(t *testing.T) {
 		t.Fatalf("generation without a model: %d %s calls=%d", rec.Code, rec.Body, generationCalls)
 	}
 }
+
+// Models drift from the mood-tag spelling they are given: the directive asks for
+// "[mood: happy 3]" and a capable model answers "[Mood: Happy & Excited 9]". The
+// original pattern accepted only a single lowercase word and a literal 1-5, so those
+// replies kept their tag as visible prose and never moved the face — which is exactly
+// how the feature was reported broken. Each case here is a real observed shape.
+func TestSplitMoodAcceptsModelDrift(t *testing.T) {
+	cases := []struct {
+		name      string
+		reply     string
+		emotion   string
+		intensity int
+	}{
+		{"as specified", "Hey you.\n[mood: happy 3]", "happy", 3},
+		{"reported shape", "Hey you.\n[ Mood : Happy & Excited 9 ]", "happy", 5},
+		{"title case", "Hey you.\n[Mood: Mischievous 4]", "mischievous", 4},
+		{"synonym", "Hey you.\n[mood: flirty 5]", "mischievous", 5},
+		{"first word wins", "Hey you.\n[mood: happy and teasing 2]", "happy", 2},
+		{"markdown wrapped", "Hey you.\n**[mood: surprised 4]**", "surprised", 4},
+		{"no intensity", "Hey you.\n[mood: thinking]", "thinking", 0},
+		{"legacy alias", "Hey you.\n[mood: worried 2]", "thinking", 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			text, emotion, intensity, ok := splitMood(tc.reply)
+			if !ok || emotion != tc.emotion || intensity != tc.intensity {
+				t.Fatalf("got (%q,%d,%v), want (%q,%d,true)", emotion, intensity, ok, tc.emotion, tc.intensity)
+			}
+			if text != "Hey you." {
+				t.Fatalf("tag left in prose: %q", text)
+			}
+		})
+	}
+}
+
+// A tag whose label means nothing to us still must not reach the user, and a tag the
+// character wrote mid-scene as dialogue still must not move the face.
+func TestSplitMoodStripsUnreadableTagAndIgnoresMidScene(t *testing.T) {
+	text, emotion, _, ok := splitMood("Hey you.\n[mood: peckish 2]")
+	if ok || emotion != "" {
+		t.Fatalf("unknown label was accepted as %q", emotion)
+	}
+	if text != "Hey you." {
+		t.Fatalf("unreadable tag left in prose: %q", text)
+	}
+
+	midScene := "She read the sign: [mood: happy 3], it said, and laughed."
+	if got, _, _, ok := splitMood(midScene); ok || got != midScene {
+		t.Fatalf("mid-scene tag was consumed: %q ok=%v", got, ok)
+	}
+}
+
+// The character picks a picture by naming tags, which is the only handle a text-only
+// model can use sensibly. As with the mood tag, the directive must never survive into
+// the prose the user reads — and it arrives on either side of the mood tag, because
+// models order trailing directives however they like.
+func TestSplitPhotoRequestAndResolution(t *testing.T) {
+	ws := chatWorkspace{Images: []chatImage{
+		{ID: "a", CharacterID: "libby", Tags: []string{"beach", "bikini", "smiling"}},
+		{ID: "b", CharacterID: "libby", Tags: []string{"bedroom", "lingerie", "lying down"}},
+		{ID: "c", CharacterID: "other", Tags: []string{"bedroom", "lingerie"}},
+	}}
+
+	for _, order := range []string{
+		"Here, look.\n[send: bedroom lingerie]\n[mood: mischievous 4]",
+		"Here, look.\n[mood: mischievous 4]\n[send: bedroom lingerie]",
+	} {
+		text, request, asked := splitPhotoRequest(order)
+		if !asked {
+			text, _, _, _ = splitMood(text)
+			text, request, asked = splitPhotoRequest(text)
+		} else {
+			text, _, _, _ = splitMood(text)
+		}
+		if !asked {
+			t.Fatalf("no photo request found in %q", order)
+		}
+		if text != "Here, look." {
+			t.Fatalf("directive left in prose: %q", text)
+		}
+		if got := requestedChatImage(ws, "libby", request, ""); got != "b" {
+			t.Fatalf("resolved to %q, want b", got)
+		}
+	}
+
+	// Another character's gallery is not hers to send from.
+	if got := requestedChatImage(ws, "libby", "nothing like this at all", ""); got != "" {
+		t.Fatalf("unmatched request resolved to %q", got)
+	}
+	if got := requestedChatImage(ws, "libby", "beach bikini", "a"); got != "" {
+		t.Fatalf("excluded image was returned: %q", got)
+	}
+}
+
+// The catalogue is what makes the pictures callable: without tags in the prompt the
+// model has nothing to name. Untagged pictures are omitted precisely because a
+// request naming them could never resolve.
+func TestPhotoCatalogueListsOnlyCallablePictures(t *testing.T) {
+	ws := chatWorkspace{Images: []chatImage{
+		{ID: "a", CharacterID: "libby", Tags: []string{"beach", "bikini"}},
+		{ID: "b", CharacterID: "libby", Tags: nil},
+		{ID: "c", CharacterID: "other", Tags: []string{"kitchen"}},
+	}}
+	catalogue := photoCatalogue(ws, "libby")
+	if !strings.Contains(catalogue, "beach, bikini") {
+		t.Fatalf("tagged picture missing from catalogue: %q", catalogue)
+	}
+	if strings.Contains(catalogue, "kitchen") {
+		t.Fatalf("another character's picture leaked into the catalogue: %q", catalogue)
+	}
+	if !strings.Contains(catalogue, "[send:") {
+		t.Fatalf("catalogue never says how to send: %q", catalogue)
+	}
+	if photoCatalogue(chatWorkspace{}, "libby") != "" {
+		t.Fatal("a character with no pictures should contribute no catalogue")
+	}
+}
+
+// horny is a mode, not a pose: it must be selectable everywhere a mode is validated,
+// and must not have quietly become an emotion.
+func TestHornyModeIsAModeNotAnEmotion(t *testing.T) {
+	if _, ok := libbyModes["horny"]; !ok {
+		t.Fatal("horny is not a selectable mode")
+	}
+	if modeStyles["horny"] == "" {
+		t.Fatal("horny has no character-neutral style for imported cards")
+	}
+	if supportedLibbyEmotions["horny"] {
+		t.Fatal("horny leaked into the emotion vocabulary, which has no artwork for it")
+	}
+	for mode := range libbyModes {
+		if modeStyles[mode] == "" {
+			t.Fatalf("mode %q has no style text, so cards played in it get no direction", mode)
+		}
+	}
+}
