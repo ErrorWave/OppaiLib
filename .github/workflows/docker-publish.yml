@@ -198,6 +198,11 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
+          # metadata-action automatically adds :latest for tag events unless this
+          # is disabled. A tagged lean build must never overwrite the full ONNX
+          # :latest image used by the Unraid template.
+          flavor: |
+            latest=false
           tags: |
             type=raw,value=lean,enable={{is_default_branch}}
             type=sha,format=short,prefix=lean-
