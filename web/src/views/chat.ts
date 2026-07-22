@@ -101,6 +101,8 @@ export class OppaiChat extends LitElement {
   @state() private mobileNavOpen = false;
   @query(".log") private log?: HTMLElement;
   private saveTimer = 0;
+  /** Bumped on every local mutation so an in-flight save can tell it went stale. */
+  private editSeq = 0;
   private idleTimer = 0;
   private noticeTimer = 0;
   private resize?: ResizeObserver;
@@ -262,13 +264,40 @@ export class OppaiChat extends LitElement {
 
   private touchWorkspace() {
     this.workspace = { ...this.workspace, characters: [...this.workspace.characters], conversations: [...this.workspace.conversations], images: [...this.workspace.images] };
+    this.editSeq++;
     window.clearTimeout(this.saveTimer); this.saveTimer = window.setTimeout(() => void this.saveWorkspace(), 450);
   }
 
   private async saveWorkspace() {
     window.clearTimeout(this.saveTimer);
-    try { this.workspace = await api.saveChatWorkspace(this.workspace); }
+    const seq = this.editSeq;
+    try {
+      const saved = await api.saveChatWorkspace(this.workspace);
+      // Only adopt the server's copy when nothing changed locally while the PUT
+      // was in flight. A reply that arrives mid-request was never in the payload,
+      // so overwriting with the response would silently discard it — and
+      // touchWorkspace has already scheduled the save that will persist it.
+      if (seq === this.editSeq) this.workspace = saved;
+    }
     catch (error) { this.say(`Couldn't save chat: ${(error as Error).message}`, true); }
+  }
+
+  /**
+   * Re-resolves a conversation by id, and must be used after every await.
+   *
+   * saveWorkspace() replaces this.workspace wholesale with the server's parsed
+   * response, so every conversation becomes a new object. A reference captured
+   * before an await is orphaned the moment the 450ms autosave fires, and
+   * mutating it still "succeeds" while writing into something nothing renders.
+   * That is silent: a reply generated in more than 450ms simply vanishes.
+   */
+  private liveConversation(id: string): ChatConversation | undefined {
+    return this.workspace.conversations.find((conversation) => conversation.id === id);
+  }
+
+  /** Characters are replaced by the same autosave; see liveConversation. */
+  private liveCharacter(id: string): ChatCharacter | undefined {
+    return this.workspace.characters.find((character) => character.id === id);
   }
 
   private async scrollToEnd(smooth = true) {
@@ -351,6 +380,9 @@ export class OppaiChat extends LitElement {
   private async send() {
     const content = this.draft.trim(), conversation = this.activeConversation, character = this.activeCharacter;
     if (!content || !conversation || !character || this.busy) return;
+    // Everything after an await must go through liveConversation(id): this object
+    // is replaced by the autosave that fires 450ms from now.
+    const conversationID = conversation.id;
     const userMessage: StoredChatMessage = { id:newID(), role:"user", content, at:Date.now() };
     conversation.messages.push(userMessage); conversation.updatedAt = Date.now();
     if (conversation.title === "New conversation") conversation.title = content.slice(0, 42);
@@ -363,19 +395,25 @@ export class OppaiChat extends LitElement {
       const progression = applyProgression(conversation.progress ?? conversation.intensity, libbyHeatDelta(content, conversation.mode));
       const line = libbyReply(content, conversation.mode, normalizeEmotion(conversation.emotion), progression.intensity, false);
       await new Promise((resolve) => setTimeout(resolve, 350 + Math.random() * 450));
-      conversation.emotion = line.emotion; conversation.progress = progression.progress; conversation.intensity = setIntensity(progression.intensity);
-      conversation.messages.push({ id:newID(), role:"assistant", content:line.message, at:Date.now() });
-      conversation.updatedAt = Date.now(); this.busy = false; this.touchWorkspace(); void this.scrollToEnd(); return;
+      const live = this.liveConversation(conversationID);
+      if (!live) { this.busy = false; return; }
+      live.emotion = line.emotion; live.progress = progression.progress; live.intensity = setIntensity(progression.intensity);
+      live.messages.push({ id:newID(), role:"assistant", content:line.message, at:Date.now() });
+      live.updatedAt = Date.now(); this.busy = false; this.touchWorkspace(); void this.scrollToEnd(); return;
     }
     try {
       const history: ChatMessage[] = conversation.messages.map(({ role, content:text }) => ({ role, content:text }));
       const result = await api.chat(conversation.mode, history, conversation.emotion, conversation.intensity, conversation.options, character.id);
-      conversation.emotion = normalizeEmotion(result.emotion ?? conversation.emotion);
-      const requested = normalizeIntensity(result.intensity ?? conversation.intensity);
-      const progression = applyProgression(conversation.progress ?? conversation.intensity, requested - conversation.intensity);
-      conversation.progress = progression.progress; conversation.intensity = setIntensity(progression.intensity);
-      conversation.messages.push({ id:newID(), role:"assistant", content:result.message, at:Date.now(), imageId:result.imageId || undefined });
-      conversation.updatedAt = Date.now(); this.touchWorkspace(); void this.scrollToEnd();
+      // Deleting the conversation mid-generation is the one case with nowhere to
+      // put the reply; dropping it is correct, and the user asked for that.
+      const live = this.liveConversation(conversationID);
+      if (!live) return;
+      live.emotion = normalizeEmotion(result.emotion ?? live.emotion);
+      const requested = normalizeIntensity(result.intensity ?? live.intensity);
+      const progression = applyProgression(live.progress ?? live.intensity, requested - live.intensity);
+      live.progress = progression.progress; live.intensity = setIntensity(progression.intensity);
+      live.messages.push({ id:newID(), role:"assistant", content:result.message, at:Date.now(), imageId:result.imageId || undefined });
+      live.updatedAt = Date.now(); this.touchWorkspace(); void this.scrollToEnd();
     } catch (error) {
       if (this.status?.configured || this.status?.modelBackend) {
         try { this.status = await api.chatStatus(); } catch { /* Keep the generation error when the readiness check also fails. */ }
@@ -419,7 +457,12 @@ export class OppaiChat extends LitElement {
         const character = await characterFromPNG(file) ?? { id:newID(), name:file.name.replace(/\.[^.]+$/, "") || "New friend", promptWeight:1, defaultMode:"sweet" };
         this.workspace.characters.push(character); this.characterID = character.id; await this.saveWorkspace();
         const image = await api.uploadChatImage({ characterId:character.id, name:`${character.name} avatar`, imageData:await this.readDataURL(file), tags:["portrait"] });
-        this.workspace.images.push(image); character.avatarImageId = image.id; this.touchWorkspace(); this.newConversation(false); this.say("Friend added and image scanned."); return;
+        this.workspace.images.push(image);
+        // saveWorkspace() above always replaces the workspace, so the portrait has
+        // to be attached to the stored character rather than the local one.
+        const stored = this.liveCharacter(character.id);
+        if (stored) stored.avatarImageId = image.id;
+        this.touchWorkspace(); this.newConversation(false); this.say("Friend added and image scanned."); return;
       }
       const character = characterFromCard(JSON.parse(await file.text()) as Record<string, unknown>, file.name.replace(/\.json$/i, ""));
       this.workspace.characters.push(character); this.characterID = character.id; this.touchWorkspace(); this.newConversation(false); this.say(`${character.name} joined your friends.`);
@@ -437,7 +480,9 @@ export class OppaiChat extends LitElement {
       this.say("Scanning image locally…");
       const tags = this.imageTags.split(",").map((tag) => tag.trim()).filter(Boolean);
       const image = await api.uploadChatImage({ characterId:character.id, name:file.name, imageData:await this.readDataURL(file), tags });
-      this.workspace.images.push(image); if (!character.avatarImageId) character.avatarImageId = image.id;
+      this.workspace.images.push(image);
+      const stored = this.liveCharacter(character.id);
+      if (stored && !stored.avatarImageId) stored.avatarImageId = image.id;
       this.imageTags = ""; this.touchWorkspace(); this.say(`Image scanned: ${image.tags.join(", ") || "no content tags found"}.`);
     } catch (error) { this.say((error as Error).message, true); }
     finally { (event.target as HTMLInputElement).value = ""; }
