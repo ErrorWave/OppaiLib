@@ -577,7 +577,14 @@ func findChatCharacter(ws chatWorkspace, id string) (chatCharacter, bool) {
 	return chatCharacter{}, false
 }
 
-func matchingChatImage(ws chatWorkspace, characterID, text string) string {
+// matchingChatImage picks the character's picture whose tags best fit the exchange,
+// so a reply can carry an image without one being asked for.
+//
+// excludeID drops a candidate from consideration. That is what keeps a photo the
+// user has just shared from being handed straight back to them: its tags were fed
+// into the prompt, so the reply echoes them and it would otherwise always outscore
+// every other picture in the gallery.
+func matchingChatImage(ws chatWorkspace, characterID, text, excludeID string) string {
 	words := map[string]bool{}
 	for _, word := range strings.FieldsFunc(strings.ToLower(text), func(r rune) bool { return !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') }) {
 		if len(word) >= 3 {
@@ -586,7 +593,7 @@ func matchingChatImage(ws chatWorkspace, characterID, text string) string {
 	}
 	bestID, best := "", 0
 	for _, img := range ws.Images {
-		if img.CharacterID != characterID {
+		if img.CharacterID != characterID || (excludeID != "" && img.ID == excludeID) {
 			continue
 		}
 		score := 0

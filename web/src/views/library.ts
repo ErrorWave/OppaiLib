@@ -1,10 +1,12 @@
 import { LitElement, html, css, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import { api, mascotSay, type Media, type User } from "../api.js";
+import { api, mascotSay, type ChatCharacter, type Media, type User } from "../api.js";
+import { canShare, shareWithCharacter } from "../chat-share.js";
 import { libbyReact } from "../libby-voice.js";
-import { iconStyles, motionStyles } from "../theme.js";
+import { iconStyles, motionStyles, loadTheme, saveTheme, applyTheme } from "../theme.js";
 import { logoSVG } from "../logo.js";
 import { dismissDownload, downloadTasks, type DownloadTask } from "../downloads.js";
+import { menuDivider, nativeMenuWanted, openMenu, type MenuItem } from "../context-menu.js";
 import {
   KIND_META,
   KIND_ORDER,
@@ -17,6 +19,7 @@ import {
   saveFavorites,
   isTypingTarget,
 } from "../media-meta.js";
+import "../context-menu.js";
 import "./viewer.js";
 import "./scrape-dialog.js";
 import "./settings.js";
@@ -672,15 +675,142 @@ export class OppaiLibrary extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     this.refresh();
+    // The shell's menu is the fallback for the whole app: it catches right-clicks
+    // that bubble out of any view, including through a child's shadow root. A view
+    // that built its own menu has already called preventDefault, which is how the
+    // two stay out of each other's way (see onContextMenu).
+    this.addEventListener("contextmenu", this.onContextMenu);
     window.addEventListener("keydown", this.onKey);
     window.addEventListener("oppai-downloads", this.onDownloads as EventListener);
     window.addEventListener("oppai-download-complete", this.onDownloadComplete);
   }
   disconnectedCallback() {
     super.disconnectedCallback();
+    this.removeEventListener("contextmenu", this.onContextMenu);
     window.removeEventListener("keydown", this.onKey);
     window.removeEventListener("oppai-downloads", this.onDownloads as EventListener);
     window.removeEventListener("oppai-download-complete", this.onDownloadComplete);
+  }
+
+  /**
+   * The application-wide right-click menu.
+   *
+   * Three cases, most specific first: a library tile acts on that item, a nav entry
+   * jumps to that section, and anything else gets the shell menu. A view that owns
+   * its own menu (Chat) has already handled the event, and text fields keep the
+   * browser's own menu so Paste stays reachable.
+   */
+  private onContextMenu = (event: MouseEvent) => {
+    if (event.defaultPrevented || nativeMenuWanted(event)) return;
+    const path = event.composedPath();
+    const at = (selector: string) =>
+      path.find((node) => (node as HTMLElement)?.classList?.contains?.(selector)) as HTMLElement | undefined;
+
+    const tileID = Number(at("tile")?.dataset.id);
+    const items = Number.isFinite(tileID) && tileID > 0
+      ? this.tileMenuItems(tileID, event)
+      : this.shellMenuItems();
+    if (!items.length) return;
+    event.preventDefault();
+    openMenu({ x: event.clientX, y: event.clientY, items });
+  };
+
+  private tileMenuItems(id: number, event: MouseEvent): MenuItem[] {
+    const item = this.items.find((m) => m.id === id);
+    if (!item) return [];
+    const fav = this.favorites.has(id);
+    return [
+      { label: "Open", icon: "open_in_full", run: () => this.openItem(id) },
+      { label: fav ? "Remove from favorites" : "Add to favorites", icon: fav ? "heart_minus" : "favorite", run: () => this.toggleFavorite(id) },
+      { label: this.selectMode ? "Toggle selection" : "Select items", icon: "check_box", run: () => this.selectMode ? this.toggleSelected(id) : this.toggleSelectMode() },
+      menuDivider,
+      // Disabled rather than hidden when there is nothing showable: the entry not
+      // being there reads as "this build can't do it" instead of "not this item".
+      { label: "Share with…", icon: "ios_share", disabled: !canShare(item),
+        run: () => void this.openShareMenu(item, event.clientX, event.clientY) },
+      { label: "Copy title", icon: "content_copy", run: () => void navigator.clipboard.writeText(item.title) },
+      { label: "Open the file", icon: "open_in_new", run: () => window.open(api.streamURL(id), "_blank") },
+      menuDivider,
+      { label: "Delete", icon: "delete", danger: true, run: () => void this.deleteOne(id) },
+    ];
+  }
+
+  /**
+   * Second step of "Share with…": the characters to choose from.
+   *
+   * The workspace is fetched here rather than kept loaded, so a library session that
+   * never shares anything never asks for it. The menu re-opens at the same point the
+   * first one did, which reads as the submenu it stands in for.
+   */
+  private async openShareMenu(item: Media, x: number, y: number) {
+    let characters: ChatCharacter[] = [];
+    try {
+      characters = (await api.chatWorkspace()).characters ?? [];
+    } catch (error) {
+      mascotSay((error as Error).message || "Couldn't load your chat characters.", "error");
+      return;
+    }
+    if (!characters.length) {
+      mascotSay("No chat characters yet — add one in Chat first.", "error");
+      return;
+    }
+    openMenu({
+      x, y, title: `Share "${item.title}" with`,
+      items: characters.map((character) => ({
+        label: character.name, icon: "person",
+        run: () => void this.share(item, character),
+      })),
+    });
+  }
+
+  private async share(item: Media, character: ChatCharacter) {
+    try {
+      await shareWithCharacter(item, character.id);
+      // Only switch once the bytes are in hand: landing in Chat and then failing
+      // would leave the user in the wrong view with nothing to show for it.
+      this.selectSection("chat");
+    } catch (error) {
+      mascotSay((error as Error).message || `Couldn't share with ${character.name}.`, "error");
+    }
+  }
+
+  private shellMenuItems(): MenuItem[] {
+    const dark = loadTheme() !== "light";
+    return [
+      { label: "Add media", icon: "add", run: () => this.toggleUpload() },
+      { label: "Import from a URL", icon: "link", run: () => this.openScrape() },
+      { label: "Refresh library", icon: "refresh", run: () => void this.refresh() },
+      menuDivider,
+      { label: "Home", icon: "home", run: () => this.selectSection("home") },
+      { label: "Favorites", icon: "favorite", run: () => this.selectSection("favorites") },
+      { label: "Chat", icon: "chat_bubble", run: () => this.selectSection("chat") },
+      { label: "Create", icon: "auto_awesome", run: () => this.selectSection("imagegen") },
+      menuDivider,
+      { label: dark ? "Switch to light theme" : "Switch to dark theme", icon: dark ? "light_mode" : "dark_mode", run: () => this.flipTheme() },
+      { label: "Settings", icon: "settings", run: () => this.selectSection("settings") },
+    ];
+  }
+
+  private flipTheme() {
+    const next = loadTheme() === "light" ? "dark" : "light";
+    saveTheme(next);
+    applyTheme(next);
+  }
+
+  /** Deletes one item, used by the tile menu — the bulk bar handles selections. */
+  private async deleteOne(id: number) {
+    const item = this.items.find((m) => m.id === id);
+    if (!item || !confirm(`Delete "${item.title}"? This cannot be undone.`)) return;
+    this.busy = true;
+    try {
+      await api.deleteMedia(id);
+      if (this.selectedId === id) this.closeItem();
+      await this.refresh();
+    } catch (err) {
+      mascotSay(`Couldn't delete that: ${(err as Error).message}`, "error");
+    } finally {
+      this.busy = false;
+    }
   }
 
   private onDownloads = (event: CustomEvent<DownloadTask[]>) => {
@@ -988,6 +1118,7 @@ export class OppaiLibrary extends LitElement {
       ${this.renderBulkBar()}
       ${this.renderDownloads()}
       <oppai-scrape-dialog @imported=${() => this.refresh()}></oppai-scrape-dialog>
+      <oppai-context-menu></oppai-context-menu>
       <input id="file" type="file" multiple @change=${this.onFileInput} />
     `;
   }
@@ -1300,6 +1431,7 @@ export class OppaiLibrary extends LitElement {
     return html`
       <div
         class=${cls}
+        data-id=${m.id}
         @click=${() => (this.selectMode ? this.toggleSelected(m.id) : this.openItem(m.id, list))}
         style="flex-shrink:0; width:${width}; ${delay}"
       >

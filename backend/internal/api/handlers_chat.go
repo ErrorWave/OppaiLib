@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -14,6 +16,9 @@ import (
 const (
 	maxChatMessages = 80
 	maxChatText     = 32 << 10
+	// Enough to characterise a picture without letting a pathological tagger run
+	// flood the system prompt and crowd out the character card.
+	maxPhotoTags = 24
 )
 
 type chatMessage struct {
@@ -27,6 +32,12 @@ type chatRequest struct {
 	CharacterID string        `json:"characterId,omitempty"`
 	Emotion     string        `json:"emotion,omitempty"`
 	Intensity   int           `json:"intensity,omitempty"`
+	// PhotoTags describes a picture the user attached to their latest message. The
+	// tags come from the local tagger, not from the model: nothing here requires a
+	// multimodal backend, so a text-only model can still react to what was shared.
+	PhotoTags []string `json:"photoTags,omitempty"`
+	// PhotoImageID is that picture's id, so the reply-attachment picker can skip it.
+	PhotoImageID string `json:"photoImageId,omitempty"`
 	// Options is a future-proof pass-through for text-generation-webui's full
 	// ChatCompletionRequest surface (samplers, presets, character fields,
 	// templates, grammar, thinking controls, stop strings, and new additions).
@@ -42,6 +53,62 @@ var libbyModes = map[string]string{
 	"playful":  "You are Libby, OppaiLib's mischievous adult mascot. Be teasing, energetic, witty, and direct. You may discuss explicit adult topics when the user asks, without being coy.",
 	"bold":     "You are Libby, OppaiLib's confident adult mascot. Be uninhibited, vivid, and direct about consensual adult NSFW topics. Never involve minors, coercion, or real-person sexual exploitation.",
 	"roleplay": "You are Libby, OppaiLib's adult roleplay partner. Stay in character, write immersive responses, and follow the user's consensual adult scenario. Never involve minors, coercion, or real-person sexual exploitation.",
+}
+
+// moodDirective lets the character choose the face it shows instead of having one
+// guessed from keywords after the fact. The tag is stripped before the reply is
+// stored, so it never reaches the log; a model that ignores the instruction simply
+// falls back to inferChatEmotion, which is why this is additive rather than relied on.
+const moodDirective = "End every reply with a mood tag on its own final line, in exactly this form: [mood: <feeling> <1-5>]. " +
+	"<feeling> is one of neutral, happy, surprised, thinking, mischievous, and 1-5 is how strongly you feel it. " +
+	"Choose the mood that genuinely fits what you just said and let it shift over the conversation. " +
+	"Write nothing after the tag and never refer to it in your prose."
+
+// moodTag captures the trailing directive above. Anchored to the end so a character
+// writing "[mood: ...]" mid-scene as dialogue is left alone.
+var moodTag = regexp.MustCompile(`(?is)\n*\s*\[\s*mood\s*:\s*([a-z]+)\s*([1-5])?\s*\]\s*$`)
+
+// splitMood pulls the mood tag off a reply, returning the cleaned text plus what the
+// character asked to display. ok is false when no tag was present.
+func splitMood(reply string) (text, emotion string, intensity int, ok bool) {
+	match := moodTag.FindStringSubmatch(reply)
+	if match == nil {
+		return reply, "", 0, false
+	}
+	text = strings.TrimSpace(moodTag.ReplaceAllString(reply, ""))
+	// A reply that is *only* a mood tag is not a reply; keep the original so the
+	// caller's "no message" check reports the real problem.
+	if text == "" {
+		return reply, "", 0, false
+	}
+	emotion = strings.ToLower(match[1])
+	if !supportedLibbyEmotions[emotion] {
+		return text, "", 0, false
+	}
+	intensity, _ = strconv.Atoi(match[2])
+	return text, emotion, intensity, true
+}
+
+// photoDirective describes a picture the user attached, using the local tagger's
+// output. Tags are the vocabulary of the rest of the app, but they read as metadata
+// rather than as something seen, so the model is told to answer as a viewer.
+func photoDirective(tags []string) string {
+	cleaned := make([]string, 0, len(tags))
+	seen := map[string]bool{}
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" || seen[strings.ToLower(tag)] || len(cleaned) >= maxPhotoTags {
+			continue
+		}
+		seen[strings.ToLower(tag)] = true
+		cleaned = append(cleaned, tag)
+	}
+	if len(cleaned) == 0 {
+		return "The user just shared a photo with you. Respond to it warmly even though you cannot make out its details."
+	}
+	return "The user just shared a photo with you. It was scanned locally and contains: " + strings.Join(cleaned, ", ") + ". " +
+		"React as though you are looking at the picture — describe what stands out and respond in character. " +
+		"Never mention tags, scanning, or that you were given a list."
 }
 
 func (s *Server) handleChatStatus(w http.ResponseWriter, r *http.Request) {
@@ -118,17 +185,41 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if character.ID != "libby" {
 		modePrompt = "You are roleplaying the adult character described below. Stay in character, respond naturally, and follow the selected style. Never involve minors, coercion, or real-person sexual exploitation. Selected style: " + in.Mode + "."
 	}
+	// Ordered, not a map range: Go randomises map iteration, so building the card
+	// from a map literal reshuffled these fields on every request. That made the
+	// prompt differ run to run for an unchanged character, which cost the backend
+	// its prefix cache and let the model weight the card differently each time.
+	// Description before personality before scenario is also the order character
+	// cards are authored in, so the model reads them the way they were written.
+	cardFields := []struct{ label, value string }{
+		{"Description", character.Description},
+		{"Personality", character.Personality},
+		{"Scenario", character.Scenario},
+		{"Example dialogue", character.ExampleDialogue},
+		{"Character instructions", character.SystemPrompt},
+	}
 	cardParts := []string{"Character name: " + character.Name}
-	for label, value := range map[string]string{"Description": character.Description, "Personality": character.Personality, "Scenario": character.Scenario, "Character instructions": character.SystemPrompt, "Example dialogue": character.ExampleDialogue} {
-		if strings.TrimSpace(value) != "" {
-			cardParts = append(cardParts, label+": "+value)
+	for _, field := range cardFields {
+		if strings.TrimSpace(field.value) != "" {
+			cardParts = append(cardParts, field.label+": "+field.value)
 		}
 	}
 	modePrompt += "\n\n" + strings.Join(cardParts, "\n")
 	if ws.Profile.DisplayName != "" || ws.Profile.Persona != "" {
 		modePrompt += fmt.Sprintf("\nUser profile name: %s\nUser persona: %s", ws.Profile.DisplayName, ws.Profile.Persona)
 	}
-	modePrompt += fmt.Sprintf("\nTreat the character-card prompt strength as %.2f. Your current displayed emotion is %s at intensity %d of 5; let that subtly color your wording without announcing the setting.", character.PromptWeight, emotion, in.Intensity)
+	// A card stored before PromptWeight existed unmarshals to 0, and telling the
+	// model to treat the card's strength as 0.00 reads as "ignore everything above".
+	// Absent means unset, not "disabled".
+	weight := character.PromptWeight
+	if weight <= 0 {
+		weight = 1
+	}
+	modePrompt += fmt.Sprintf("\nTreat the character-card prompt strength as %.2f. Your current displayed emotion is %s at intensity %d of 5; let that subtly color your wording without announcing the setting.", weight, emotion, in.Intensity)
+	modePrompt += "\n\n" + moodDirective
+	if len(in.PhotoTags) > 0 {
+		modePrompt += "\n\n" + photoDirective(in.PhotoTags)
+	}
 	if len(in.Messages) == 0 || len(in.Messages) > maxChatMessages {
 		writeErr(w, http.StatusBadRequest, "chat history must contain 1 to 80 messages")
 		return
@@ -207,12 +298,22 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply := strings.TrimSpace(out.Choices[0].Message.Content)
-	emotion = inferChatEmotion(in.Messages[len(in.Messages)-1].Content, reply, emotion)
-	if (in.Mode == "playful" || in.Mode == "bold" || in.Mode == "roleplay") &&
-		strings.Contains(strings.ToLower(in.Messages[len(in.Messages)-1].Content), "flirt") && in.Intensity < 5 {
-		in.Intensity++
+	// What the character says it feels wins over what keywords suggest it feels: the
+	// heuristic only exists for models that drop the tag.
+	reply, declared, declaredLevel, selfDeclared := splitMood(reply)
+	if selfDeclared {
+		emotion = declared
+		if declaredLevel > 0 {
+			in.Intensity = declaredLevel
+		}
+	} else {
+		emotion = inferChatEmotion(in.Messages[len(in.Messages)-1].Content, reply, emotion)
+		if (in.Mode == "playful" || in.Mode == "bold" || in.Mode == "roleplay") &&
+			strings.Contains(strings.ToLower(in.Messages[len(in.Messages)-1].Content), "flirt") && in.Intensity < 5 {
+			in.Intensity++
+		}
 	}
-	imageID := matchingChatImage(ws, character.ID, in.Messages[len(in.Messages)-1].Content+" "+reply)
+	imageID := matchingChatImage(ws, character.ID, in.Messages[len(in.Messages)-1].Content+" "+reply, in.PhotoImageID)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"message":   reply,
 		"emotion":   emotion,

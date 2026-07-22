@@ -831,10 +831,10 @@ export const api = {
 
   chatStatus: () => request<ChatStatus>("/api/chat/status", {}, 12_000),
   chat: (mode: string, messages: ChatMessage[], emotion = "neutral", intensity = 1,
-    options: ChatOptions = {}, characterId = "libby") =>
+    options: ChatOptions = {}, characterId = "libby", photoTags: string[] = [], photoImageId = "") =>
     request<ChatResponse>("/api/chat", {
       method: "POST",
-      body: JSON.stringify({ mode, messages, emotion, intensity, options, characterId }),
+      body: JSON.stringify({ mode, messages, emotion, intensity, options, characterId, photoTags, photoImageId }),
     }, 125_000),
   chatWorkspace: () => request<ChatWorkspace>("/api/chat/workspace"),
   chatModels: () => request<ChatModels>("/api/chat/models", {}, 20_000),

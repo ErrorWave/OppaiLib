@@ -31,6 +31,25 @@ const LIBBY_TIERS: string[] = ["Calm", "Warm", "Flirty", "Heated", "Peak"];
 /** Key for a staged/existing (emotion, tier) slot. */
 const slotKey = (emotion: string, level: number) => `${emotion}:${level}`;
 
+type SettingsTab =
+  | "appearance" | "libby" | "ai" | "scraping" | "library" | "android" | "account" | "about";
+
+/**
+ * The settings categories, as a Discord-style rail: grouped, one panel at a time.
+ * `server` marks the panels an admin writes back to the server, which are the only
+ * ones that can be read-only.
+ */
+const SETTINGS_TABS: { id: SettingsTab; label: string; icon: string; group: string; server?: boolean }[] = [
+  { id: "appearance", label: "Appearance", icon: "palette", group: "You" },
+  { id: "libby", label: "Libby", icon: "auto_awesome", group: "You" },
+  { id: "account", label: "Account", icon: "account_circle", group: "You" },
+  { id: "ai", label: "AI tagging", icon: "smart_toy", group: "Server", server: true },
+  { id: "scraping", label: "Scraping", icon: "travel_explore", group: "Server", server: true },
+  { id: "library", label: "Library", icon: "inventory_2", group: "Server" },
+  { id: "android", label: "Android app", icon: "android", group: "Server" },
+  { id: "about", label: "About", icon: "info", group: "Server" },
+];
+
 /**
  * An outfit being created or edited. Staged images are data URLs dropped onto the
  * emotion slots; they upload on Save, so backing out costs nothing. Slots are keyed
@@ -56,6 +75,7 @@ interface OutfitDraft {
 export class OppaiSettings extends LitElement {
   @property({ attribute: false }) user!: User;
 
+  @state() private tab: SettingsTab = "appearance";
   @state() private settings: Settings | null = null;
   @state() private info: ReadOnlyInfo | null = null;
   @state() private stats: Stats | null = null;
@@ -92,30 +112,133 @@ export class OppaiSettings extends LitElement {
       :host {
         display: block;
       }
-      .wrap {
-        max-width: 780px;
-        margin: 0 auto;
-        padding-bottom: 40px;
+
+      /* Discord's settings shape: a grouped category rail on the left, one panel on
+         the right. Sections inside a panel are flat and separated by rules rather
+         than floated as cards — with only one panel visible, card edges are noise. */
+      .shell {
+        display: grid;
+        grid-template-columns: 218px minmax(0, 1fr);
+        gap: 8px;
+        align-items: start;
+      }
+      .cat-rail {
+        position: sticky;
+        top: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        padding: 4px 8px 24px;
+      }
+      .cat-head {
+        padding: 14px 10px 4px;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--oppai-text-muted);
+      }
+      .cat-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 10px;
+        border: 0;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--oppai-text-muted);
+        font: inherit;
+        font-size: 14px;
+        font-weight: 500;
+        text-align: left;
+        cursor: pointer;
+        transition: background 0.12s ease, color 0.12s ease;
+      }
+      .cat-row .material-symbols-rounded {
+        font-size: 19px;
+      }
+      .cat-label {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .cat-row:hover,
+      .cat-row.on {
+        background: var(--oppai-nav-hover);
+        color: var(--oppai-text);
+      }
+      .cat-row.danger {
+        color: var(--oppai-fav);
+      }
+      .cat-sep {
+        height: 1px;
+        margin: 10px;
+        background: var(--oppai-border);
+      }
+      .panel-col {
+        min-width: 0;
+        max-width: 760px;
+        padding: 4px 8px 48px;
+      }
+      .panel-title {
+        margin: 0 0 18px;
+        font-size: 20px;
+        font-weight: 600;
       }
       .card {
-        background: var(--oppai-surface);
-        border: 1px solid var(--oppai-border);
-        border-radius: 20px;
-        padding: 22px 24px;
-        margin-bottom: 20px;
-        animation: oppai-fade-in-up 0.4s var(--oppai-ease-emphasized) both;
+        background: transparent;
+        border: 0;
+        border-top: 1px solid var(--oppai-border);
+        border-radius: 0;
+        padding: 20px 0 4px;
+        margin-bottom: 12px;
+        animation: oppai-fade-in-up 0.28s var(--oppai-ease-emphasized) both;
+      }
+      /* The first section sits directly under the panel title, so its rule would be
+         a line under a heading that already reads as one. */
+      .card:first-of-type {
+        border-top: 0;
+        padding-top: 0;
       }
       .card h3 {
         display: flex;
         align-items: center;
         gap: 10px;
-        font-size: 17px;
-        font-weight: 500;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--oppai-text-dim);
         margin: 0 0 4px;
       }
       .card h3 .material-symbols-rounded {
-        font-size: 22px;
+        font-size: 17px;
         color: var(--oppai-primary-bright);
+      }
+      @media (max-width: 860px) {
+        /* The rail becomes a scrolling strip above the panel; a 218px column and a
+           readable panel do not both fit. */
+        .shell {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .cat-rail {
+          position: static;
+          flex-direction: row;
+          overflow-x: auto;
+          gap: 4px;
+          padding: 4px 4px 12px;
+          border-bottom: 1px solid var(--oppai-border);
+        }
+        .cat-head,
+        .cat-sep {
+          display: none;
+        }
+        .cat-row {
+          flex: 0 0 auto;
+          border-radius: 999px;
+          padding: 7px 12px;
+        }
       }
       .card-sub {
         font-size: 13px;
@@ -599,25 +722,66 @@ export class OppaiSettings extends LitElement {
   }
 
   render() {
+    const active = SETTINGS_TABS.find((tab) => tab.id === this.tab) ?? SETTINGS_TABS[0];
+    // Only the server-side panels have anything to save, but an edit made on one and
+    // left unsaved has to stay visible after switching away from it.
+    const showSave = this.dirty || this.saved;
+    let group = "";
     return html`
-      <div class="wrap">
-        ${this.loadError
-          ? html`<div class="banner error">
-              <span class="material-symbols-rounded" style="font-size:18px;">error</span>
-              ${this.loadError}
-            </div>`
-          : nothing}
-        ${!this.canEdit && this.settings
-          ? html`<div class="banner info">
-              <span class="material-symbols-rounded" style="font-size:18px;">lock</span>
-              Server settings are read-only — only an admin can change them.
-            </div>`
-          : nothing}
-        ${this.renderAppearance()} ${this.renderLibby()} ${this.renderAI()} ${this.renderScraping()}
-        ${this.dirty || this.saved ? this.renderSaveBar() : nothing} ${this.renderLibrary()}
-        ${this.renderAndroid()} ${this.renderAccount()} ${this.renderAbout()}
+      <div class="shell">
+        <nav class="cat-rail" aria-label="Settings categories">
+          ${SETTINGS_TABS.map((tab) => {
+            const heading = tab.group === group ? nothing : html`<div class="cat-head">${tab.group}</div>`;
+            group = tab.group;
+            return html`${heading}
+              <button
+                class="cat-row ${tab.id === this.tab ? "on" : ""}"
+                aria-current=${tab.id === this.tab ? "page" : "false"}
+                @click=${() => (this.tab = tab.id)}
+              >
+                <span class="material-symbols-rounded">${tab.icon}</span>
+                <span class="cat-label">${tab.label}</span>
+              </button>`;
+          })}
+          <div class="cat-sep"></div>
+          <button class="cat-row danger" @click=${() => this.dispatchEvent(new CustomEvent("logout", { bubbles: true, composed: true }))}>
+            <span class="material-symbols-rounded">logout</span>
+            <span class="cat-label">Sign out</span>
+          </button>
+        </nav>
+
+        <div class="panel-col">
+          <h2 class="panel-title">${active.label}</h2>
+          ${this.loadError
+            ? html`<div class="banner error">
+                <span class="material-symbols-rounded" style="font-size:18px;">error</span>
+                ${this.loadError}
+              </div>`
+            : nothing}
+          ${!this.canEdit && this.settings && active.server
+            ? html`<div class="banner info">
+                <span class="material-symbols-rounded" style="font-size:18px;">lock</span>
+                Server settings are read-only — only an admin can change them.
+              </div>`
+            : nothing}
+          ${this.renderTab()}
+          ${showSave ? this.renderSaveBar() : nothing}
+        </div>
       </div>
     `;
+  }
+
+  private renderTab() {
+    switch (this.tab) {
+      case "appearance": return this.renderAppearance();
+      case "libby": return this.renderLibby();
+      case "ai": return this.renderAI();
+      case "scraping": return this.renderScraping();
+      case "library": return this.renderLibrary();
+      case "android": return this.renderAndroid();
+      case "account": return this.renderAccount();
+      default: return this.renderAbout();
+    }
   }
 
   private renderSaveBar() {
@@ -764,7 +928,7 @@ export class OppaiSettings extends LitElement {
    */
   private renderLibby() {
     return html`
-      <section class="card" style="animation-delay:30ms;">
+      <section class="card">
         <h3><span class="material-symbols-rounded">face_3</span>Libby</h3>
         <p class="card-sub">Per-device — applies as soon as you pick it.</p>
 
@@ -1021,7 +1185,7 @@ export class OppaiSettings extends LitElement {
     const s = this.settings;
     const info = this.info;
     return html`
-      <section class="card" style="animation-delay:60ms;">
+      <section class="card">
         <h3><span class="material-symbols-rounded">auto_awesome</span>AI auto-tagging</h3>
         <p class="card-sub">
           Tagging runs entirely on this box — no image ever leaves it. The heuristic tagger needs no
@@ -1106,7 +1270,7 @@ export class OppaiSettings extends LitElement {
   private renderScraping() {
     const s = this.settings;
     return html`
-      <section class="card" style="animation-delay:120ms;">
+      <section class="card">
         <h3><span class="material-symbols-rounded">travel_explore</span>Import &amp; scraping</h3>
         <p class="card-sub">How OppaiLib behaves toward the sites you import from.</p>
 
@@ -1321,7 +1485,7 @@ export class OppaiSettings extends LitElement {
     if (!st) return nothing;
     const byKind = new Map(st.kinds.map((k) => [k.kind, k] as const));
     return html`
-      <section class="card" style="animation-delay:180ms;">
+      <section class="card">
         <h3><span class="material-symbols-rounded">inventory_2</span>Library</h3>
         <p class="card-sub">
           ${st.items} ${st.items === 1 ? "item" : "items"} · ${formatBytes(st.bytes)} stored ·
@@ -1342,7 +1506,7 @@ export class OppaiSettings extends LitElement {
 
   private renderAccount() {
     return html`
-      <section class="card" style="animation-delay:240ms;">
+      <section class="card">
         <h3><span class="material-symbols-rounded">account_circle</span>Account</h3>
         <p class="card-sub">
           Signed in as <strong>${this.user?.username}</strong>${this.user?.isAdmin ? " (admin)" : ""}.
@@ -1400,7 +1564,7 @@ export class OppaiSettings extends LitElement {
     const i = this.info;
     if (!i) return nothing;
     return html`
-      <section class="card" style="animation-delay:300ms;">
+      <section class="card">
         <h3><span class="material-symbols-rounded">info</span>About this server</h3>
         <p class="card-sub">Set by environment variables; changing them needs a restart.</p>
         ${this.readOnlyField("Version", "The running build.", i.version)}
