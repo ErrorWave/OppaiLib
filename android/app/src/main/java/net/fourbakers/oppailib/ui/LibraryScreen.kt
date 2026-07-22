@@ -97,6 +97,7 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import kotlinx.coroutines.launch
 import net.fourbakers.oppailib.data.BulkRequest
+import net.fourbakers.oppailib.data.LibbyVoice
 import net.fourbakers.oppailib.data.Media
 import net.fourbakers.oppailib.data.MediaPatch
 import net.fourbakers.oppailib.data.PinnedFeed
@@ -203,7 +204,10 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
     fun delete(m: Media) {
         scope.launch {
             runCatching { repo.api.deleteMedia(m.id) }
-                .onSuccess { items = items.filterNot { it.id == m.id } }
+                .onSuccess {
+                    items = items.filterNot { it.id == m.id }
+                    LibbyVoice.react(LibbyVoice.Event.LIBRARY_DELETE).let { repo.report(it.message, it.emotion) }
+                }
         }
     }
 
@@ -233,6 +237,10 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
                 .onSuccess { result ->
                     val gone = result.ok.toSet()
                     items = items.filterNot { it.id in gone }
+                    if (gone.isNotEmpty()) {
+                        LibbyVoice.react(LibbyVoice.Event.LIBRARY_DELETE, count = gone.size)
+                            .let { repo.report(it.message, it.emotion) }
+                    }
                 }
             selected = emptySet()
         }

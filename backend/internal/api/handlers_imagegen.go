@@ -147,9 +147,8 @@ func (s *Server) handleImageGenStatus(w http.ResponseWriter, r *http.Request) {
 		if boards, err := s.imagegen.Boards(ctx, set.ImageGenURL); err == nil {
 			out["boards"] = boards
 		}
-	} else if backend == imagegen.KindA1111 {
-		out["detailerAvailable"] = s.imagegen.SupportsADetailer(ctx, set.ImageGenURL)
 	}
+	out["detailerAvailable"] = s.imagegen.SupportsADetailer(ctx, set.ImageGenURL)
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -252,6 +251,14 @@ func (s *Server) handleImageGenGenerate(w http.ResponseWriter, r *http.Request) 
 	if req.CPUNoise != nil {
 		cpuNoise = *req.CPUNoise
 	}
+	detailPrompt := strings.TrimSpace(req.Detailer.Prompt)
+	if detailPrompt == "" {
+		detailPrompt = req.Prompt
+	}
+	detailNegative := strings.TrimSpace(req.Detailer.NegativePrompt)
+	if detailNegative == "" {
+		detailNegative = req.NegativePrompt
+	}
 	gen := imagegen.GenerateRequest{
 		Prompt:         req.Prompt,
 		NegativePrompt: req.NegativePrompt,
@@ -274,7 +281,7 @@ func (s *Server) handleImageGenGenerate(w http.ResponseWriter, r *http.Request) 
 		Loras:          loras,
 		Detailer: imagegen.Detailer{
 			Enabled: req.Detailer.Enabled, Model: req.Detailer.Model,
-			Prompt: req.Detailer.Prompt, NegativePrompt: req.Detailer.NegativePrompt,
+			Prompt: detailPrompt, NegativePrompt: detailNegative,
 			Confidence: req.Detailer.Confidence, Denoise: req.Detailer.Denoise,
 			MaskBlur: req.Detailer.MaskBlur,
 		},

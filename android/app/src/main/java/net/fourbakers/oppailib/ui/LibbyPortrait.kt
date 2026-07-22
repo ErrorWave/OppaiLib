@@ -38,12 +38,26 @@ fun LibbyPortrait(
 
 /** The bundled default art (an android_asset filename) for an emotion, used when no
     worn outfit covers it. Mirrors the web client's defaultLibbyArt(). */
-fun mascotAsset(emotion: String): String = when (emotion) {
-    "happy" -> "mascot-happy.png"
-    "mischievous" -> "mascot-mischievous.png"
-    "surprised" -> "mascot-surprised.png"
-    "thinking" -> "mascot-thinking.png"
-    else -> "mascot.png"
+fun mascotAsset(emotion: String, tier: Int = 1): String {
+    val mood = when (emotion.lowercase()) {
+        "happy", "mischievous", "surprised", "thinking", "neutral" -> emotion.lowercase()
+        "sad", "worried" -> "thinking"
+        "horniness" -> "mischievous"
+        else -> "neutral"
+    }
+    return when (tier.coerceIn(1, 5)) {
+        1 -> when (mood) {
+            "happy" -> "Libby_New/Calm/happy.png"
+            "mischievous" -> "Libby_New/Calm/Mischievous.png"
+            "surprised" -> "Libby_New/Calm/suprised.png"
+            "thinking" -> "Libby_New/Calm/Thinking.png"
+            else -> "Libby_New/Calm/neutral.png"
+        }
+        2 -> "Libby_New/Warm/warm ${when (mood) { "mischievous" -> "Mischievous"; "surprised" -> "suprised"; else -> mood }}.png"
+        3 -> "Libby_New/flirty/Flirty ${when (mood) { "mischievous" -> "Mis"; "surprised" -> "Suprised"; else -> mood.replaceFirstChar(Char::uppercase) }}.png"
+        4 -> "Libby_New/heated/heated ${when (mood) { "mischievous" -> "mis"; "neutral" -> "Neutral"; "happy" -> "Happy"; "surprised" -> "suprised"; else -> mood }}.png"
+        else -> "Libby_New/Peak/Peak ${when (mood) { "mischievous" -> "Mis"; "surprised" -> "Suprise"; else -> mood.replaceFirstChar(Char::uppercase) }}.png"
+    }
 }
 
 /** Renders the first model, falling through to the next on load error. */

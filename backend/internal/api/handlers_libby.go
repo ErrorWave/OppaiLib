@@ -27,7 +27,7 @@ import (
 // libbyEmotions is the fixed emotion vocabulary — the five poses the clients
 // actually render (neutral is the popup/login pose; the rest map to chat modes).
 var libbyEmotions = []string{
-	"neutral", "default", "happy", "sad", "worried", "surprised", "thinking", "mischievous", "horniness",
+	"neutral", "happy", "surprised", "thinking", "mischievous",
 }
 
 // maxLibbyLevel is the highest horniness art tier. There are five tiers, 0..4:

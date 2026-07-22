@@ -27,6 +27,8 @@ func (st *stubInvoke) server(t *testing.T) *httptest.Server {
 		switch {
 		case r.URL.Path == "/api/v1/app/version":
 			fmt.Fprint(w, `{"version":"5.4.0"}`)
+		case r.URL.Path == "/openapi.json":
+			fmt.Fprint(w, `{"components":{"schemas":{"ADetailerInvocation":{"properties":{"type":{"const":"adetailer"}}}}}}`)
 		case r.URL.Path == "/api/v2/models/":
 			fmt.Fprint(w, `{"models":[
 				{"key":"key-main","hash":"h1","name":"AnimeThing","base":"sd-1","type":"main",
@@ -84,6 +86,9 @@ func TestBackendDetection(t *testing.T) {
 	c := New()
 	if kind, err := c.Backend(context.Background(), invoke.URL); err != nil || kind != KindInvokeAI {
 		t.Fatalf("invoke detection = %q, %v; want invokeai", kind, err)
+	}
+	if !c.SupportsADetailer(context.Background(), invoke.URL) {
+		t.Fatal("InvokeAI OpenAPI advertises adetailer but capability was not detected")
 	}
 	if kind, err := c.Backend(context.Background(), a1111.URL); err != nil || kind != KindA1111 {
 		t.Fatalf("a1111 detection = %q, %v; want a1111", kind, err)
@@ -156,6 +161,25 @@ func TestInvokeAdvancedTextToImageGraph(t *testing.T) {
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("advanced graph missing %s: %s", want, s)
+		}
+	}
+}
+
+func TestInvokeADetailerGraph(t *testing.T) {
+	main := invokeModelRecord{Key: "main", Hash: "h", Name: "Main", Base: "sd-1", Type: "main"}
+	graph := buildInvokeGraph(main, nil, nil, GenerateRequest{
+		Prompt: "portrait", Steps: 24, Width: 512, Height: 768, CfgScale: 7,
+		Detailer: Detailer{Enabled: true, Model: "hand_yolov8n.pt", Prompt: "detailed hands",
+			Confidence: .35, Denoise: .4, MaskBlur: 6},
+	}, "euler_a")
+	raw, _ := json.Marshal(graph)
+	s := string(raw)
+	for _, want := range []string{
+		`"type":"adetailer"`, `"target":"hand"`, `"model_path":"auto"`,
+		`"denoise_strength":0.4`, `"field":"image"`, `"is_intermediate":true`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("ADetailer graph missing %s: %s", want, s)
 		}
 	}
 }

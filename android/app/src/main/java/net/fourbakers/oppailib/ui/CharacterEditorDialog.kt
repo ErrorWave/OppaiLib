@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import kotlinx.coroutines.launch
 import net.fourbakers.oppailib.data.GenCharacter
+import net.fourbakers.oppailib.data.LibbyVoice
 import net.fourbakers.oppailib.data.Repository
 import net.fourbakers.oppailib.data.SaveCharacterRequest
 import net.fourbakers.oppailib.data.ScanImageRequest
@@ -190,7 +191,11 @@ fun CharacterEditorDialog(
                 TextButton(onClick = {
                     scope.launch {
                         runCatching { repo.api.deleteCharacter(character.id) }
-                            .onSuccess { onDeleted() }
+                            .onSuccess {
+                                LibbyVoice.react(LibbyVoice.Event.LIBRARY_DELETE)
+                                    .let { repo.report(it.message, it.emotion) }
+                                onDeleted()
+                            }
                             .onFailure { repo.report(it.message ?: "Couldn't delete the character") }
                     }
                 }) { Text("Delete", color = MaterialTheme.colorScheme.error) }

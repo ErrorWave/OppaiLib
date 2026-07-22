@@ -57,8 +57,9 @@ type Config struct {
 	// ChatURL is an OpenAI-compatible local LLM endpoint (LM Studio, Ollama's
 	// OpenAI bridge, llama.cpp server, etc.). ChatModel is the model name sent to
 	// /v1/chat/completions. Both are runtime-editable in Settings.
-	ChatURL   string
-	ChatModel string
+	ChatURL    string
+	ChatModel  string
+	ChatAPIKey string
 
 	// APKPath is the Android app the server offers for download. CI bakes the
 	// built APK into the image here; pointing this at /config lets an operator drop
@@ -101,6 +102,7 @@ func Load() *Config {
 		Rule34APIKey:        env("OPPAI_RULE34_API_KEY", ""),
 		ChatURL:             env("OPPAI_CHAT_URL", ""),
 		ChatModel:           env("OPPAI_CHAT_MODEL", ""),
+		ChatAPIKey:          env("OPPAI_CHAT_API_KEY", ""),
 		APKPath:             env("OPPAI_APK_PATH", "/app/apk/oppailib.apk"),
 		SessionTTL:          time.Duration(envInt("OPPAI_SESSION_TTL_HOURS", 720)) * time.Hour,
 		WebIdleTimeout:      time.Duration(envInt("OPPAI_WEB_IDLE_MINUTES", 60)) * time.Minute,

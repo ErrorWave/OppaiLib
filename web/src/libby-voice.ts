@@ -49,7 +49,7 @@ function tier(pool: Tiered, intensity: number): readonly string[] {
 /** The emotion that fits a heat level when nothing more specific applies. */
 function moodFor(intensity: number): LibbyEmotion {
   const i = normalizeIntensity(intensity);
-  if (i >= 5) return "horniness";
+  if (i >= 5) return "mischievous";
   if (i >= 3) return "mischievous";
   return "happy";
 }
@@ -57,7 +57,8 @@ function moodFor(intensity: number): LibbyEmotion {
 // ── reactions ────────────────────────────────────────────────────────────────
 
 export type LibbyEvent =
-  | "import" | "save" | "generate" | "galleryDelete" | "login" | "loginFail" | "greeting" | "idle";
+  | "import" | "save" | "generate" | "libraryDelete" | "galleryDelete"
+  | "login" | "loginFail" | "greeting" | "idle";
 
 const REACTIONS: Record<LibbyEvent, Tiered> = {
   import: [
@@ -87,6 +88,13 @@ const REACTIONS: Record<LibbyEvent, Tiered> = {
     ["Mmh, too tame for you? Gone.", "Deleted. You want better.", "Gone — we can do better."],
     ["Ohh, brutal. Deleted.", "Not good enough for you? Gone.", "Deleted. High standards tonight."],
     ["Gone. Now make me a better one.", "Deleted — try harder, I'm waiting.", "Ngh, fine. Gone. Again."],
+  ],
+  libraryDelete: [
+    ["Removed from the library.", "Gone from the shelf.", "Deleted. I'll tidy the gap."],
+    ["Out it goes. Making room?", "Deleted — changing your taste?", "Gone. I noticed that one."],
+    ["Mmh, pruning the collection? Gone.", "Deleted. I thought you liked that one.", "Gone — ruthless today."],
+    ["Oh, you're really clearing house.", "Deleted. I'll pretend I wasn't attached.", "Gone. Cold."],
+    ["You deleted it right in front of me.", "Gone. Now I want to know why.", "Fine. Deleted. Give me something better."],
   ],
   login: [
     ["Welcome back.", "There you are.", "Hi. Missed you."],
@@ -120,14 +128,15 @@ const REACTIONS: Record<LibbyEvent, Tiered> = {
 
 /** Emotions Libby wears per event, by tier — art follows the words. */
 const REACTION_MOODS: Partial<Record<LibbyEvent, readonly LibbyEmotion[]>> = {
-  import: ["happy", "happy", "mischievous", "mischievous", "horniness"],
-  save: ["happy", "happy", "mischievous", "mischievous", "horniness"],
-  generate: ["happy", "happy", "mischievous", "surprised", "horniness"],
-  galleryDelete: ["thinking", "thinking", "mischievous", "mischievous", "horniness"],
-  login: ["happy", "happy", "mischievous", "mischievous", "horniness"],
-  loginFail: ["sad", "worried", "thinking", "mischievous", "worried"],
-  greeting: ["happy", "happy", "mischievous", "mischievous", "horniness"],
-  idle: ["thinking", "thinking", "mischievous", "worried", "horniness"],
+  import: ["happy", "happy", "mischievous", "mischievous", "mischievous"],
+  save: ["happy", "happy", "mischievous", "mischievous", "mischievous"],
+  generate: ["happy", "happy", "mischievous", "surprised", "mischievous"],
+  galleryDelete: ["thinking", "thinking", "mischievous", "mischievous", "mischievous"],
+  libraryDelete: ["thinking", "thinking", "surprised", "surprised", "mischievous"],
+  login: ["happy", "happy", "mischievous", "mischievous", "mischievous"],
+  loginFail: ["thinking", "thinking", "thinking", "mischievous", "thinking"],
+  greeting: ["happy", "happy", "mischievous", "mischievous", "mischievous"],
+  idle: ["thinking", "thinking", "mischievous", "thinking", "mischievous"],
 };
 
 /**
@@ -276,19 +285,19 @@ const REPLIES: Record<Intent, Tiered> = {
 
 /** The emotion each intent wears, per tier. */
 const REPLY_MOODS: Record<Intent, readonly LibbyEmotion[]> = {
-  greeting: ["happy", "happy", "mischievous", "mischievous", "horniness"],
-  howAreYou: ["happy", "happy", "thinking", "mischievous", "horniness"],
-  compliment: ["happy", "happy", "mischievous", "surprised", "horniness"],
-  flirt: ["surprised", "mischievous", "mischievous", "horniness", "horniness"],
-  thanks: ["happy", "happy", "mischievous", "mischievous", "horniness"],
-  bye: ["sad", "sad", "worried", "worried", "horniness"],
-  aboutHer: ["happy", "happy", "mischievous", "mischievous", "horniness"],
-  aboutLibrary: ["thinking", "happy", "mischievous", "mischievous", "horniness"],
-  help: ["thinking", "thinking", "mischievous", "mischievous", "horniness"],
-  sad: ["worried", "worried", "sad", "mischievous", "horniness"],
-  yesNo: ["thinking", "thinking", "mischievous", "mischievous", "horniness"],
-  question: ["thinking", "thinking", "mischievous", "mischievous", "horniness"],
-  chatter: ["default", "happy", "mischievous", "mischievous", "horniness"],
+  greeting: ["happy", "happy", "mischievous", "mischievous", "mischievous"],
+  howAreYou: ["happy", "happy", "thinking", "mischievous", "mischievous"],
+  compliment: ["happy", "happy", "mischievous", "surprised", "mischievous"],
+  flirt: ["surprised", "mischievous", "mischievous", "mischievous", "mischievous"],
+  thanks: ["happy", "happy", "mischievous", "mischievous", "mischievous"],
+  bye: ["thinking", "thinking", "thinking", "thinking", "mischievous"],
+  aboutHer: ["happy", "happy", "mischievous", "mischievous", "mischievous"],
+  aboutLibrary: ["thinking", "happy", "mischievous", "mischievous", "mischievous"],
+  help: ["thinking", "thinking", "mischievous", "mischievous", "mischievous"],
+  sad: ["thinking", "thinking", "thinking", "mischievous", "mischievous"],
+  yesNo: ["thinking", "thinking", "mischievous", "mischievous", "mischievous"],
+  question: ["thinking", "thinking", "mischievous", "mischievous", "mischievous"],
+  chatter: ["neutral", "happy", "mischievous", "mischievous", "mischievous"],
 };
 
 /** Occasional mode-flavoured tails, so the four channels don't read alike. */
@@ -334,7 +343,7 @@ export function libbyReply(text: string, mode: string, emotion: string, intensit
   const wanted = normalizeEmotion(emotion);
   const fromIntent = REPLY_MOODS[intent][nextIntensity - 1];
   const chosen: LibbyEmotion =
-    wanted !== "default" && LIBBY_EMOTIONS.includes(wanted) && intent === "chatter" ? wanted : fromIntent;
+    wanted !== "neutral" && LIBBY_EMOTIONS.includes(wanted) && intent === "chatter" ? wanted : fromIntent;
   return { message: (body + tail).trim(), emotion: chosen, intensity: nextIntensity };
 }
 

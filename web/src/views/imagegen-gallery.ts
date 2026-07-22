@@ -1,7 +1,8 @@
 import { LitElement, html, css, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { iconStyles, motionStyles } from "../theme.js";
-import { api, type GalleryBoard, type GalleryImage } from "../api.js";
+import { api, mascotSay, type GalleryBoard, type GalleryImage } from "../api.js";
+import { libbyReact } from "../libby-voice.js";
 
 const PAGE = 40;
 
@@ -406,6 +407,8 @@ export class OppaiInvokeGallery extends LitElement {
     this.error = "";
     try {
       await api.deleteGalleryBoard(current.id);
+      const line = libbyReact("galleryDelete");
+      mascotSay(line.message, "success", { emotion: line.emotion, intensity: line.intensity });
       this.board = "none";
       this.items = [];
       await this.refresh();
@@ -422,6 +425,8 @@ export class OppaiInvokeGallery extends LitElement {
     this.busy = true;
     try {
       await api.deleteGalleryImage(img.name);
+      const line = libbyReact("galleryDelete");
+      mascotSay(line.message, "success", { emotion: line.emotion, intensity: line.intensity });
       this.items = this.items.filter((i) => i.name !== img.name);
       this.total = Math.max(0, this.total - 1);
       this.boards = this.boards.map((b) =>
@@ -469,6 +474,8 @@ export class OppaiInvokeGallery extends LitElement {
     this.busy = true;
     try {
       await api.deleteGalleryImages(names);
+      const line = libbyReact("galleryDelete", { count: names.length });
+      mascotSay(line.message, "success", { emotion: line.emotion, intensity: line.intensity });
       const gone = this.selected;
       this.items = this.items.filter((i) => !gone.has(i.name));
       this.total = Math.max(0, this.total - names.length);

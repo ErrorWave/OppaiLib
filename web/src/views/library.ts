@@ -1,6 +1,7 @@
 import { LitElement, html, css, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import { api, type Media, type User } from "../api.js";
+import { api, mascotSay, type Media, type User } from "../api.js";
+import { libbyReact } from "../libby-voice.js";
 import { iconStyles, motionStyles } from "../theme.js";
 import { logoSVG } from "../logo.js";
 import { dismissDownload, downloadTasks, type DownloadTask } from "../downloads.js";
@@ -789,6 +790,8 @@ export class OppaiLibrary extends LitElement {
     this.busy = true;
     try {
       await api.bulkMedia("delete", ids);
+      const line = libbyReact("libraryDelete", { count: ids.length });
+      mascotSay(line.message, "success", { emotion: line.emotion, intensity: line.intensity });
       // Drop any client-side favorites for the deleted items.
       const favs = new Set(this.favorites);
       ids.forEach((id) => favs.delete(id));

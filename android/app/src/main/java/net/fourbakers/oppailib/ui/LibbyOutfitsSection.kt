@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import kotlinx.coroutines.launch
 import net.fourbakers.oppailib.data.LibbyEmotionRequest
+import net.fourbakers.oppailib.data.LibbyVoice
 import net.fourbakers.oppailib.data.LibbyOutfit
 import net.fourbakers.oppailib.data.LibbyOutfitSaveRequest
 import net.fourbakers.oppailib.data.Repository
@@ -300,7 +301,11 @@ private fun OutfitEditorDialog(
                 onClick = {
                     scope.launch {
                         runCatching { repo.api.deleteLibbyOutfit(outfit.id) }
-                            .onSuccess { onDeleted() }
+                            .onSuccess {
+                                LibbyVoice.react(LibbyVoice.Event.LIBRARY_DELETE)
+                                    .let { repo.report(it.message, it.emotion) }
+                                onDeleted()
+                            }
                             .onFailure { repo.report(it.message ?: "Couldn't delete the outfit") }
                     }
                 },

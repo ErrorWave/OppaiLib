@@ -28,6 +28,26 @@ import (
 // unless the operator runs a custom deployment.
 const invokeQueue = "default"
 
+// The ADetailer node may come from a custom node pack, so InvokeAI itself being
+// reachable is not enough. Its generated OpenAPI schema is the authoritative list
+// of installed invocation types (and is exactly what /docs renders).
+func (c *Client) invokeSupportsADetailer(ctx context.Context, base string) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/openapi.json", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	return err == nil && bytes.Contains(body, []byte(`"const":"adetailer"`))
+}
+
 // invokeModelRecord is one entry from /api/v2/models/ (InvokeAI 4.0+).
 type invokeModelRecord struct {
 	Key             string                 `json:"key"`
@@ -755,9 +775,9 @@ func buildInvokeGraph(main invokeModelRecord, vae *invokeModelRecord, loras []in
 	nodes["l2i"] = map[string]any{
 		"id": "l2i", "type": "l2i",
 		"fp32":            true,
-		"is_intermediate": false,
+		"is_intermediate": req.Detailer.Enabled,
 	}
-	if req.Board != "" && req.Board != "none" {
+	if !req.Detailer.Enabled && req.Board != "" && req.Board != "none" {
 		nodes["l2i"].(map[string]any)["board"] = map[string]any{"board_id": req.Board}
 	}
 	edge("denoise", "latents", "l2i", "latents")
@@ -795,6 +815,35 @@ func buildInvokeGraph(main invokeModelRecord, vae *invokeModelRecord, loras []in
 	nodes["metadata"] = metadata
 	edge("metadata", "metadata", "l2i", "metadata")
 
+	// InvokeAI 6.14's ADetailer node accepts a finished image and performs its own
+	// detection + inpaint pass. Its "auto" model path selects the detector from the
+	// target, which lets the same face/hand/person choices work on A1111 and Invoke.
+	if req.Detailer.Enabled {
+		target := "face"
+		model := strings.ToLower(req.Detailer.Model)
+		if strings.Contains(model, "hand") {
+			target = "hand"
+		} else if strings.Contains(model, "person") {
+			target = "person"
+		}
+		nodes["adetailer"] = map[string]any{
+			"id": "adetailer", "type": "adetailer", "is_intermediate": true,
+			"prompt": req.Detailer.Prompt, "negative_prompt": req.Detailer.NegativePrompt,
+			"target": target, "model_path": "auto", "confidence": req.Detailer.Confidence,
+			"denoise_strength": req.Detailer.Denoise, "mask_blur": req.Detailer.MaskBlur,
+			"steps": req.Steps, "cfg_scale": req.CfgScale, "scheduler": scheduler,
+		}
+		edge("l2i", "image", "adetailer", "image")
+		nodes["detail_save"] = map[string]any{
+			"id": "detail_save", "type": "save_image", "is_intermediate": false, "use_cache": false,
+		}
+		if req.Board != "" && req.Board != "none" {
+			nodes["detail_save"].(map[string]any)["board"] = map[string]any{"board_id": req.Board}
+		}
+		edge("adetailer", "image", "detail_save", "image")
+		edge("metadata", "metadata", "detail_save", "metadata")
+	}
+
 	return map[string]any{"id": "oppailib_txt2img", "nodes": nodes, "edges": edges}
 }
 
@@ -831,6 +880,16 @@ func (item *invokeQueueItem) errText() string {
 // rewritten during batch preparation, so scan for the (single) image output rather
 // than looking up "l2i" by name.
 func (item *invokeQueueItem) imageName() string {
+	for id, r := range item.Session.Results {
+		if strings.Contains(id, "detail_save") && r.Type == "image_output" && r.Image.ImageName != "" {
+			return r.Image.ImageName
+		}
+	}
+	for id, r := range item.Session.Results {
+		if strings.Contains(id, "adetailer") && r.Type == "image_output" && r.Image.ImageName != "" {
+			return r.Image.ImageName
+		}
+	}
 	for _, r := range item.Session.Results {
 		if r.Type == "image_output" && r.Image.ImageName != "" {
 			return r.Image.ImageName

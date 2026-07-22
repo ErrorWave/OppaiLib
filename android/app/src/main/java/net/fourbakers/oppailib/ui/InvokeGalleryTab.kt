@@ -149,6 +149,8 @@ fun InvokeGalleryTab(
                     total = maxOf(0, total - names.size)
                     selected = emptySet()
                     selecting = false
+                    LibbyVoice.react(LibbyVoice.Event.GALLERY_DELETE, count = names.size)
+                        .let { repo.report(it.message, it.emotion) }
                 }
                 .onFailure { repo.report(it.message ?: "Couldn't delete the images") }
         }
@@ -180,7 +182,7 @@ fun InvokeGalleryTab(
                 .onSuccess {
                     items = emptyList()
                     onBoardChange("none") // triggers the reload that refreshes the board list
-                    repo.report("Gallery deleted", "happy")
+                    LibbyVoice.react(LibbyVoice.Event.GALLERY_DELETE).let { repo.report(it.message, it.emotion) }
                 }
                 .onFailure { repo.report(it.message ?: "Couldn't delete the gallery") }
         }

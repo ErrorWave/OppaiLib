@@ -53,9 +53,11 @@ type Settings struct {
 
 	// Local OpenAI-compatible chat backend. No cloud service is contacted by
 	// OppaiLib; the operator explicitly chooses this URL and model.
-	ChatURL     string `json:"chatUrl"`
-	ChatModel   string `json:"chatModel"`
-	ChatEnabled bool   `json:"chatEnabled"`
+	ChatURL       string `json:"chatUrl"`
+	ChatModel     string `json:"chatModel"`
+	ChatAPIKey    string `json:"chatApiKey"`
+	ChatAPIKeySet bool   `json:"chatApiKeySet"`
+	ChatEnabled   bool   `json:"chatEnabled"`
 }
 
 // Setting keys as stored in the settings table.
@@ -76,6 +78,7 @@ const (
 	keyRule34APIKey        = "rule34.api_key"
 	keyChatURL             = "chat.url"
 	keyChatModel           = "chat.model"
+	keyChatAPIKey          = "chat.api_key"
 )
 
 // Defaults derives the baseline from environment config.
@@ -97,6 +100,7 @@ func Defaults(cfg *config.Config) Settings {
 		Rule34APIKey:        cfg.Rule34APIKey,
 		ChatURL:             cfg.ChatURL,
 		ChatModel:           cfg.ChatModel,
+		ChatAPIKey:          cfg.ChatAPIKey,
 	}
 }
 
@@ -157,6 +161,9 @@ func Merge(base Settings, stored map[string]string) Settings {
 	if v, ok := stored[keyChatModel]; ok {
 		s.ChatModel = v
 	}
+	if v, ok := stored[keyChatAPIKey]; ok {
+		s.ChatAPIKey = v
+	}
 	s.Clamp()
 	return s
 }
@@ -180,6 +187,7 @@ func (s Settings) Map() map[string]string {
 		keyRule34APIKey:        s.Rule34APIKey,
 		keyChatURL:             s.ChatURL,
 		keyChatModel:           s.ChatModel,
+		keyChatAPIKey:          s.ChatAPIKey,
 	}
 }
 
@@ -193,6 +201,8 @@ func (s Settings) Redacted() Settings {
 	s.CivitaiAPIKey = ""
 	s.Rule34APIKeySet = s.Rule34APIKey != ""
 	s.Rule34APIKey = ""
+	s.ChatAPIKeySet = s.ChatAPIKey != ""
+	s.ChatAPIKey = ""
 	return s
 }
 
@@ -235,6 +245,7 @@ func (s *Settings) Clamp() {
 	s.Rule34APIKey = strings.TrimSpace(s.Rule34APIKey)
 	s.ChatURL = strings.TrimRight(strings.TrimSpace(s.ChatURL), "/")
 	s.ChatModel = strings.TrimSpace(s.ChatModel)
+	s.ChatAPIKey = strings.TrimSpace(s.ChatAPIKey)
 	s.ChatEnabled = s.ChatURL != "" && s.ChatModel != ""
 }
 

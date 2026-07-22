@@ -74,6 +74,9 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	if next.Rule34APIKey == "" && next.Rule34APIKeySet {
 		next.Rule34APIKey = current.Rule34APIKey
 	}
+	if next.ChatAPIKey == "" && next.ChatAPIKeySet {
+		next.ChatAPIKey = current.ChatAPIKey
+	}
 	next.Clamp()
 	if err := s.db.PutSettings(r.Context(), next.Map()); err != nil {
 		s.log.Error("settings: save failed", "err", err)

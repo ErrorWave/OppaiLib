@@ -1,6 +1,7 @@
 import { LitElement, html, css, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import { api, type APKInfo, type Settings, type ReadOnlyInfo, type Stats, type User } from "../api.js";
+import { api, mascotSay, type APKInfo, type Settings, type ReadOnlyInfo, type Stats, type User } from "../api.js";
+import { libbyReact } from "../libby-voice.js";
 import {
   iconStyles,
   motionStyles,
@@ -899,6 +900,8 @@ export class OppaiSettings extends LitElement {
     this.outfitBusy = true;
     try {
       await api.deleteLibbyOutfit(d.id);
+      const line = libbyReact("libraryDelete");
+      mascotSay(line.message, "success", { emotion: line.emotion, intensity: line.intensity });
       if (this.wornOutfit === d.id) this.wearOutfit("");
       this.outfitDraft = null;
       await this.loadOutfits();
@@ -1277,6 +1280,16 @@ export class OppaiSettings extends LitElement {
                     .value=${s.chatModel}
                     ?disabled=${!this.canEdit}
                     @change=${(e: Event) => this.edit({ chatModel: (e.target as HTMLInputElement).value })}
+                  />
+                </div>
+                <div class="field-control">
+                  <input
+                    type="password"
+                    autocomplete="new-password"
+                    placeholder=${s.chatApiKeySet ? "API key saved — enter to replace" : "API key (optional)"}
+                    .value=${s.chatApiKey}
+                    ?disabled=${!this.canEdit}
+                    @change=${(e: Event) => this.edit({ chatApiKey: (e.target as HTMLInputElement).value })}
                   />
                 </div>
               </div>

@@ -50,22 +50,27 @@ export function saveLibbyOutfit(id: string): void {
  */
 export function libbyEmotionSrc(emotion: string): string {
   const outfit = loadLibbyOutfit();
-  if (!outfit) return defaultLibbyArt(emotion);
-  return `/api/libby/outfits/${encodeURIComponent(outfit)}/emotions/${encodeURIComponent(emotion)}`;
+  const mood = normalizeEmotion(emotion);
+  if (!outfit) return defaultLibbyArt(mood);
+  return `/api/libby/outfits/${encodeURIComponent(outfit)}/emotions/${encodeURIComponent(mood)}`;
 }
 
-export function defaultLibbyArt(emotion: string): string {
-  switch (emotion) {
-    case "happy": return "/mascot-happy.png";
-    case "mischievous": return "/mascot-mischievous.png";
-    case "surprised": return "/mascot-surprised.png";
-    case "thinking": return "/mascot-thinking.png";
-    default: return "/mascot.png";
-  }
+const DEFAULT_ART: Record<number, Record<string, string>> = {
+  1: { neutral: "/Libby_New/Calm/neutral.png", happy: "/Libby_New/Calm/happy.png", mischievous: "/Libby_New/Calm/Mischievous.png", surprised: "/Libby_New/Calm/suprised.png", thinking: "/Libby_New/Calm/Thinking.png" },
+  2: { neutral: "/Libby_New/Warm/warm neutral.png", happy: "/Libby_New/Warm/warm happy.png", mischievous: "/Libby_New/Warm/warm Mischievous.png", surprised: "/Libby_New/Warm/warm suprised.png", thinking: "/Libby_New/Warm/warm thinking.png" },
+  3: { neutral: "/Libby_New/flirty/Flirty Neutral.png", happy: "/Libby_New/flirty/Flirty Happy.png", mischievous: "/Libby_New/flirty/Flirty Mis.png", surprised: "/Libby_New/flirty/Flirty Suprised.png", thinking: "/Libby_New/flirty/Flirty Thinking.png" },
+  4: { neutral: "/Libby_New/heated/heated Neutral.png", happy: "/Libby_New/heated/heated Happy.png", mischievous: "/Libby_New/heated/heated mis.png", surprised: "/Libby_New/heated/heated suprised.png", thinking: "/Libby_New/heated/heated thinking.png" },
+  5: { neutral: "/Libby_New/Peak/Peak Neutral.png", happy: "/Libby_New/Peak/Peak Happy.png", mischievous: "/Libby_New/Peak/Peak Mis.png", surprised: "/Libby_New/Peak/Peak Suprise.png", thinking: "/Libby_New/Peak/Peak Thinking.png" },
+};
+
+/** The bundled wardrobe has every drawable emotion at every intensity tier. */
+export function defaultLibbyArt(emotion: string, intensity = 1): string {
+  const mood = normalizeEmotion(emotion);
+  return DEFAULT_ART[normalizeIntensity(intensity)][mood] ?? DEFAULT_ART[1].neutral;
 }
 
 export const LIBBY_EMOTIONS = [
-  "default", "happy", "sad", "worried", "surprised", "thinking", "mischievous", "horniness",
+  "neutral", "happy", "mischievous", "surprised", "thinking",
 ] as const;
 
 export type LibbyEmotion = (typeof LIBBY_EMOTIONS)[number];
@@ -83,10 +88,13 @@ export interface LibbyCue {
 // speech deliberately shows no emoji and no "emotion N" readout.
 
 export function normalizeEmotion(value?: string): LibbyEmotion {
-  const emotion = (value ?? "").trim().toLowerCase();
+  let emotion = (value ?? "").trim().toLowerCase();
+  if (emotion === "default") emotion = "neutral";
+  if (emotion === "sad" || emotion === "worried") emotion = "thinking";
+  if (emotion === "horniness") emotion = "mischievous";
   return (LIBBY_EMOTIONS as readonly string[]).includes(emotion)
     ? emotion as LibbyEmotion
-    : "default";
+    : "neutral";
 }
 
 export function normalizeIntensity(value?: number): number {
@@ -106,24 +114,17 @@ export function libbyAssetCandidates(emotion?: string, intensity?: number, outfi
     for (let tier = level - 1; tier >= 1; tier--) paths.push(`${outfitBase}?level=${tier}`);
     paths.push(outfitBase); // level 0, the suffix-free baseline
   }
-  paths.push(
-    `/libby/default/${mood}-${level}.gif`,
-    `/libby/default/${mood}-${level}.png`,
-    `/libby/default/${mood}.gif`,
-    `/libby/default/${mood}.png`,
-    defaultLibbyArt(mood),
-    "/mascot.png",
-  );
+  paths.push(defaultLibbyArt(mood, level), defaultLibbyArt("neutral", level), "/mascot.png");
   return [...new Set(paths)];
 }
 
 export function inferErrorEmotion(message: string): Pick<LibbyCue, "emotion" | "intensity"> {
   const text = message.toLowerCase();
-  if (/timed? out|unreachable|network|offline|couldn.t reach|connection/.test(text)) return { emotion: "worried", intensity: 4 };
-  if (/unauthori[sz]ed|session ended|sign in|password|login/.test(text)) return { emotion: "sad", intensity: 3 };
+  if (/timed? out|unreachable|network|offline|couldn.t reach|connection/.test(text)) return { emotion: "thinking", intensity: 4 };
+  if (/unauthori[sz]ed|session ended|sign in|password|login/.test(text)) return { emotion: "thinking", intensity: 3 };
   if (/invalid|missing|required|not found|doesn.t exist/.test(text)) return { emotion: "thinking", intensity: 2 };
   if (/failed|error|couldn.t|can.t/.test(text)) return { emotion: "surprised", intensity: 3 };
-  return { emotion: "worried", intensity: 2 };
+  return { emotion: "thinking", intensity: 2 };
 }
 
 export function applyImageFallback(img: HTMLImageElement, candidates: string[]) {

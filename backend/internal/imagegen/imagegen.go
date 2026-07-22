@@ -45,22 +45,29 @@ type kindEntry struct {
 	at   time.Time
 }
 
+type boolEntry struct {
+	value bool
+	at    time.Time
+}
+
 // Client is a stateless caller of a generator API. The base URL is passed per call
 // rather than baked in, so it can change at runtime from the Settings screen without
 // rebuilding the client. The only state is the detection cache.
 type Client struct {
 	hc *http.Client
 
-	mu    sync.Mutex
-	kinds map[string]kindEntry
+	mu        sync.Mutex
+	kinds     map[string]kindEntry
+	detailers map[string]boolEntry
 }
 
 // New returns a Client. Generation is slow (tens of seconds on CPU), so the timeout
 // is generous; listing models is quick and bounded by the caller's context.
 func New() *Client {
 	return &Client{
-		hc:    &http.Client{Timeout: 10 * time.Minute},
-		kinds: make(map[string]kindEntry),
+		hc:        &http.Client{Timeout: 10 * time.Minute},
+		kinds:     make(map[string]kindEntry),
+		detailers: make(map[string]boolEntry),
 	}
 }
 
@@ -210,9 +217,8 @@ type GenerateRequest struct {
 	Detailer       Detailer
 }
 
-// Detailer configures the ADetailer Automatic1111 extension. InvokeAI has no
-// compatible node, so callers only expose this when Backend reports A1111 and the
-// extension is present.
+// Detailer configures either the ADetailer Automatic1111 extension or InvokeAI's
+// adetailer node. The shared fields deliberately map to both APIs.
 type Detailer struct {
 	Enabled        bool
 	Model          string
@@ -545,12 +551,25 @@ func containsBlackImage(res *GenerateResult) bool {
 	return false
 }
 
-// SupportsADetailer reports whether an A1111-compatible backend exposes the
-// extension as an always-on txt2img script.
+// SupportsADetailer reports whether the detected backend can run the shared
+// detailer request. Current InvokeAI exposes it as an adetailer graph node.
 func (c *Client) SupportsADetailer(ctx context.Context, base string) bool {
 	kind, err := c.Backend(ctx, base)
-	if err != nil || kind != KindA1111 {
+	if err != nil {
 		return false
+	}
+	if kind == KindInvokeAI {
+		c.mu.Lock()
+		cached, ok := c.detailers[base]
+		c.mu.Unlock()
+		if ok && time.Since(cached.at) < kindTTL {
+			return cached.value
+		}
+		available := c.invokeSupportsADetailer(ctx, base)
+		c.mu.Lock()
+		c.detailers[base] = boolEntry{value: available, at: time.Now()}
+		c.mu.Unlock()
+		return available
 	}
 	return c.a1111SupportsADetailer(ctx, base)
 }

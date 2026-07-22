@@ -36,6 +36,7 @@ import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
@@ -60,6 +61,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 import net.fourbakers.oppailib.data.ChatMessage
 import net.fourbakers.oppailib.data.ChatRequest
 import net.fourbakers.oppailib.data.ChatStatus
@@ -70,23 +74,20 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/**
- * Discord's dark chrome, hard-coded. Half of "looks like a Discord client" is the
- * palette, so this screen deliberately does not follow the app theme.
- */
+/** Discord's layout vocabulary, painted with the application's live M3 theme. */
 private object Dc {
-    val rail = Color(0xFF1E1F22)
-    val side = Color(0xFF2B2D31)
-    val main = Color(0xFF313338)
-    val hover = Color(0xFF35373C)
-    val input = Color(0xFF383A40)
-    val text = Color(0xFFDBDEE1)
-    val bright = Color(0xFFF2F3F5)
-    val muted = Color(0xFF949BA4)
-    val accent = Color(0xFF5865F2)
-    val line = Color(0xFF3F4147)
-    val libby = Color(0xFFF0A6C8)
-    val danger = Color(0xFFFA777C)
+    val rail: Color @Composable get() = MaterialTheme.colorScheme.surface
+    val side: Color @Composable get() = MaterialTheme.colorScheme.surfaceVariant
+    val main: Color @Composable get() = MaterialTheme.colorScheme.background
+    val hover: Color @Composable get() = MaterialTheme.colorScheme.primaryContainer
+    val input: Color @Composable get() = MaterialTheme.colorScheme.surfaceVariant
+    val text: Color @Composable get() = MaterialTheme.colorScheme.onSurface
+    val bright: Color @Composable get() = MaterialTheme.colorScheme.onSurface
+    val muted: Color @Composable get() = MaterialTheme.colorScheme.onSurfaceVariant
+    val accent: Color @Composable get() = MaterialTheme.colorScheme.primary
+    val line: Color @Composable get() = MaterialTheme.colorScheme.outlineVariant
+    val libby: Color @Composable get() = MaterialTheme.colorScheme.primary
+    val danger: Color @Composable get() = MaterialTheme.colorScheme.error
 }
 
 /** Each mode is a channel in Libby's "server", and maps to one of her emotions. */
@@ -99,8 +100,7 @@ private val channels = listOf(
     LibbyChannel("roleplay", "roleplay", "thinking", "In character, in scene, in detail."),
 )
 
-private val libbyEmotions =
-    listOf("default", "happy", "sad", "worried", "surprised", "thinking", "mischievous", "horniness")
+private val libbyEmotions = listOf("neutral", "happy", "mischievous", "surprised", "thinking")
 
 /** A message plus who said it and when — the log renders Discord-style rows. */
 private data class Entry(
@@ -129,6 +129,7 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
     var error by remember { mutableStateOf("") }
     // The settings panel is folded away until the gear is pressed — the chat is the point.
     var settingsOpen by remember { mutableStateOf(false) }
+    var advancedJson by remember { mutableStateOf("{}") }
     val scope = rememberCoroutineScope()
     val list = rememberLazyListState()
     val drawer = rememberDrawerState(DrawerValue.Closed)
@@ -147,11 +148,28 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
         val count = entries.size + if (busy) 1 else 0
         if (count > 0) list.animateScrollToItem(count - 1)
     }
+    // Typing, sending, or receiving a message restarts this. If the user leaves
+    // Libby hanging, she follows up using the same tier-aware local voice.
+    LaunchedEffect(entries.size, draft, busy) {
+        if (busy || draft.isNotBlank()) return@LaunchedEffect
+        delay(60_000)
+        val line = LibbyVoice.react(LibbyVoice.Event.IDLE, intensity)
+        emotion = line.emotion
+        entries = entries + Entry("assistant", line.message, System.currentTimeMillis(), local = true)
+    }
     BackHandler(onBack = onBack)
 
     fun send() {
         val text = draft.trim()
         if (text.isEmpty() || busy) return
+        val options = if (status?.enabled == true) {
+            try { Json.parseToJsonElement(advancedJson.ifBlank { "{}" }).jsonObject }
+            catch (_: Exception) {
+                error = "Advanced text-generation options must be a JSON object."
+                settingsOpen = true
+                return
+            }
+        } else JsonObject(emptyMap())
         val next = entries + Entry("user", text, System.currentTimeMillis())
         entries = next
         draft = ""
@@ -173,9 +191,9 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
             // Lines Libby wrote herself (the opener, offline replies) are hers, not
             // the model's — they stay out of the history we hand it.
             val history = next.filterNot { it.local }.map { ChatMessage(it.role, it.content) }
-            runCatching { repo.api.chat(ChatRequest(channel.id, history, emotion, intensity)) }
+            runCatching { repo.api.chat(ChatRequest(channel.id, history, emotion, intensity, options)) }
                 .onSuccess {
-                    emotion = it.emotion.takeIf(libbyEmotions::contains) ?: "default"
+                    emotion = it.emotion.takeIf(libbyEmotions::contains) ?: "neutral"
                     // Persist the reply's intensity into the shared session meter.
                     LibbyMeter.set(it.intensity)
                     entries = next + Entry("assistant", it.message, System.currentTimeMillis())
@@ -232,7 +250,14 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
                 }
             }
             if (settingsOpen) {
-                LibbySettingsPanel(emotion = emotion, intensity = intensity, onEmotion = { emotion = it })
+                LibbySettingsPanel(
+                    emotion = emotion,
+                    intensity = intensity,
+                    advancedOptions = status?.advancedOptions == true,
+                    advancedJson = advancedJson,
+                    onEmotion = { emotion = it },
+                    onAdvancedJson = { advancedJson = it },
+                )
             }
 
             // ── message log ──────────────────────────────────────────────────
@@ -341,7 +366,7 @@ private fun ChannelDrawer(
                         repo = repo,
                         emotion = emotion,
                         tier = LibbyMeter.tier(intensity),
-                        fallbackAsset = mascotAsset(emotion),
+                        fallbackAsset = mascotAsset(emotion, LibbyMeter.tier(intensity)),
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
@@ -383,7 +408,7 @@ private fun ChannelDrawer(
             }
             Spacer(Modifier.weight(1f))
             Row(
-                Modifier.fillMaxWidth().background(Color(0xFF232428)).padding(10.dp),
+                Modifier.fillMaxWidth().background(Dc.rail).padding(10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Box(
@@ -407,7 +432,14 @@ private fun ChannelDrawer(
  * meter that picks which tier of her art she wears.
  */
 @Composable
-private fun LibbySettingsPanel(emotion: String, intensity: Int, onEmotion: (String) -> Unit) {
+private fun LibbySettingsPanel(
+    emotion: String,
+    intensity: Int,
+    advancedOptions: Boolean,
+    advancedJson: String,
+    onEmotion: (String) -> Unit,
+    onAdvancedJson: (String) -> Unit,
+) {
     Column(Modifier.fillMaxWidth().background(Dc.side).padding(horizontal = 14.dp, vertical = 12.dp)) {
         Text("EMOTION", color = Dc.muted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
         Row(
@@ -417,8 +449,8 @@ private fun LibbySettingsPanel(emotion: String, intensity: Int, onEmotion: (Stri
             libbyEmotions.forEach { e ->
                 val on = e == emotion
                 Text(
-                    if (e == "horniness") "Horniness" else e.replaceFirstChar(Char::uppercase),
-                    color = if (on) Color.White else Dc.text,
+                    e.replaceFirstChar(Char::uppercase),
+                    color = if (on) MaterialTheme.colorScheme.onPrimary else Dc.text,
                     fontSize = 13.sp,
                     modifier = Modifier
                         .clip(RoundedCornerShape(4.dp))
@@ -445,6 +477,35 @@ private fun LibbySettingsPanel(emotion: String, intensity: Int, onEmotion: (Stri
                 modifier = Modifier.weight(1f),
             )
             Text("  $intensity / ${LibbyMeter.MAX}", color = Dc.muted, fontSize = 13.sp)
+        }
+        if (advancedOptions) {
+            Text(
+                "TEXT-GENERATION-WEBUI API",
+                color = Dc.muted,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(top = 10.dp),
+            )
+            TextField(
+                value = advancedJson,
+                onValueChange = onAdvancedJson,
+                placeholder = { Text("{\"temperature\":0.7,\"top_k\":20}") },
+                minLines = 2,
+                maxLines = 4,
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = Dc.input,
+                    unfocusedContainerColor = Dc.input,
+                    focusedTextColor = Dc.text,
+                    unfocusedTextColor = Dc.text,
+                ),
+                modifier = Modifier.fillMaxWidth().padding(top = 5.dp),
+            )
+            Text(
+                "Presets, samplers, character/template fields, grammar, stop strings, thinking controls, and future API options pass through. Model, messages, and streaming stay managed here.",
+                color = Dc.muted,
+                fontSize = 11.sp,
+                modifier = Modifier.padding(top = 4.dp),
+            )
         }
     }
 }
@@ -499,7 +560,7 @@ private fun MessageRow(
                             repo = repo,
                             emotion = emotion,
                             tier = LibbyMeter.tier(intensity),
-                            fallbackAsset = mascotAsset(emotion),
+                            fallbackAsset = mascotAsset(emotion, LibbyMeter.tier(intensity)),
                             modifier = Modifier.fillMaxSize(),
                         )
                     }
@@ -536,7 +597,7 @@ private fun MessageRow(
                             modifier = Modifier
                                 .padding(start = 6.dp)
                                 .clip(RoundedCornerShape(3.dp))
-                                .background(if (entry.local) Color(0xFF4E5058) else Dc.accent)
+                                .background(if (entry.local) Dc.line else Dc.accent)
                                 .padding(horizontal = 4.dp, vertical = 1.dp),
                         )
                     }

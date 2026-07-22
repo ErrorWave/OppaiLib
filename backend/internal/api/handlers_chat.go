@@ -26,11 +26,14 @@ type chatRequest struct {
 	Messages  []chatMessage `json:"messages"`
 	Emotion   string        `json:"emotion,omitempty"`
 	Intensity int           `json:"intensity,omitempty"`
+	// Options is a future-proof pass-through for text-generation-webui's full
+	// ChatCompletionRequest surface (samplers, presets, character fields,
+	// templates, grammar, thinking controls, stop strings, and new additions).
+	Options map[string]any `json:"options,omitempty"`
 }
 
 var supportedLibbyEmotions = map[string]bool{
-	"default": true, "happy": true, "sad": true, "worried": true,
-	"surprised": true, "thinking": true, "mischievous": true, "horniness": true,
+	"neutral": true, "happy": true, "surprised": true, "thinking": true, "mischievous": true,
 }
 
 var libbyModes = map[string]string{
@@ -43,9 +46,10 @@ var libbyModes = map[string]string{
 func (s *Server) handleChatStatus(w http.ResponseWriter, r *http.Request) {
 	cur := s.settings.Get()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled": cur.ChatEnabled,
-		"model":   cur.ChatModel,
-		"modes":   []string{"sweet", "playful", "bold", "roleplay"},
+		"enabled":         cur.ChatEnabled,
+		"model":           cur.ChatModel,
+		"modes":           []string{"sweet", "playful", "bold", "roleplay"},
+		"advancedOptions": cur.ChatEnabled,
 	})
 }
 
@@ -66,8 +70,16 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	emotion := strings.ToLower(strings.TrimSpace(in.Emotion))
+	switch emotion { // accept old clients, but always return a pose with artwork
+	case "", "default":
+		emotion = "neutral"
+	case "sad", "worried":
+		emotion = "thinking"
+	case "horniness":
+		emotion = "mischievous"
+	}
 	if !supportedLibbyEmotions[emotion] {
-		emotion = "default"
+		emotion = "neutral"
 	}
 	if in.Intensity < 1 {
 		in.Intensity = 1
@@ -91,9 +103,18 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		messages = append(messages, m)
 	}
 
-	payload, _ := json.Marshal(map[string]any{
-		"model": cur.ChatModel, "messages": messages, "stream": false,
-	})
+	payloadMap := map[string]any{"model": cur.ChatModel, "messages": messages, "stream": false}
+	// These three fields belong to OppaiLib: allowing them through would bypass the
+	// validated history/model or turn this bounded JSON call into an SSE stream.
+	for key, value := range in.Options {
+		switch key {
+		case "model", "messages", "stream":
+			continue
+		default:
+			payloadMap[key] = value
+		}
+	}
+	payload, _ := json.Marshal(payloadMap)
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cur.ChatURL+"/v1/chat/completions", bytes.NewReader(payload))
@@ -102,6 +123,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if cur.ChatAPIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+cur.ChatAPIKey)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, fmt.Sprintf("local LLM: %v", err))
@@ -126,11 +150,35 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, "local LLM returned no message")
 		return
 	}
+	reply := strings.TrimSpace(out.Choices[0].Message.Content)
+	emotion = inferChatEmotion(in.Messages[len(in.Messages)-1].Content, reply, emotion)
+	if (in.Mode == "playful" || in.Mode == "bold" || in.Mode == "roleplay") &&
+		strings.Contains(strings.ToLower(in.Messages[len(in.Messages)-1].Content), "flirt") && in.Intensity < 5 {
+		in.Intensity++
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"message":   out.Choices[0].Message.Content,
+		"message":   reply,
 		"emotion":   emotion,
 		"intensity": in.Intensity,
 	})
+}
+
+func inferChatEmotion(user, reply, current string) string {
+	text := strings.ToLower(user + " " + reply)
+	switch {
+	case strings.Contains(text, "?") || strings.Contains(text, "wonder") || strings.Contains(text, "think"):
+		return "thinking"
+	case strings.Contains(text, "!") || strings.Contains(text, "wow") || strings.Contains(text, "oh my"):
+		return "surprised"
+	case strings.Contains(text, "tease") || strings.Contains(text, "flirt") || strings.Contains(text, "sexy") || strings.Contains(text, "kiss"):
+		return "mischievous"
+	case strings.Contains(text, "thank") || strings.Contains(text, "glad") || strings.Contains(text, "happy") || strings.Contains(text, "love"):
+		return "happy"
+	case supportedLibbyEmotions[current]:
+		return current
+	default:
+		return "neutral"
+	}
 }
 
 func truncateChatError(body []byte) string {

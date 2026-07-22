@@ -8,11 +8,15 @@ import (
 )
 
 func TestChatProxiesLocalOpenAIEndpoint(t *testing.T) {
+	var gotAuth string
 	var got struct {
 		Model    string        `json:"model"`
 		Messages []chatMessage `json:"messages"`
+		TopK     int           `json:"top_k"`
+		Preset   string        `json:"preset"`
 	}
 	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
 		if r.URL.Path != "/v1/chat/completions" {
 			t.Fatalf("path = %q", r.URL.Path)
 		}
@@ -27,15 +31,22 @@ func TestChatProxiesLocalOpenAIEndpoint(t *testing.T) {
 	cur := s.settings.Get()
 	cur.ChatURL = llm.URL
 	cur.ChatModel = "test-local"
+	cur.ChatAPIKey = "local-secret"
 	s.settings.Set(cur)
 
 	rec := do(t, s.Handler(), token, http.MethodPost, "/api/chat",
-		`{"mode":"playful","messages":[{"role":"user","content":"hello"}]}`)
+		`{"mode":"playful","messages":[{"role":"user","content":"hello"}],"options":{"top_k":37,"preset":"Libby"}}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("chat: %d %s", rec.Code, rec.Body.String())
 	}
 	if got.Model != "test-local" || len(got.Messages) != 2 || got.Messages[0].Role != "system" {
 		t.Fatalf("forwarded request = %+v", got)
+	}
+	if got.TopK != 37 || got.Preset != "Libby" {
+		t.Fatalf("advanced options not forwarded: %+v", got)
+	}
+	if gotAuth != "Bearer local-secret" {
+		t.Fatalf("Authorization = %q", gotAuth)
 	}
 	var out map[string]string
 	_ = json.Unmarshal(rec.Body.Bytes(), &out)

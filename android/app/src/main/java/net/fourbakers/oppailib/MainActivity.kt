@@ -404,7 +404,7 @@ private fun MascotPopup(message: String, emotion: String, repo: Repository, modi
                 repo = repo,
                 emotion = emotion,
                 tier = LibbyMeter.tier(meter),
-                fallbackAsset = mascotAsset(emotion),
+                fallbackAsset = mascotAsset(emotion, LibbyMeter.tier(meter)),
                 modifier = Modifier.size(width = 150.dp, height = 220.dp),
             )
         }

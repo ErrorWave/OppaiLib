@@ -126,6 +126,11 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
     var seedText by remember { mutableStateOf("-1") }
     var detailerEnabled by remember { mutableStateOf(false) }
     var detailerModel by remember { mutableStateOf("face_yolov8n.pt") }
+    var detailerPrompt by remember { mutableStateOf("") }
+    var detailerNegative by remember { mutableStateOf("") }
+    var detailerConfidence by remember { mutableStateOf(0.3) }
+    var detailerDenoise by remember { mutableStateOf(0.4) }
+    var detailerMaskBlur by remember { mutableStateOf(4) }
 
     var generating by remember { mutableStateOf(false) }
     var shots by remember { mutableStateOf<List<ShotState>>(emptyList()) }
@@ -222,7 +227,15 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
                         board = board,
                         loras = loraWeights.map { (name, weight) -> GenLoraPick(name, weight) },
                         detailer = if (status?.detailerAvailable == true && detailerEnabled) {
-                            DetailerRequest(enabled = true, model = detailerModel)
+                            DetailerRequest(
+                                enabled = true,
+                                model = detailerModel,
+                                prompt = detailerPrompt,
+                                negativePrompt = detailerNegative,
+                                confidence = detailerConfidence,
+                                denoise = detailerDenoise,
+                                maskBlur = detailerMaskBlur,
+                            )
                         } else null,
                     ),
                 )
@@ -572,6 +585,34 @@ fun ImageGenScreen(repo: Repository, onBack: () -> Unit, onSaved: () -> Unit) {
                                         onClick = { detailerModel = model },
                                         label = { Text(label) },
                                     )
+                                }
+                            }
+                        }
+                        if (detailerEnabled) {
+                            OutlinedTextField(
+                                value = detailerPrompt,
+                                onValueChange = { detailerPrompt = it },
+                                label = { Text("Detail prompt (blank reuses prompt)") },
+                                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                            )
+                            OutlinedTextField(
+                                value = detailerNegative,
+                                onValueChange = { detailerNegative = it },
+                                label = { Text("Detail negative prompt") },
+                                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                            )
+                            Row(
+                                Modifier.fillMaxWidth().padding(top = 8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                NumberField("Confidence", detailerConfidence.toString(), Modifier.weight(1f)) {
+                                    detailerConfidence = (it.toDoubleOrNull() ?: 0.3).coerceIn(0.05, 1.0)
+                                }
+                                NumberField("Denoise", detailerDenoise.toString(), Modifier.weight(1f)) {
+                                    detailerDenoise = (it.toDoubleOrNull() ?: 0.4).coerceIn(0.05, 1.0)
+                                }
+                                NumberField("Mask blur", detailerMaskBlur.toString(), Modifier.weight(1f)) {
+                                    detailerMaskBlur = (it.toIntOrNull() ?: 4).coerceIn(0, 64)
                                 }
                             }
                         }

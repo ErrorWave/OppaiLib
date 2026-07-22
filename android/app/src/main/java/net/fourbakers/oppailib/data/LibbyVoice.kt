@@ -42,7 +42,7 @@ object LibbyVoice {
 
     // ── reactions ────────────────────────────────────────────────────────────
 
-    enum class Event { IMPORT, SAVE, GENERATE, GALLERY_DELETE, LOGIN, LOGIN_FAIL, GREETING, IDLE }
+    enum class Event { IMPORT, SAVE, GENERATE, LIBRARY_DELETE, GALLERY_DELETE, LOGIN, LOGIN_FAIL, GREETING, IDLE }
 
     private val reactions: Map<Event, Tiered> = mapOf(
         Event.IMPORT to listOf(
@@ -72,6 +72,13 @@ object LibbyVoice {
             listOf("Mmh, too tame for you? Gone.", "Deleted. You want better.", "Gone — we can do better."),
             listOf("Ohh, brutal. Deleted.", "Not good enough for you? Gone.", "Deleted. High standards tonight."),
             listOf("Gone. Now make me a better one.", "Deleted — try harder, I'm waiting.", "Ngh, fine. Gone. Again."),
+        ),
+        Event.LIBRARY_DELETE to listOf(
+            listOf("Removed from the library.", "Gone from the shelf.", "Deleted. I'll tidy the gap."),
+            listOf("Out it goes. Making room?", "Deleted — changing your taste?", "Gone. I noticed that one."),
+            listOf("Mmh, pruning the collection? Gone.", "Deleted. I thought you liked that one.", "Gone — ruthless today."),
+            listOf("Oh, you're really clearing house.", "Deleted. I'll pretend I wasn't attached.", "Gone. Cold."),
+            listOf("You deleted it right in front of me.", "Gone. Now I want to know why.", "Fine. Deleted. Give me something better."),
         ),
         Event.LOGIN to listOf(
             listOf("Welcome back.", "There you are.", "Hi. Missed you."),
@@ -105,14 +112,15 @@ object LibbyVoice {
 
     /** Emotions she wears per event, by tier — the art follows the words. */
     private val reactionMoods: Map<Event, List<String>> = mapOf(
-        Event.IMPORT to listOf("happy", "happy", "mischievous", "mischievous", "horniness"),
-        Event.SAVE to listOf("happy", "happy", "mischievous", "mischievous", "horniness"),
-        Event.GENERATE to listOf("happy", "happy", "mischievous", "surprised", "horniness"),
-        Event.GALLERY_DELETE to listOf("thinking", "thinking", "mischievous", "mischievous", "horniness"),
-        Event.LOGIN to listOf("happy", "happy", "mischievous", "mischievous", "horniness"),
-        Event.LOGIN_FAIL to listOf("sad", "worried", "thinking", "mischievous", "worried"),
-        Event.GREETING to listOf("happy", "happy", "mischievous", "mischievous", "horniness"),
-        Event.IDLE to listOf("thinking", "thinking", "mischievous", "worried", "horniness"),
+        Event.IMPORT to listOf("happy", "happy", "mischievous", "mischievous", "mischievous"),
+        Event.SAVE to listOf("happy", "happy", "mischievous", "mischievous", "mischievous"),
+        Event.GENERATE to listOf("happy", "happy", "mischievous", "surprised", "mischievous"),
+        Event.GALLERY_DELETE to listOf("thinking", "thinking", "mischievous", "mischievous", "mischievous"),
+        Event.LIBRARY_DELETE to listOf("thinking", "thinking", "surprised", "surprised", "mischievous"),
+        Event.LOGIN to listOf("happy", "happy", "mischievous", "mischievous", "mischievous"),
+        Event.LOGIN_FAIL to listOf("thinking", "thinking", "thinking", "mischievous", "thinking"),
+        Event.GREETING to listOf("happy", "happy", "mischievous", "mischievous", "mischievous"),
+        Event.IDLE to listOf("thinking", "thinking", "mischievous", "thinking", "mischievous"),
     )
 
     /**
@@ -265,19 +273,19 @@ object LibbyVoice {
     )
 
     private val replyMoods: Map<Intent, List<String>> = mapOf(
-        Intent.GREETING to listOf("happy", "happy", "mischievous", "mischievous", "horniness"),
-        Intent.HOW_ARE_YOU to listOf("happy", "happy", "thinking", "mischievous", "horniness"),
-        Intent.COMPLIMENT to listOf("happy", "happy", "mischievous", "surprised", "horniness"),
-        Intent.FLIRT to listOf("surprised", "mischievous", "mischievous", "horniness", "horniness"),
-        Intent.THANKS to listOf("happy", "happy", "mischievous", "mischievous", "horniness"),
-        Intent.BYE to listOf("sad", "sad", "worried", "worried", "horniness"),
-        Intent.ABOUT_HER to listOf("happy", "happy", "mischievous", "mischievous", "horniness"),
-        Intent.ABOUT_LIBRARY to listOf("thinking", "happy", "mischievous", "mischievous", "horniness"),
-        Intent.HELP to listOf("thinking", "thinking", "mischievous", "mischievous", "horniness"),
-        Intent.SAD to listOf("worried", "worried", "sad", "mischievous", "horniness"),
-        Intent.YES_NO to listOf("thinking", "thinking", "mischievous", "mischievous", "horniness"),
-        Intent.QUESTION to listOf("thinking", "thinking", "mischievous", "mischievous", "horniness"),
-        Intent.CHATTER to listOf("default", "happy", "mischievous", "mischievous", "horniness"),
+        Intent.GREETING to listOf("happy", "happy", "mischievous", "mischievous", "mischievous"),
+        Intent.HOW_ARE_YOU to listOf("happy", "happy", "thinking", "mischievous", "mischievous"),
+        Intent.COMPLIMENT to listOf("happy", "happy", "mischievous", "surprised", "mischievous"),
+        Intent.FLIRT to listOf("surprised", "mischievous", "mischievous", "mischievous", "mischievous"),
+        Intent.THANKS to listOf("happy", "happy", "mischievous", "mischievous", "mischievous"),
+        Intent.BYE to listOf("thinking", "thinking", "thinking", "thinking", "mischievous"),
+        Intent.ABOUT_HER to listOf("happy", "happy", "mischievous", "mischievous", "mischievous"),
+        Intent.ABOUT_LIBRARY to listOf("thinking", "happy", "mischievous", "mischievous", "mischievous"),
+        Intent.HELP to listOf("thinking", "thinking", "mischievous", "mischievous", "mischievous"),
+        Intent.SAD to listOf("thinking", "thinking", "thinking", "mischievous", "mischievous"),
+        Intent.YES_NO to listOf("thinking", "thinking", "mischievous", "mischievous", "mischievous"),
+        Intent.QUESTION to listOf("thinking", "thinking", "mischievous", "mischievous", "mischievous"),
+        Intent.CHATTER to listOf("neutral", "happy", "mischievous", "mischievous", "mischievous"),
     )
 
     /** Occasional mode-flavoured tails, so the four channels don't read alike. */
@@ -316,7 +324,7 @@ object LibbyVoice {
         // An emotion the user set by hand stays honoured on small talk; anything
         // with a clear intent behind it picks its own face.
         val fromIntent = replyMoods.getValue(intent)[heat - 1]
-        val chosen = if (intent == Intent.CHATTER && emotion != "default") emotion else fromIntent
+        val chosen = if (intent == Intent.CHATTER && emotion != "neutral") emotion else fromIntent
         return Line((body + tail).trim(), chosen, heat)
     }
 

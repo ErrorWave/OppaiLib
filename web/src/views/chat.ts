@@ -5,7 +5,7 @@ import { iconStyles, motionStyles } from "../theme.js";
 import { LIBBY_EMOTIONS, applyImageFallback, libbyAssetCandidates, loadHideLibby,
   loadLibbyOutfit, normalizeEmotion, normalizeIntensity, type LibbyEmotion } from "../libby.js";
 import { getIntensity, setIntensity } from "../libby-meter.js";
-import { libbyOpener, libbyReply } from "../libby-voice.js";
+import { libbyOpener, libbyReact, libbyReply } from "../libby-voice.js";
 
 // Each mode is a channel in Libby's "server", and maps to one of her emotions; the
 // artwork for an emotion comes from the worn outfit when one is selected (see
@@ -40,6 +40,7 @@ export class OppaiChat extends LitElement {
   @state() private intensity = getIntensity();
   /** The settings panel is folded away until asked for — the chat is the point. */
   @state() private settingsOpen = false;
+  @state() private advancedOptions = "{}";
 
   private onMeter = (e: Event) =>
     (this.intensity = (e as CustomEvent<{ intensity: number }>).detail.intensity);
@@ -47,24 +48,37 @@ export class OppaiChat extends LitElement {
   @state() private draft = "";
   @state() private busy = false;
   @state() private error = "";
+  private idleTimer = 0;
+
+  private armIdle = () => {
+    window.clearTimeout(this.idleTimer);
+    this.idleTimer = window.setTimeout(() => {
+      if (this.busy || document.visibilityState !== "visible") { this.armIdle(); return; }
+      const line = libbyReact("idle", { intensity: this.intensity });
+      this.emotion = line.emotion;
+      this.entries = [...this.entries, { role: "assistant", content: line.message, at: Date.now(), local: true }];
+      void this.scrollToEnd();
+      this.armIdle();
+    }, 60_000);
+  };
 
   static styles = [iconStyles, motionStyles, css`
-    /* A Discord client, deliberately: its own dark chrome regardless of the app
-       theme, because half of "looks like Discord" is the palette. */
+    /* Discord's information architecture, expressed with OppaiLib's live theme. */
     :host {
       display: block;
       height: 100%;
-      --dc-rail: #1e1f22;
-      --dc-side: #2b2d31;
-      --dc-main: #313338;
-      --dc-hover: #35373c;
-      --dc-input: #383a40;
-      --dc-text: #dbdee1;
-      --dc-bright: #f2f3f5;
-      --dc-muted: #949ba4;
-      --dc-accent: #5865f2;
-      --dc-line: #3f4147;
-      --dc-online: #23a55a;
+      --dc-rail: var(--md-sys-color-surface-container-lowest);
+      --dc-side: var(--md-sys-color-surface-container-low);
+      --dc-main: var(--md-sys-color-surface);
+      --dc-hover: var(--md-sys-color-surface-container-high);
+      --dc-input: var(--md-sys-color-surface-container-highest);
+      --dc-text: var(--md-sys-color-on-surface);
+      --dc-bright: var(--md-sys-color-on-surface);
+      --dc-muted: var(--md-sys-color-on-surface-variant);
+      --dc-accent: var(--md-sys-color-primary);
+      --dc-on-accent: var(--md-sys-color-on-primary);
+      --dc-line: var(--md-sys-color-outline-variant);
+      --dc-online: var(--md-sys-color-tertiary);
       color: var(--dc-text);
       font: 400 15px/1.375 "gg sans", "Noto Sans", Roboto, system-ui, sans-serif;
     }
@@ -74,7 +88,7 @@ export class OppaiChat extends LitElement {
       height: calc(100vh - 120px);
       border-radius: 12px;
       overflow: hidden;
-      border: 1px solid #1e1f22;
+      border: 1px solid var(--dc-line);
       background: var(--dc-main);
     }
 
@@ -92,7 +106,7 @@ export class OppaiChat extends LitElement {
     /* ── channel sidebar ─────────────────────────────────────────────────── */
     .side { background: var(--dc-side); display: flex; flex-direction: column; min-width: 0; }
     .guild-head { height: 48px; padding: 0 16px; display: flex; align-items: center;
-      font-weight: 600; color: var(--dc-bright); border-bottom: 1px solid #1f2023;
+      font-weight: 600; color: var(--dc-bright); border-bottom: 1px solid var(--dc-line);
       box-shadow: 0 1px 0 rgba(0,0,0,.2); font-size: 15px; }
     .cat { padding: 16px 8px 4px 16px; font-size: 12px; font-weight: 600;
       letter-spacing: .02em; text-transform: uppercase; color: var(--dc-muted); }
@@ -101,12 +115,12 @@ export class OppaiChat extends LitElement {
       font: inherit; font-size: 15px; font-weight: 500; width: calc(100% - 16px);
       text-align: left; cursor: pointer; }
     .chan:hover { background: var(--dc-hover); color: var(--dc-text); }
-    .chan.on { background: #404249; color: var(--dc-bright); }
+    .chan.on { background: var(--dc-hover); color: var(--dc-bright); }
     .chan .hash { font-size: 19px; color: var(--dc-muted); font-weight: 400; }
-    .side-foot { margin-top: auto; background: #232428; padding: 8px; display: flex;
+    .side-foot { margin-top: auto; background: var(--dc-rail); padding: 8px; display: flex;
       align-items: center; gap: 8px; }
     .me-avatar { width: 32px; height: 32px; border-radius: 50%; background: var(--dc-accent);
-      color: #fff; display: grid; place-items: center; font-size: 12px; font-weight: 700; }
+      color: var(--dc-on-accent); display: grid; place-items: center; font-size: 12px; font-weight: 700; }
     .me-name { font-size: 14px; font-weight: 600; color: var(--dc-bright);
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .me-sub { font-size: 12px; color: var(--dc-muted); }
@@ -114,7 +128,7 @@ export class OppaiChat extends LitElement {
     /* ── main column ─────────────────────────────────────────────────────── */
     .main { display: flex; flex-direction: column; min-width: 0; background: var(--dc-main); }
     .top { height: 48px; display: flex; align-items: center; gap: 8px; padding: 0 16px;
-      border-bottom: 1px solid #26272b; box-shadow: 0 1px 0 rgba(0,0,0,.2); }
+      border-bottom: 1px solid var(--dc-line); box-shadow: 0 1px 0 rgba(0,0,0,.2); }
     .top .hash { font-size: 22px; color: var(--dc-muted); }
     .top .name { font-weight: 600; color: var(--dc-bright); }
     .top .topic { font-size: 13px; color: var(--dc-muted); border-left: 1px solid var(--dc-line);
@@ -135,17 +149,17 @@ export class OppaiChat extends LitElement {
       border-radius: 50%; overflow: hidden; background: var(--dc-input); margin-top: 2px; }
     .avatar img { width: 100%; height: 100%; object-fit: cover; object-position: top center; }
     .avatar.initials { display: grid; place-items: center; background: var(--dc-accent);
-      color: #fff; font-size: 15px; font-weight: 700; }
+      color: var(--dc-on-accent); font-size: 15px; font-weight: 700; }
     .stamp { grid-column: 1; justify-self: end; padding-right: 4px; font-size: 11px;
       color: var(--dc-muted); opacity: 0; line-height: 22px; }
     .row:hover .stamp { opacity: 1; }
     .body { grid-column: 2; min-width: 0; }
     .who { display: flex; align-items: baseline; gap: 8px; }
     .who .author { font-size: 15px; font-weight: 500; color: var(--dc-bright); }
-    .who .author.libby { color: #f0a6c8; }
-    .tag { background: var(--dc-accent); color: #fff; font-size: 10px; font-weight: 600;
+    .who .author.libby { color: var(--dc-accent); }
+    .tag { background: var(--dc-accent); color: var(--dc-on-accent); font-size: 10px; font-weight: 600;
       border-radius: 3px; padding: 1px 4px; text-transform: uppercase; letter-spacing: .02em; }
-    .tag.offline { background: #4e5058; }
+    .tag.offline { background: var(--dc-line); color: var(--dc-bright); }
     .when { font-size: 12px; color: var(--dc-muted); }
     .text { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--dc-text); }
     .typing { display: flex; align-items: center; gap: 6px; padding: 4px 16px 0 56px;
@@ -176,7 +190,7 @@ export class OppaiChat extends LitElement {
       display: grid; place-items: center; padding: 0; }
     .send:hover:not(:disabled) { color: var(--dc-bright); }
     .send:disabled { opacity: .4; cursor: default; }
-    .error { color: #fa777c; font-size: 13px; padding: 0 16px 8px; }
+    .error { color: var(--md-sys-color-error); font-size: 13px; padding: 0 16px 8px; }
 
     /* ── members sidebar (Libby) ─────────────────────────────────────────── */
     .members { background: var(--dc-side); display: flex; flex-direction: column;
@@ -188,7 +202,7 @@ export class OppaiChat extends LitElement {
       background: var(--dc-input); position: relative; }
     .member .pip img { width: 100%; height: 100%; object-fit: cover; object-position: top center; }
     .member .who2 { min-width: 0; }
-    .member .n { font-size: 14px; font-weight: 600; color: #f0a6c8; }
+    .member .n { font-size: 14px; font-weight: 600; color: var(--dc-accent); }
     .member .s { font-size: 12px; color: var(--dc-muted); overflow: hidden;
       text-overflow: ellipsis; white-space: nowrap; }
     .portrait { flex: 1; min-height: 0; display: grid; place-items: end center; }
@@ -196,7 +210,7 @@ export class OppaiChat extends LitElement {
       object-position: bottom; }
 
     /* ── settings panel (folded away by default) ─────────────────────────── */
-    .settings { background: #2b2d31; border-bottom: 1px solid #26272b; padding: 14px 16px;
+    .settings { background: var(--dc-side); border-bottom: 1px solid var(--dc-line); padding: 14px 16px;
       display: grid; gap: 12px; }
     .settings h3 { margin: 0; font-size: 12px; font-weight: 700; text-transform: uppercase;
       letter-spacing: .02em; color: var(--dc-muted); }
@@ -204,10 +218,14 @@ export class OppaiChat extends LitElement {
     .chip { border: 1px solid var(--dc-line); background: transparent; color: var(--dc-text);
       border-radius: 4px; font: inherit; font-size: 13px; padding: 4px 10px; cursor: pointer; }
     .chip:hover { background: var(--dc-hover); }
-    .chip.on { background: var(--dc-accent); border-color: var(--dc-accent); color: #fff; }
+    .chip.on { background: var(--dc-accent); border-color: var(--dc-accent); color: var(--dc-on-accent); }
     .heat { display: flex; align-items: center; gap: 8px; }
     .heat input { flex: 1; accent-color: var(--dc-accent); }
     .heat .val { font-size: 13px; color: var(--dc-muted); min-width: 78px; }
+    textarea.advanced { width: 100%; min-height: 92px; max-height: 220px; box-sizing: border-box;
+      border: 1px solid var(--dc-line); border-radius: 6px; padding: 8px; margin-top: 6px;
+      background: var(--dc-input); color: var(--dc-text); font: 12px/1.45 ui-monospace, monospace; }
+    .advanced-help { margin-top: 5px; color: var(--dc-muted); font-size: 12px; }
 
     @media (max-width: 1100px) { .client { grid-template-columns: 72px 220px 1fr; }
       .members { display: none; } }
@@ -224,6 +242,7 @@ export class OppaiChat extends LitElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     window.removeEventListener("oppai-libby-meter", this.onMeter);
+    window.clearTimeout(this.idleTimer);
   }
 
   private async load() {
@@ -251,6 +270,19 @@ export class OppaiChat extends LitElement {
   private async send() {
     const content = this.draft.trim();
     if (!content || this.busy) return;
+    let options: Record<string, unknown> = {};
+    if (this.status?.enabled) {
+      try {
+        const parsed: unknown = JSON.parse(this.advancedOptions || "{}");
+        if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") throw new Error("not an object");
+        options = parsed as Record<string, unknown>;
+      } catch {
+        this.error = "Advanced text-generation options must be a JSON object.";
+        this.settingsOpen = true;
+        return;
+      }
+    }
+    this.armIdle();
     const next: Entry[] = [...this.entries, { role: "user", content, at: Date.now() }];
     this.entries = next; this.draft = ""; this.busy = true; this.error = "";
     void this.scrollToEnd();
@@ -275,7 +307,7 @@ export class OppaiChat extends LitElement {
       const history: ChatMessage[] = next
         .filter((e) => !e.local)
         .map(({ role, content: text }) => ({ role, content: text }));
-      const result = await api.chat(this.mode, history, this.emotion, this.intensity);
+      const result = await api.chat(this.mode, history, this.emotion, this.intensity, options);
       this.emotion = normalizeEmotion(result.emotion ?? this.emotion);
       // Persist the reply's intensity into the session meter so it carries across
       // the app (the outfit tier Libby wears, the next screen she pops up on).
@@ -293,7 +325,7 @@ export class OppaiChat extends LitElement {
     const channel = MODES.find((m) => m.id === this.mode) ?? MODES[0];
     const me = this.user?.username ?? "You";
     return html`
-      <div class="client">
+      <div class="client" @pointerdown=${this.armIdle}>
         ${this.renderRail(assets, hideLibby)}
         ${this.renderSidebar(me)}
         <section class="main">
@@ -319,7 +351,7 @@ export class OppaiChat extends LitElement {
             <div class="composer">
               <textarea rows="1" placeholder=${`Message #${channel.label}`} .value=${this.draft}
                 ?disabled=${this.busy}
-                @input=${(e: Event) => (this.draft = (e.target as HTMLTextAreaElement).value)}
+                @input=${(e: Event) => { this.draft = (e.target as HTMLTextAreaElement).value; this.armIdle(); }}
                 @keydown=${this.onKey}></textarea>
               <button class="send" title="Send" ?disabled=${!this.draft.trim() || this.busy}>
                 <span class="material-symbols-rounded">send</span>
@@ -371,7 +403,7 @@ export class OppaiChat extends LitElement {
         <div class="chips">
           ${LIBBY_EMOTIONS.map((m) => html`<button class="chip ${m === this.emotion ? "on" : ""}"
             @click=${() => (this.emotion = m)}>
-            ${m === "horniness" ? "Horniness" : m[0].toUpperCase() + m.slice(1)}
+            ${m[0].toUpperCase() + m.slice(1)}
           </button>`)}
         </div>
       </div>
@@ -383,6 +415,15 @@ export class OppaiChat extends LitElement {
           <span class="val">${this.intensity} / 5</span>
         </div>
       </div>
+      ${this.status?.advancedOptions ? html`<div>
+        <h3>text-generation-webui API</h3>
+        <textarea class="advanced" spellcheck="false" .value=${this.advancedOptions}
+          @input=${(e: Event) => (this.advancedOptions = (e.target as HTMLTextAreaElement).value)}
+          placeholder='{"temperature":0.7,"top_p":0.9,"top_k":20,"preset":"Libby"}'></textarea>
+        <div class="advanced-help">Any chat-completions field is passed through: presets, samplers,
+          character/template fields, grammar, stop strings, thinking controls, and future options.
+          OppaiLib keeps model, messages, and streaming under its control.</div>
+      </div>` : nothing}
     </div>`;
   }
 
@@ -457,6 +498,7 @@ export class OppaiChat extends LitElement {
     const opener = libbyOpener(this.mode, this.intensity);
     this.emotion = opener.emotion;
     this.entries = [{ role: "assistant", content: opener.message, at: Date.now(), local: true }];
+    this.armIdle();
   }
 }
 

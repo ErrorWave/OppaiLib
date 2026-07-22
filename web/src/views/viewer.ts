@@ -1,6 +1,7 @@
 import { LitElement, html, css, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import { api, type ComicInfo, type Media, type MediaTag } from "../api.js";
+import { api, mascotSay, type ComicInfo, type Media, type MediaTag } from "../api.js";
+import { libbyReact } from "../libby-voice.js";
 import { iconStyles, motionStyles } from "../theme.js";
 import {
   KIND_META,
@@ -962,6 +963,8 @@ export class OppaiViewer extends LitElement {
     if (!confirm(`Delete "${m.title}"? This cannot be undone.`)) return;
     try {
       await api.deleteMedia(m.id);
+      const line = libbyReact("libraryDelete");
+      mascotSay(line.message, "success", { emotion: line.emotion, intensity: line.intensity });
       this.dispatchEvent(new CustomEvent("deleted", { detail: { id: m.id }, bubbles: true, composed: true }));
     } catch (e) {
       console.error("delete", e);

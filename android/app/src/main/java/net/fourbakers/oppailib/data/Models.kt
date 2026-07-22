@@ -2,6 +2,7 @@ package net.fourbakers.oppailib.data
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
 
 @Serializable
 data class MediaTag(
@@ -180,14 +181,15 @@ data class ChatMessage(val role: String, val content: String)
 data class ChatRequest(
     val mode: String,
     val messages: List<ChatMessage>,
-    val emotion: String = "default",
+    val emotion: String = "neutral",
     val intensity: Int = 1,
+    val options: JsonObject = JsonObject(emptyMap()),
 )
 
 @Serializable
 data class ChatResponse(
     val message: String,
-    val emotion: String = "default",
+    val emotion: String = "neutral",
     val intensity: Int = 1,
 )
 
@@ -196,6 +198,7 @@ data class ChatStatus(
     val enabled: Boolean = false,
     val model: String = "",
     val modes: List<String> = emptyList(),
+    val advancedOptions: Boolean = false,
 )
 
 // ── image generation ─────────────────────────────────────────────────────────

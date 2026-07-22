@@ -3,6 +3,7 @@ import { customElement, query, state } from "lit/decorators.js";
 import { iconStyles, motionStyles } from "../theme.js";
 import {
   api,
+  mascotSay,
   type GenCharacter,
   type GenLora,
   type GenModel,
@@ -13,6 +14,7 @@ import {
   type GalleryBoard,
   type ImageGenStatus,
 } from "../api.js";
+import { libbyReact } from "../libby-voice.js";
 import "./imagegen-gallery.js";
 import "./civitai.js";
 import type { OppaiInvokeGallery } from "./imagegen-gallery.js";
@@ -1014,7 +1016,7 @@ export class OppaiImageGen extends LitElement {
         count: this.count,
         seed: this.seed,
         loras: Object.entries(this.selectedLoras).map(([name, weight]) => ({ name, weight })),
-        detailer: this.status?.backend === "a1111" && this.detailerEnabled
+        detailer: this.status?.detailerAvailable && this.detailerEnabled
           ? {
               enabled: true,
               model: this.detailerModel,
@@ -1271,6 +1273,8 @@ export class OppaiImageGen extends LitElement {
     this.charBusy = true;
     try {
       await api.deleteCharacter(d.id);
+      const line = libbyReact("libraryDelete");
+      mascotSay(line.message, "success", { emotion: line.emotion, intensity: line.intensity });
       this.charDraft = null;
       await this.loadCharacters();
       this.showToast("Character deleted");
@@ -1673,7 +1677,8 @@ export class OppaiImageGen extends LitElement {
             @change=${(e: Event) => (this.seamlessX = (e.target as HTMLInputElement).checked)} /> Seamless X</label>
           <label class="switch-row"><input type="checkbox" .checked=${this.seamlessY}
             @change=${(e: Event) => (this.seamlessY = (e.target as HTMLInputElement).checked)} /> Seamless Y</label>
-        ` : this.status?.detailerAvailable ? html`
+        ` : nothing}
+        ${this.status?.detailerAvailable ? html`
           <label class="switch-row full"><input type="checkbox" .checked=${this.detailerEnabled}
             @change=${(e: Event) => (this.detailerEnabled = (e.target as HTMLInputElement).checked)} />
             ADetailer face/hand pass</label>

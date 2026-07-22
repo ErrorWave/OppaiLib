@@ -109,6 +109,8 @@ export interface Settings {
   rule34ApiKeySet: boolean;
   chatUrl: string;
   chatModel: string;
+  chatApiKey: string;
+  chatApiKeySet: boolean;
   chatEnabled: boolean;
 }
 
@@ -121,7 +123,11 @@ export interface ChatStatus {
   enabled: boolean;
   model?: string;
   modes: string[];
+  advancedOptions?: boolean;
 }
+
+/** Any text-generation-webui ChatCompletionRequest field not owned by OppaiLib. */
+export type ChatOptions = Record<string, unknown>;
 
 export interface ChatResponse {
   message: string;
@@ -750,10 +756,10 @@ export const api = {
     }),
 
   chatStatus: () => request<ChatStatus>("/api/chat/status", {}, 12_000),
-  chat: (mode: string, messages: ChatMessage[], emotion = "default", intensity = 1) =>
+  chat: (mode: string, messages: ChatMessage[], emotion = "neutral", intensity = 1, options: ChatOptions = {}) =>
     request<ChatResponse>("/api/chat", {
       method: "POST",
-      body: JSON.stringify({ mode, messages, emotion, intensity }),
+      body: JSON.stringify({ mode, messages, emotion, intensity, options }),
     }, 125_000),
   loraThumbURL: (name: string) => `/api/imagegen/lora-thumb?name=${encodeURIComponent(name)}`,
 
