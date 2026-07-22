@@ -1,8 +1,8 @@
 import { LitElement, css, html, nothing, type TemplateResult } from "lit";
 import { customElement, property, query, state } from "lit/decorators.js";
 import {
-  api, type ChatCharacter, type ChatConversation, type ChatImage, type ChatMessage, type ChatModels,
-  type ChatOptions, type ChatStatus, type ChatWorkspace, type StoredChatMessage, type User,
+  api, PROFILE_IMAGE_OWNER, type ChatCharacter, type ChatConversation, type ChatImage, type ChatMessage,
+  type ChatModels, type ChatOptions, type ChatStatus, type ChatWorkspace, type StoredChatMessage, type User,
 } from "../api.js";
 import { iconStyles, motionStyles } from "../theme.js";
 import {
@@ -19,7 +19,7 @@ const MODES = [
   { id: "roleplay", label: "roleplay", emotion: "thinking", topic: "In character, in scene, in detail." },
 ] as const;
 
-type EditorTab = "character" | "generation" | "images" | "profile";
+type EditorTab = "character" | "model" | "images" | "profile";
 
 const newID = () => crypto.randomUUID().replaceAll("-", "");
 const timeOf = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
@@ -124,7 +124,12 @@ export class OppaiChat extends LitElement {
       place-items:center; overflow:hidden; cursor:pointer; transition:.15s; }
     .guild:hover,.guild.on { border-radius:14px; background:var(--accent); }
     .guild.on::before { content:""; position:absolute; left:0; width:4px; height:30px; border-radius:0 4px 4px 0; background:var(--md-sys-color-on-surface); }
-    .guild img,.avatar img,.member-avatar img { width:100%; height:100%; object-fit:cover; object-position:top center; }
+    /* Every avatar frame, not just some. .top-avatar and .me-avatar were missing
+       here, so their images rendered at natural size and showed a clipped crop
+       instead of filling the circle. Portraits are anchored to the top so a tall
+       character image keeps the face rather than centring on the torso. */
+    .guild img,.avatar img,.member-avatar img,.top-avatar img,.me-avatar img,.call-avatar img {
+      width:100%; height:100%; object-fit:cover; object-position:top center; display:block; }
     .initial { font-weight:700; color:var(--on-accent); background:var(--accent); }
     .rail-sep { width:32px; height:2px; background:var(--line); }
     .side { min-width:0; display:flex; flex-direction:column; background:var(--side); }
@@ -146,7 +151,7 @@ export class OppaiChat extends LitElement {
     .convo-delete { opacity:0; margin-right:4px; border:0; border-radius:6px; padding:5px; background:transparent; color:var(--muted); cursor:pointer; }
     .convo-wrap:hover .convo-delete,.convo-wrap:focus-within .convo-delete { opacity:1; }.convo-delete:hover { color:var(--md-sys-color-error); background:var(--main); }
     .side-foot { margin-top:auto; background:var(--rail); padding:8px; display:flex; align-items:center; gap:8px; }
-    .me-avatar { width:32px; height:32px; border-radius:50%; display:grid; place-items:center; }
+    .me-avatar { width:32px; height:32px; flex:0 0 32px; border-radius:50%; overflow:hidden; display:grid; place-items:center; }
     .me-copy { min-width:0; flex:1; } .me-name { font-size:13px; font-weight:650; overflow:hidden; text-overflow:ellipsis; }
     .me-sub { font-size:11px; color:var(--muted); display:flex; align-items:center; gap:5px; }.status-dot { width:7px; height:7px; border-radius:50%; background:#8a8f98; }.status-dot.online { background:#35c46a; }
     .main { display:flex; min-width:0; min-height:0; flex-direction:column; background:var(--main); position:relative; }
@@ -185,14 +190,47 @@ export class OppaiChat extends LitElement {
     .settings { position:absolute; inset:56px 0 0 0; z-index:5; overflow:auto; background:var(--side); box-shadow:0 10px 28px rgba(0,0,0,.28); }
     .settings-head { position:sticky; top:0; z-index:2; display:flex; align-items:center; gap:8px; padding:12px 16px 8px; background:var(--side); }.settings-head strong { flex:1; font-size:17px; }.settings-head span { display:block; color:var(--muted); font-size:11px; font-weight:400; }
     .tabs { position:sticky; top:55px; z-index:2; display:flex; gap:3px; padding:0 12px; border-bottom:1px solid var(--line); background:var(--side); overflow-x:auto; }.tab { border:0; background:transparent; color:var(--muted); padding:9px 10px; cursor:pointer; border-bottom:2px solid transparent; text-transform:capitalize; }
-    .tab.on { color:inherit; border-color:var(--accent); }.panel { padding:14px 16px 18px; display:grid; gap:11px; }.grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+        .tab.on { color:inherit; border-color:var(--accent); }
+    /* Capped rather than full-bleed: settings are a reading column, and stretched
+       across a wide desktop the label/control pairs drift far apart. */
+    .panel { padding:14px 16px 22px; display:grid; gap:16px; max-width:760px; }
+    .grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .group { display:grid; gap:11px; padding:14px; border:1px solid var(--line); border-radius:10px; background:var(--main); }
+    .group h3 { margin:0; font-size:13px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); display:grid; gap:3px; }
+    .group h3 span { font-size:11px; font-weight:400; text-transform:none; letter-spacing:0; }
+    details summary { cursor:pointer; color:var(--muted); font-size:12px; padding:2px 0; }
+    details[open] summary { margin-bottom:6px; }
     label { display:grid; gap:4px; color:var(--muted); font-size:11px; font-weight:650; text-transform:uppercase; }.field,select { box-sizing:border-box; width:100%; color:var(--md-sys-color-on-surface);
       background:var(--input); border:1px solid var(--line); border-radius:5px; padding:8px; outline:0; text-transform:none; font-weight:400; }
     textarea.field { min-height:66px; resize:vertical; }.range { display:grid; grid-template-columns:1fr 48px; gap:8px; align-items:center; }.range input { accent-color:var(--accent); }.range output { text-align:right; color:inherit; }
     .panel-actions { display:flex; flex-wrap:wrap; gap:7px; }.primary,.secondary,.danger { border:1px solid var(--line); border-radius:5px; padding:7px 11px; cursor:pointer; background:transparent; }
-    .primary { background:var(--accent); border-color:var(--accent); color:var(--on-accent); }.danger { color:var(--md-sys-color-error); }.file { position:relative; overflow:hidden; }.file input { position:absolute; inset:0; opacity:0; cursor:pointer; }
+    .primary { background:var(--accent); border-color:var(--accent); color:var(--on-accent); }.danger { color:var(--md-sys-color-error); }    /* A span, not a label: the generic label rule sets display:grid and an
+       uppercase caption, which fought the button styling and misaligned the old
+       upload control. The transparent input covers the span, so a click on the
+       chip is a click on the input. */
+    .pfp-row { display:grid; grid-template-columns:80px minmax(0,1fr); gap:14px; align-items:center; }
+    .pfp { width:80px; height:80px; border-radius:50%; overflow:hidden; background:var(--input); display:grid; place-items:center; }
+    .pfp img { width:100%; height:100%; object-fit:cover; object-position:top center; display:block; }
+    .pfp-initial { font-size:24px; font-weight:700; color:var(--on-accent); background:var(--accent); width:100%; height:100%; display:grid; place-items:center; }
+    .pfp-actions { display:grid; gap:5px; justify-items:start; }.pfp-actions strong { font-size:14px; }
+    .upload-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; align-items:end; }
+    .file-btn { position:relative; overflow:hidden; display:inline-grid; place-items:center; white-space:nowrap;
+      border:1px solid var(--line); border-radius:5px; padding:9px 12px; cursor:pointer; font-size:13px; }
+    .file-btn:hover { background:var(--hover); }
+    .file-btn input { position:absolute; inset:0; opacity:0; cursor:pointer; font-size:0; }
+    @media(max-width:700px){ .upload-row { grid-template-columns:1fr; } }
     .image-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:9px; }.image-card { background:var(--input); border-radius:7px; overflow:hidden; position:relative; }
-    .image-card img { width:100%; height:110px; object-fit:cover; }.image-card div { padding:6px; font-size:11px; overflow-wrap:anywhere; }.image-card button { position:absolute; right:4px; top:4px; border:0; border-radius:50%; background:rgba(0,0,0,.7); color:white; cursor:pointer; }
+    .image-card img { width:100%; height:110px; object-fit:cover; display:block; }
+    .image-card .card-body { padding:6px; font-size:11px; overflow-wrap:anywhere; display:grid; gap:5px; justify-items:start; }
+    .image-card .card-name { font-weight:600; overflow-wrap:anywhere; }.image-card .card-tags { color:var(--muted); }
+    /* Scoped to the remove control. This used to select .image-card button, which
+       also caught the "Use avatar" button in the card body and stacked it on top
+       of the delete control in the same absolute corner. */
+    .image-card .remove { position:absolute; right:4px; top:4px; width:22px; height:22px; display:grid; place-items:center;
+      border:0; border-radius:50%; background:rgba(0,0,0,.7); color:white; cursor:pointer; line-height:1; }
+    .image-card .remove:hover { background:var(--md-sys-color-error); }
+    .image-card .card-body button { border:1px solid var(--line); border-radius:5px; padding:4px 8px; background:transparent; cursor:pointer; }
+    .badge { background:var(--accent); color:var(--on-accent); border-radius:3px; padding:1px 5px; font-size:10px; font-weight:700; }
     .empty { color:var(--muted); font-size:13px; }.nav-scrim { display:none; }
     .model-row { display:flex; align-items:center; gap:9px; }.model-row strong { min-width:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; text-transform:none; }
     @media(max-width:900px){.client{grid-template-columns:60px 236px minmax(0,1fr)}.side-head{padding-left:12px}}
@@ -343,7 +381,8 @@ export class OppaiChat extends LitElement {
     if (character.id === "libby" && !opener) { const line = libbyOpener(character.defaultMode, getIntensity()); opener = line.message; emotion = line.emotion; }
     const conversation: ChatConversation = {
       id:newID(), characterId:character.id, title:"New conversation", mode:character.defaultMode || "sweet",
-      emotion, intensity:character.id === "libby" ? getIntensity() : 1, progress:character.id === "libby" ? getIntensity() : 1, options:defaultOptions(),
+      emotion, intensity:character.id === "libby" ? getIntensity() : 1, progress:character.id === "libby" ? getIntensity() : 1,
+      options:{ ...(this.workspace.defaults ?? defaultOptions()) },
       messages:opener ? [{ id:newID(), role:"assistant", content:opener, at:now }] : [], createdAt:now, updatedAt:now,
     };
     this.workspace.conversations.push(conversation); this.conversationID = conversation.id;
@@ -488,6 +527,45 @@ export class OppaiChat extends LitElement {
     finally { (event.target as HTMLInputElement).value = ""; }
   }
 
+  /**
+   * Uploads the user's own avatar under the reserved profile owner, so it never
+   * lands in a character's gallery or gets picked as a reply attachment. The old
+   * picture is deleted afterwards: it has no other referent once replaced.
+   */
+  private async uploadProfilePicture(event: Event) {
+    const file = (event.target as HTMLInputElement).files?.[0]; if (!file) return;
+    const previous = this.workspace.profile.avatarImageId;
+    try {
+      this.say("Uploading profile picture…");
+      const image = await api.uploadChatImage({ characterId:PROFILE_IMAGE_OWNER, name:file.name, imageData:await this.readDataURL(file), tags:[] });
+      this.workspace.images.push(image);
+      this.workspace.profile.avatarImageId = image.id;
+      this.touchWorkspace();
+      await this.saveWorkspace();
+      if (previous) await this.discardProfileImage(previous);
+      this.say("Profile picture updated.");
+    } catch (error) { this.say((error as Error).message, true); }
+    finally { (event.target as HTMLInputElement).value = ""; }
+  }
+
+  private async removeProfilePicture() {
+    const current = this.workspace.profile.avatarImageId; if (!current) return;
+    this.workspace.profile.avatarImageId = "";
+    this.touchWorkspace();
+    await this.saveWorkspace();
+    await this.discardProfileImage(current);
+    this.say("Profile picture removed.");
+  }
+
+  /** A stale picture failing to delete is not worth surfacing: the reference is already gone. */
+  private async discardProfileImage(id: string) {
+    try {
+      await api.deleteChatImage(id);
+      this.workspace.images = this.workspace.images.filter((image) => image.id !== id);
+      this.touchWorkspace();
+    } catch { /* The record is unreferenced either way. */ }
+  }
+
   private async deleteImage(image: ChatImage) {
     if (!confirm(`Delete ${image.name}?`)) return;
     try { await api.deleteChatImage(image.id); this.workspace.images = this.workspace.images.filter((item) => item.id !== image.id); const c = this.activeCharacter; if (c?.avatarImageId === image.id) c.avatarImageId = ""; this.touchWorkspace(); }
@@ -541,10 +619,10 @@ export class OppaiChat extends LitElement {
     const character = this.activeCharacter, conversation = this.activeConversation; if (!character || !conversation) return nothing;
     return html`<section class="settings">
       <div class="settings-head"><strong>Chat settings<span>Changes sync between WebUI and Android</span></strong><button class="icon-btn" title="Close settings" aria-label="Close settings" @click=${() => (this.settingsOpen=false)}><span class="material-symbols-rounded">close</span></button></div>
-      <div class="tabs">${(["character","generation","images","profile"] as EditorTab[]).map((tab) => html`
-        <button class="tab ${this.editorTab === tab ? "on" : ""}" @click=${() => (this.editorTab = tab)}>${tab}</button>`)}</div>
+      <div class="tabs">${([["character",`${character.name}`],["model","Model & generation"],["images","Images"],["profile","Your profile"]] as [EditorTab,string][]).map(([tab,label]) => html`
+        <button class="tab ${this.editorTab === tab ? "on" : ""}" @click=${() => (this.editorTab = tab)}>${label}</button>`)}</div>
       ${this.editorTab === "character" ? this.renderCharacterPanel(character) : nothing}
-      ${this.editorTab === "generation" ? this.renderGenerationPanel(conversation) : nothing}
+      ${this.editorTab === "model" ? this.renderModelPanel(conversation) : nothing}
       ${this.editorTab === "images" ? this.renderImagesPanel(character) : nothing}
       ${this.editorTab === "profile" ? this.renderProfilePanel() : nothing}
     </section>`;
@@ -566,7 +644,7 @@ export class OppaiChat extends LitElement {
       ${this.field("Example dialogue", "exampleDialogue", character.exampleDialogue ?? "", 3)}
       ${this.field("Creator notes (not sent to model)", "creatorNotes", character.creatorNotes ?? "", 2)}
       <label>Character-card weight <span class="range"><input type="range" min="0.1" max="2" step="0.05" .value=${String(character.promptWeight || 1)} @input=${(event:Event) => this.updateCharacter("promptWeight", Number((event.target as HTMLInputElement).value))}/><output>${(character.promptWeight || 1).toFixed(2)}</output></span></label>
-      <div class="panel-actions"><button class="primary" @click=${() => void this.saveWorkspace()}>Save card</button><label class="secondary file">Import SillyTavern JSON or portrait<input type="file" accept="application/json,.json,image/*" @change=${this.importCard}/></label>${character.builtIn ? html`<span class="empty">Libby's built-in card is editable.</span>` : html`<button class="danger" @click=${this.deleteCharacter}>Remove friend</button>`}</div>
+      <div class="panel-actions"><button class="primary" @click=${() => void this.saveWorkspace()}>Save card</button><span class="file-btn">Import SillyTavern card<input type="file" accept="application/json,.json,image/*" @change=${this.importCard}/></span>${character.builtIn ? html`<span class="empty">Libby's built-in card is editable.</span>` : html`<button class="danger" @click=${this.deleteCharacter}>Remove friend</button>`}</div>
     </div>`;
   }
 
@@ -623,34 +701,91 @@ export class OppaiChat extends LitElement {
         ${this.modelBusy ? html`<div class="empty">Loading a large model can take several minutes. Leaving this page will not cancel it.</div>` : nothing}`}`;
   }
 
-  private renderGenerationPanel(conversation: ChatConversation) {
+  /** Copies this conversation's sampler settings to the workspace seed for new chats. */
+  private saveOptionsGlobally(conversation: ChatConversation) {
+    this.workspace.defaults = { ...(conversation.options ?? defaultOptions()) };
+    this.touchWorkspace();
+    void this.saveWorkspace();
+    this.say("Saved as the default for new conversations.");
+  }
+
+  private renderModelPanel(conversation: ChatConversation) {
     const range = (label:string,key:string,min:number,max:number,step:number,fallback:number) => html`<label>${label}<span class="range"><input type="range" min=${min} max=${max} step=${step} .value=${String(optionNumber(conversation.options,key,fallback))} @input=${(event:Event) => this.updateOption(key,Number((event.target as HTMLInputElement).value))}/><output>${optionNumber(conversation.options,key,fallback)}</output></span></label>`;
+    const hasGlobal = !!this.workspace.defaults;
     return html`<div class="panel">
-      ${this.renderModelControls()}
-      <div class="grid">
-      <label>Conversation mode<select .value=${conversation.mode} @change=${(event:Event) => this.updateConversation({mode:(event.target as HTMLSelectElement).value})}>${MODES.map((mode) => html`<option value=${mode.id}>${mode.label}</option>`)}</select></label>
-      <label>Displayed emotion<select .value=${conversation.emotion} @change=${(event:Event) => this.updateConversation({emotion:(event.target as HTMLSelectElement).value})}>${["neutral","happy","mischievous","surprised","thinking"].map((emotion) => html`<option>${emotion}</option>`)}</select></label>
-      ${range("Temperature","temperature",0,2,.05,.8)}${range("Top P","top_p",.05,1,.05,.95)}
-      ${range("Repetition penalty","repetition_penalty",1,2,.05,1.1)}${range("Max reply tokens","max_tokens",64,2048,32,400)}
-      <label>Horniness / intensity <span class="range"><input type="range" min="1" max="5" step="1" .value=${String(conversation.intensity)} @input=${(event:Event) => this.updateConversation({intensity:Number((event.target as HTMLInputElement).value)})}/><output>${conversation.intensity}/5</output></span></label>
-    </div>
-    <label>Advanced API options<textarea class="field" rows="5" .value=${JSON.stringify(conversation.options ?? {}, null, 2)} @change=${(event:Event) => { try { const parsed=JSON.parse((event.target as HTMLTextAreaElement).value) as ChatOptions; this.updateConversation({options:parsed}); } catch { this.say("Advanced options must be valid JSON.",true); } }}></textarea></label>
-    <div class="panel-actions"><button class="primary" @click=${() => void this.saveWorkspace()}>Save for this conversation</button><button class="secondary" @click=${() => { conversation.options=defaultOptions(); this.touchWorkspace(); }}>Reset controls</button></div></div>`;
+      <section class="group">
+        <h3>Backend</h3>
+        ${this.renderModelControls()}
+      </section>
+
+      <section class="group">
+        <h3>Generation<span>Applies to this conversation unless you save it as the default.</span></h3>
+        <div class="grid">
+          ${range("Temperature","temperature",0,2,.05,.8)}${range("Top P","top_p",.05,1,.05,.95)}
+          ${range("Repetition penalty","repetition_penalty",1,2,.05,1.1)}${range("Max reply tokens","max_tokens",64,2048,32,400)}
+        </div>
+        <details>
+          <summary>Advanced API options</summary>
+          <textarea class="field" rows="5" .value=${JSON.stringify(conversation.options ?? {}, null, 2)} @change=${(event:Event) => { try { const parsed=JSON.parse((event.target as HTMLTextAreaElement).value) as ChatOptions; this.updateConversation({options:parsed}); } catch { this.say("Advanced options must be valid JSON.",true); } }}></textarea>
+        </details>
+        <div class="panel-actions">
+          <button class="primary" @click=${() => void this.saveWorkspace()}>Save for this chat</button>
+          <button class="secondary" @click=${() => this.saveOptionsGlobally(conversation)}>Save as global default</button>
+          <button class="secondary" @click=${() => { conversation.options = { ...(this.workspace.defaults ?? defaultOptions()) }; this.touchWorkspace(); }}>Reset${hasGlobal ? " to global" : ""}</button>
+        </div>
+      </section>
+
+      <section class="group">
+        <h3>This conversation<span>Mood and pacing for the current chat only.</span></h3>
+        <div class="grid">
+          <label>Conversation mode<select .value=${conversation.mode} @change=${(event:Event) => this.updateConversation({mode:(event.target as HTMLSelectElement).value})}>${MODES.map((mode) => html`<option value=${mode.id}>${mode.label}</option>`)}</select></label>
+          <label>Displayed emotion<select .value=${conversation.emotion} @change=${(event:Event) => this.updateConversation({emotion:(event.target as HTMLSelectElement).value})}>${["neutral","happy","mischievous","surprised","thinking"].map((emotion) => html`<option>${emotion}</option>`)}</select></label>
+        </div>
+        <label>Intensity <span class="range"><input type="range" min="1" max="5" step="1" .value=${String(conversation.intensity)} @input=${(event:Event) => this.updateConversation({intensity:Number((event.target as HTMLInputElement).value)})}/><output>${conversation.intensity}/5</output></span></label>
+      </section>
+    </div>`;
   }
 
   private renderImagesPanel(character: ChatCharacter) {
     const images = this.workspace.images.filter((image) => image.characterId === character.id);
-    return html`<div class="panel"><p class="empty">Images are scanned locally. A character may attach one when its tags match the current exchange.</p>
-      <div class="grid"><label>Extra matching tags<input class="field" placeholder="beach, happy, bedroom" .value=${this.imageTags} @input=${(event:Event) => (this.imageTags=(event.target as HTMLInputElement).value)}/></label>
-      <label class="secondary file" style="align-self:end;text-align:center">Upload and scan image<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" @change=${this.uploadImage}/></label></div>
-      <div class="image-grid">${images.map((image) => html`<article class="image-card"><img src=${api.chatImageURL(image.id)} alt=${image.name}/><button title="Delete" @click=${() => void this.deleteImage(image)}>×</button><div><b>${image.name}</b><br/>${image.tags.join(", ") || "No tags"}${character.avatarImageId === image.id ? html`<br/><b>Avatar</b>` : nothing}<br/><button class="secondary" @click=${() => this.updateCharacter("avatarImageId",image.id)}>Use avatar</button></div></article>`)}</div>
+    return html`<div class="panel">
+      <p class="empty">Images are scanned locally. ${character.name} may attach one when its tags match the current exchange. Your own profile picture is set under Profile and is kept separate from these.</p>
+      <div class="upload-row">
+        <label>Extra matching tags<input class="field" placeholder="beach, happy, bedroom" .value=${this.imageTags} @input=${(event:Event) => (this.imageTags=(event.target as HTMLInputElement).value)}/></label>
+        <span class="file-btn">Upload and scan<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" @change=${this.uploadImage}/></span>
+      </div>
+      <div class="image-grid">${images.map((image) => html`
+        <article class="image-card">
+          <img src=${api.chatImageURL(image.id)} alt=${image.name}/>
+          <button class="remove" title="Delete ${image.name}" aria-label="Delete ${image.name}" @click=${() => void this.deleteImage(image)}>×</button>
+          <div class="card-body">
+            <span class="card-name">${image.name}</span>
+            <span class="card-tags">${image.tags.join(", ") || "No tags"}</span>
+            ${character.avatarImageId === image.id
+              ? html`<span class="badge">Avatar</span>`
+              : html`<button @click=${() => this.updateCharacter("avatarImageId", image.id)}>Use as avatar</button>`}
+          </div>
+        </article>`)}</div>
       ${images.length ? nothing : html`<div class="empty">No images for ${character.name} yet.</div>`}
     </div>`;
   }
 
   private renderProfilePanel() {
-    const profile = this.workspace.profile;
+    const profile = this.workspace.profile, me = profile.displayName || this.user?.username || "You";
     return html`<div class="panel"><p class="empty">This profile is shared by WebUI and APK and is included in character context.</p>
+      <div class="pfp-row">
+        <span class="pfp">${profile.avatarImageId
+          ? html`<img src=${api.chatImageURL(profile.avatarImageId)} alt="Your profile picture"/>`
+          : html`<span class="pfp-initial">${me.slice(0,2).toUpperCase()}</span>`}</span>
+        <div class="pfp-actions">
+          <strong>Profile picture</strong>
+          <span class="empty">Yours alone — it is never offered as a character image or attached to a reply.</span>
+          <div class="panel-actions">
+            <span class="file-btn">${profile.avatarImageId ? "Replace picture" : "Upload picture"}<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" @change=${this.uploadProfilePicture}/></span>
+            ${profile.avatarImageId ? html`<button class="danger" @click=${() => void this.removeProfilePicture()}>Remove</button>` : nothing}
+          </div>
+        </div>
+      </div>
       <label>Display name<input class="field" .value=${profile.displayName} @change=${(event:Event) => { profile.displayName=(event.target as HTMLInputElement).value; this.touchWorkspace(); }}/></label>
       <label>Your persona<textarea class="field" rows="5" placeholder="How friends should know and address you…" .value=${profile.persona} @change=${(event:Event) => { profile.persona=(event.target as HTMLTextAreaElement).value; this.touchWorkspace(); }}></textarea></label>
       <div class="panel-actions"><button class="primary" @click=${() => void this.saveWorkspace()}>Save profile</button></div></div>`;

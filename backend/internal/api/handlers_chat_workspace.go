@@ -79,7 +79,11 @@ type chatImage struct {
 }
 
 type chatWorkspace struct {
-	Profile       chatProfile        `json:"profile"`
+	Profile chatProfile `json:"profile"`
+	// Defaults are the generation settings new conversations start from, so a
+	// preferred temperature/token budget is set once rather than per chat. An
+	// existing conversation keeps its own Options; this is only the seed.
+	Defaults      map[string]any     `json:"defaults,omitempty"`
 	Characters    []chatCharacter    `json:"characters"`
 	Conversations []chatConversation `json:"conversations"`
 	Images        []chatImage        `json:"images"`
@@ -204,6 +208,16 @@ func validChatID(id string, allowLibby bool) bool {
 	return (allowLibby && id == "libby") || chatObjectID.MatchString(id)
 }
 
+// profileImageOwner owns the user's own avatar. A profile picture is deliberately
+// not a character image: giving it a reserved owner keeps it out of every
+// character's gallery and out of matchingChatImage, which only ever looks up
+// images by a real character id.
+const profileImageOwner = "profile"
+
+func validChatImageOwner(id string) bool {
+	return id == profileImageOwner || validChatID(id, true)
+}
+
 func cleanLimited(v string, n int) (string, bool) {
 	v = strings.TrimSpace(v)
 	return v, len(v) <= n
@@ -225,6 +239,12 @@ func validateChatWorkspace(ws *chatWorkspace) error {
 	}
 	if ws.Profile.Persona, ok = cleanLimited(ws.Profile.Persona, 8000); !ok {
 		return errors.New("profile persona is too long")
+	}
+	// Defaults are forwarded to the backend as sampler fields, so the key count is
+	// bounded for the same reason a conversation's Options are: this is a
+	// pass-through, not a schema we validate the meaning of.
+	if len(ws.Defaults) > 64 {
+		return errors.New("too many default generation options")
 	}
 	characters := make(map[string]bool, len(ws.Characters))
 	for i := range ws.Characters {
@@ -361,7 +381,7 @@ func (s *Server) handleUploadChatImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req uploadChatImageReq
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 12<<20)).Decode(&req); err != nil || !validChatID(req.CharacterID, true) {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 12<<20)).Decode(&req); err != nil || !validChatImageOwner(req.CharacterID) {
 		writeErr(w, http.StatusBadRequest, "invalid image upload")
 		return
 	}

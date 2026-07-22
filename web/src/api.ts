@@ -199,10 +199,15 @@ export interface ChatImage {
 
 export interface ChatWorkspace {
   profile: ChatProfile;
+  /** Generation settings new conversations start from. Existing chats keep their own. */
+  defaults?: ChatOptions;
   characters: ChatCharacter[];
   conversations: ChatConversation[];
   images: ChatImage[];
 }
+
+/** Owner id for the user's own avatar, kept out of every character's gallery. */
+export const PROFILE_IMAGE_OWNER = "profile";
 
 // Environment/build facts the Settings screen shows but can't change — these come
 // from env vars and only take effect at startup.
