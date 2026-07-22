@@ -55,8 +55,8 @@ type Config struct {
 	Rule34APIKey  string
 
 	// ChatURL is an OpenAI-compatible local LLM endpoint (LM Studio, Ollama's
-	// OpenAI bridge, llama.cpp server, etc.). ChatModel is the model name sent to
-	// /v1/chat/completions. Both are runtime-editable in Settings.
+	// OpenAI bridge, llama.cpp server, etc.). ChatModel is an optional fallback;
+	// when possible OppaiLib detects the model loaded by the backend itself.
 	ChatURL    string
 	ChatModel  string
 	ChatAPIKey string

@@ -46,18 +46,28 @@ var libbyModes = map[string]string{
 
 func (s *Server) handleChatStatus(w http.ResponseWriter, r *http.Request) {
 	cur := s.settings.Get()
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	probe := s.probeChatBackend(ctx)
+	cancel()
+	model := probe.Loaded
+	if model == "" {
+		model = cur.ChatModel
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled":         cur.ChatEnabled,
-		"model":           cur.ChatModel,
+		"enabled":         probe.Ready,
+		"configured":      cur.ChatURL != "",
+		"model":           model,
+		"message":         probe.Detail,
 		"modes":           []string{"sweet", "playful", "bold", "roleplay"},
-		"advancedOptions": cur.ChatEnabled,
+		"advancedOptions": probe.Ready,
 		"modelBackend":    cur.ChatURL != "",
+		"modelManagement": false,
 	})
 }
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	cur := s.settings.Get()
-	if !cur.ChatEnabled {
+	if cur.ChatURL == "" {
 		writeErr(w, http.StatusServiceUnavailable, "Libby chat is not configured")
 		return
 	}
@@ -131,7 +141,21 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		messages = append(messages, m)
 	}
 
-	payloadMap := map[string]any{"model": cur.ChatModel, "messages": messages, "stream": false}
+	probeCtx, probeCancel := context.WithTimeout(r.Context(), 5*time.Second)
+	probe := s.probeChatBackend(probeCtx)
+	probeCancel()
+	if !probe.Ready {
+		writeErr(w, http.StatusServiceUnavailable, probe.Detail)
+		return
+	}
+	model := probe.Loaded
+	if model == "" {
+		model = cur.ChatModel
+	}
+	payloadMap := map[string]any{"messages": messages, "stream": false}
+	if model != "" {
+		payloadMap["model"] = model
+	}
 	// These three fields belong to OppaiLib: allowing them through would bypass the
 	// validated history/model or turn this bounded JSON call into an SSE stream.
 	for key, value := range in.Options {

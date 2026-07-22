@@ -71,14 +71,41 @@ func (s *Server) handleThumb(w http.ResponseWriter, r *http.Request) {
 	writeErr(w, http.StatusNotFound, "no thumbnail")
 }
 
-// processIngestAsync kicks off the per-kind background work for a freshly stored
-// blob: poster frames for video, page index + cover for comics. Fire-and-forget.
+// processIngestAsync is the one post-insert path for a freshly stored blob. It
+// always offers the item to auto-tagging, then starts any kind-specific work such
+// as video posters or comic indexing. Keeping these together prevents a new
+// importer from accidentally creating permanently untagged media.
 func (s *Server) processIngestAsync(id int64, blobPath, kind string, size int64, knownDur float64) {
+	s.ai.TagMediaAsync(id, blobPath, kind)
 	switch kind {
 	case "video":
 		s.generateThumbAsync(id, blobPath, kind, knownDur)
 	case "comic":
 		s.indexComicAsync(id, blobPath, size)
+	}
+}
+
+// backfillAutoTags repairs taggable items whose original background job was
+// missed (or lost to a restart). TagMediaAsync applies the live enable/auto-tag
+// switches and bounds concurrency, while its in-flight guard keeps this recovery
+// pass from duplicating a live import job.
+func (s *Server) backfillAutoTags() {
+	if opts := s.ai.Options(); !opts.Enabled || !opts.AutoTag {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	rows, err := s.db.MediaMissingAITags(ctx, 1000)
+	cancel()
+	if err != nil {
+		s.log.Warn("ai: backfill query failed", "err", err)
+		return
+	}
+	if len(rows) == 0 {
+		return
+	}
+	s.log.Info("ai: backfilling untagged media", "count", len(rows))
+	for _, row := range rows {
+		s.ai.TagMediaAsync(row.ID, row.BlobPath, row.Kind)
 	}
 }
 

@@ -96,8 +96,7 @@ export class OppaiChat extends LitElement {
   @state() private noticeError = false;
   @state() private imageTags = "";
   @state() private models: ChatModels | null = null;
-  @state() private selectedModel = "";
-  @state() private modelBusy = false;
+  @state() private mobileNavOpen = false;
   @query(".log") private log?: HTMLElement;
   private saveTimer = 0;
   private idleTimer = 0;
@@ -112,40 +111,48 @@ export class OppaiChat extends LitElement {
       --line:var(--md-sys-color-outline-variant); --accent:var(--md-sys-color-primary); --on-accent:var(--md-sys-color-on-primary); }
     button,input,textarea,select { font:inherit; }
     button { color:inherit; }
-    .client { display:grid; grid-template-columns:72px 250px minmax(0,1fr) 230px; height:calc(100dvh - 120px); min-height:560px;
-      border:1px solid var(--line); border-radius:12px; overflow:hidden; background:var(--main); }
-    .rail { background:var(--rail); padding:12px 0; display:flex; flex-direction:column; align-items:center; gap:8px; overflow-y:auto; }
-    .guild { position:relative; width:48px; height:48px; flex:0 0 48px; border:0; border-radius:50%; background:var(--input); display:grid;
+    .client { position:relative; display:grid; grid-template-columns:64px 272px minmax(0,1fr); height:calc(100dvh - 112px); min-height:580px;
+      border:1px solid var(--line); border-radius:18px; overflow:hidden; background:var(--main); box-shadow:0 18px 52px rgba(0,0,0,.12); }
+    .rail { background:var(--rail); padding:12px 0; display:flex; flex-direction:column; align-items:center; gap:8px; overflow-y:auto; border-right:1px solid var(--line); }
+    .guild { position:relative; width:44px; height:44px; flex:0 0 44px; border:0; border-radius:50%; background:var(--input); display:grid;
       place-items:center; overflow:hidden; cursor:pointer; transition:.15s; }
     .guild:hover,.guild.on { border-radius:14px; background:var(--accent); }
-    .guild.on::before { content:""; position:fixed; margin-left:-60px; width:4px; height:38px; border-radius:0 4px 4px 0; background:var(--md-sys-color-on-surface); }
+    .guild.on::before { content:""; position:absolute; left:0; width:4px; height:30px; border-radius:0 4px 4px 0; background:var(--md-sys-color-on-surface); }
     .guild img,.avatar img,.member-avatar img { width:100%; height:100%; object-fit:cover; object-position:top center; }
     .initial { font-weight:700; color:var(--on-accent); background:var(--accent); }
     .rail-sep { width:32px; height:2px; background:var(--line); }
     .side { min-width:0; display:flex; flex-direction:column; background:var(--side); }
-    .side-head,.top { height:48px; flex:0 0 48px; display:flex; align-items:center; border-bottom:1px solid var(--line); box-shadow:0 1px 0 rgba(0,0,0,.16); }
-    .side-head { padding:0 12px; gap:8px; font-weight:650; }
+    .side-head,.top { min-height:56px; flex:0 0 56px; display:flex; align-items:center; border-bottom:1px solid var(--line); }
+    .side-head { padding:0 12px 0 16px; gap:8px; }
+    .side-title { min-width:0; flex:1; }.side-title strong,.side-title span { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .side-title span { color:var(--muted); font-size:11px; margin-top:1px; }
     .side-head button,.icon-btn { border:0; background:transparent; border-radius:5px; padding:5px; display:grid; place-items:center; cursor:pointer; color:var(--muted); }
     .side-head button:hover,.icon-btn:hover,.icon-btn.on { background:var(--hover); color:var(--md-sys-color-on-surface); }
-    .cat { padding:15px 10px 5px 16px; color:var(--muted); font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; display:flex; }
+    .cat { padding:17px 12px 7px 16px; color:var(--muted); font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; display:flex; }
     .cat button { margin-left:auto; border:0; background:transparent; cursor:pointer; color:var(--muted); }
     .convos { overflow-y:auto; min-height:0; }
-    .convo { width:calc(100% - 16px); margin:1px 8px; padding:7px 8px; border:0; border-radius:5px; background:transparent; color:var(--muted);
-      display:flex; align-items:center; gap:7px; cursor:pointer; text-align:left; min-width:0; }
-    .convo:hover,.convo.on { color:var(--md-sys-color-on-surface); background:var(--hover); }
-    .convo span:nth-child(2) { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .convo-wrap { display:flex; align-items:center; margin:2px 8px; border-radius:9px; color:var(--muted); }
+    .convo-wrap:hover,.convo-wrap.on { color:var(--md-sys-color-on-surface); background:var(--hover); }
+    .convo { min-width:0; flex:1; padding:9px 8px; border:0; background:transparent; color:inherit; display:grid; grid-template-columns:22px minmax(0,1fr);
+      gap:1px 7px; cursor:pointer; text-align:left; }
+    .convo-icon { grid-row:1/3; align-self:center; }.convo-title { font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .convo-meta { color:var(--muted); font-size:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .convo-delete { opacity:0; margin-right:4px; border:0; border-radius:6px; padding:5px; background:transparent; color:var(--muted); cursor:pointer; }
+    .convo-wrap:hover .convo-delete,.convo-wrap:focus-within .convo-delete { opacity:1; }.convo-delete:hover { color:var(--md-sys-color-error); background:var(--main); }
     .side-foot { margin-top:auto; background:var(--rail); padding:8px; display:flex; align-items:center; gap:8px; }
     .me-avatar { width:32px; height:32px; border-radius:50%; display:grid; place-items:center; }
     .me-copy { min-width:0; flex:1; } .me-name { font-size:13px; font-weight:650; overflow:hidden; text-overflow:ellipsis; }
-    .me-sub { font-size:11px; color:var(--muted); }
+    .me-sub { font-size:11px; color:var(--muted); display:flex; align-items:center; gap:5px; }.status-dot { width:7px; height:7px; border-radius:50%; background:#8a8f98; }.status-dot.online { background:#35c46a; }
     .main { display:flex; min-width:0; min-height:0; flex-direction:column; background:var(--main); position:relative; }
-    .top { padding:0 14px; gap:8px; }
-    .top .hash { color:var(--muted); font-size:21px; }.top .name { font-weight:650; }.topic { color:var(--muted); font-size:13px; padding-left:10px;
-      margin-left:4px; border-left:1px solid var(--line); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-    .top-actions { margin-left:auto; display:flex; }
+    .top { padding:0 10px 0 14px; gap:10px; }.mobile-nav { display:none!important; }
+    .top-avatar { width:34px; height:34px; flex:0 0 34px; border-radius:50%; overflow:hidden; display:grid; place-items:center; }
+    .top-title { min-width:0; }.top .name { display:block; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }.topic { display:block; color:var(--muted); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .quick-mode { width:auto; max-width:124px; margin-left:auto; border-radius:999px; padding:6px 28px 6px 10px; font-size:12px; font-weight:650; background-color:var(--input); }
+    .top-actions { display:flex; }
     .log { min-height:0; flex:1 1 0; overflow-y:auto; overflow-anchor:auto; padding:12px 0 20px; scroll-behavior:smooth; }
-    .intro { padding:20px 16px 12px; }.intro .round { width:68px; height:68px; border-radius:50%; background:var(--input); display:grid; place-items:center; overflow:hidden; }
-    .intro .round img { width:100%; height:100%; object-fit:cover; }.intro h2 { font-size:27px; margin:9px 0 3px; }.intro p { color:var(--muted); margin:0; }
+    .intro { margin:8px 16px 16px; padding:18px; border:1px solid var(--line); border-radius:14px; background:linear-gradient(135deg,var(--side),transparent); display:grid; grid-template-columns:56px minmax(0,1fr); gap:0 13px; align-items:center; }
+    .intro .round { grid-row:1/3; width:56px; height:56px; border-radius:50%; background:var(--input); display:grid; place-items:center; overflow:hidden; }
+    .intro .round img { width:100%; height:100%; object-fit:cover; }.intro h2 { font-size:20px; margin:0 0 3px; }.intro p { color:var(--muted); margin:0; font-size:13px; }
     .row { display:grid; grid-template-columns:56px minmax(0,1fr); padding:2px 44px 2px 0; position:relative; }
     .row.first { margin-top:15px; }.row:hover { background:color-mix(in srgb,var(--md-sys-color-on-surface) 5%,transparent); }
     .avatar { grid-column:1; justify-self:center; width:40px; height:40px; border-radius:50%; overflow:hidden; display:grid; place-items:center; margin-top:2px; }
@@ -158,16 +165,20 @@ export class OppaiChat extends LitElement {
     .message-actions { opacity:0; position:absolute; right:8px; top:-8px; display:flex; border:1px solid var(--line); border-radius:5px; overflow:hidden; background:var(--side); }
     .row:hover .message-actions { opacity:1; }.message-actions button { border:0; background:transparent; padding:4px; cursor:pointer; color:var(--muted); }.message-actions button:hover { color:inherit; background:var(--hover); }
     .typing { padding:6px 16px 0 56px; color:var(--muted); font-size:13px; }.typing b { color:var(--md-sys-color-on-surface); }
-    .notice { margin:4px 16px 8px 56px; padding:8px 12px; border-left:3px solid var(--accent); background:var(--side); border-radius:3px; font-size:13px; }
+    .notice { margin:4px 16px 8px; padding:9px 12px; border-left:3px solid var(--accent); background:var(--side); border-radius:7px; font-size:13px; }
     .notice.error { border-color:var(--md-sys-color-error); color:var(--md-sys-color-error); }
-    form.composer-form { padding:0 16px 20px; }.composer { display:flex; align-items:flex-end; gap:9px; background:var(--input); border-radius:8px; padding:10px 12px; }
+    .backend-state { padding:9px 16px; border-bottom:1px solid var(--line); background:var(--side); color:var(--muted); font-size:12px; }
+    .backend-state strong { color:var(--md-sys-color-error); }
+    form.composer-form { padding:0 16px 14px; }.composer { display:flex; align-items:flex-end; gap:9px; background:var(--input); border:1px solid transparent; border-radius:14px; padding:10px 12px; }
+    .composer:focus-within { border-color:var(--accent); box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 18%,transparent); }
     .composer textarea { resize:none; border:0; outline:0; background:transparent; color:inherit; max-height:140px; min-height:22px; line-height:22px; flex:1; padding:0; }
-    .composer button { align-self:flex-end; }.format-help { color:var(--muted); font-size:10px; padding:4px 2px 0; }
+    .composer button { align-self:flex-end; }.format-help { color:var(--muted); font-size:10px; padding:5px 4px 0; display:flex; justify-content:space-between; }.send-help::after { content:"Enter to send · Shift+Enter for a new line"; }
     .members { min-width:0; background:var(--side); padding:12px 8px; overflow-y:auto; }.member { display:flex; align-items:center; gap:9px; padding:6px 8px; border-radius:5px; }
     .member:hover { background:var(--hover); }.member-avatar { width:34px; height:34px; border-radius:50%; overflow:hidden; display:grid; place-items:center; }
     .member-name { font-size:13px; font-weight:650; color:var(--accent); }.member-status { font-size:11px; color:var(--muted); }
-    .settings { position:absolute; inset:48px 0 auto 0; z-index:5; max-height:calc(100% - 48px); overflow:auto; background:var(--side); border-bottom:1px solid var(--line); box-shadow:0 10px 28px rgba(0,0,0,.28); }
-    .tabs { display:flex; gap:3px; padding:10px 12px 0; border-bottom:1px solid var(--line); }.tab { border:0; background:transparent; color:var(--muted); padding:7px 10px; cursor:pointer; border-bottom:2px solid transparent; }
+    .settings { position:absolute; inset:56px 0 0 0; z-index:5; overflow:auto; background:var(--side); box-shadow:0 10px 28px rgba(0,0,0,.28); }
+    .settings-head { position:sticky; top:0; z-index:2; display:flex; align-items:center; gap:8px; padding:12px 16px 8px; background:var(--side); }.settings-head strong { flex:1; font-size:17px; }.settings-head span { display:block; color:var(--muted); font-size:11px; font-weight:400; }
+    .tabs { position:sticky; top:55px; z-index:2; display:flex; gap:3px; padding:0 12px; border-bottom:1px solid var(--line); background:var(--side); overflow-x:auto; }.tab { border:0; background:transparent; color:var(--muted); padding:9px 10px; cursor:pointer; border-bottom:2px solid transparent; text-transform:capitalize; }
     .tab.on { color:inherit; border-color:var(--accent); }.panel { padding:14px 16px 18px; display:grid; gap:11px; }.grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
     label { display:grid; gap:4px; color:var(--muted); font-size:11px; font-weight:650; text-transform:uppercase; }.field,select { box-sizing:border-box; width:100%; color:var(--md-sys-color-on-surface);
       background:var(--input); border:1px solid var(--line); border-radius:5px; padding:8px; outline:0; text-transform:none; font-weight:400; }
@@ -176,9 +187,16 @@ export class OppaiChat extends LitElement {
     .primary { background:var(--accent); border-color:var(--accent); color:var(--on-accent); }.danger { color:var(--md-sys-color-error); }.file { position:relative; overflow:hidden; }.file input { position:absolute; inset:0; opacity:0; cursor:pointer; }
     .image-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:9px; }.image-card { background:var(--input); border-radius:7px; overflow:hidden; position:relative; }
     .image-card img { width:100%; height:110px; object-fit:cover; }.image-card div { padding:6px; font-size:11px; overflow-wrap:anywhere; }.image-card button { position:absolute; right:4px; top:4px; border:0; border-radius:50%; background:rgba(0,0,0,.7); color:white; cursor:pointer; }
-    .empty { color:var(--muted); font-size:13px; }
-    @media(max-width:1120px){.client{grid-template-columns:72px 230px minmax(0,1fr)}.members{display:none}}
-    @media(max-width:760px){:host{height:auto}.client{grid-template-columns:1fr;height:calc(100dvh - 78px);min-height:520px;border-radius:0}.rail,.side,.members{display:none}.topic{display:none}.grid{grid-template-columns:1fr}.top{padding-left:8px}.row{padding-right:36px}}
+    .empty { color:var(--muted); font-size:13px; }.nav-scrim { display:none; }
+    @media(max-width:900px){.client{grid-template-columns:60px 236px minmax(0,1fr)}.side-head{padding-left:12px}}
+    @media(max-width:700px){
+      :host{height:auto}.client{display:block;height:calc(100dvh - 72px);min-height:520px;border:0;border-radius:0;box-shadow:none}.main{height:100%}
+      .rail,.side{display:none;position:absolute;top:0;bottom:0;z-index:12}.client.nav-open .rail{display:flex;left:0;width:60px}.client.nav-open .side{display:flex;left:60px;width:min(286px,calc(100% - 60px))}
+      .client.nav-open .nav-scrim{display:block;position:absolute;inset:0;z-index:11;border:0;background:rgba(0,0,0,.55)}
+      .mobile-nav{display:grid!important}.top{padding-left:4px;gap:7px}.quick-mode{max-width:96px;padding-left:8px}.topic{max-width:130px}.grid{grid-template-columns:1fr}
+      .row{grid-template-columns:48px minmax(0,1fr);padding-right:12px}.avatar{width:34px;height:34px}.typing{padding-left:48px}.destructive-action{display:none}.format-help{display:none}
+      .intro{margin:6px 10px 12px;padding:13px}.settings{inset:56px 0 0}.panel{padding-left:12px;padding-right:12px}.message-actions{opacity:1;position:static;grid-column:2;justify-self:end;margin-top:3px;border:0;background:transparent}
+    }
   `];
 
   connectedCallback() {
@@ -230,28 +248,11 @@ export class OppaiChat extends LitElement {
 
   private async refreshModels(quiet = false) {
     try {
-      this.models = await api.chatModels();
-      this.selectedModel = this.models.loaded || this.models.models[0] || "";
+      const [models, status] = await Promise.all([api.chatModels(), api.chatStatus()]);
+      this.models = models;
+      this.status = status;
+      if (!quiet) this.say(status.enabled ? `Connected to ${status.model || "the loaded model"}.` : status.message || "No model is loaded.", !status.enabled);
     } catch (error) { if (!quiet) this.say((error as Error).message, true); }
-  }
-
-  private async loadModel() {
-    if (!this.selectedModel || this.modelBusy) return;
-    this.modelBusy = true; this.say(`Loading ${this.selectedModel}…`);
-    try {
-      await api.loadChatModel(this.selectedModel);
-      if (this.status) this.status = { ...this.status, enabled:true, model:this.selectedModel };
-      await this.refreshModels(true); this.say(`${this.selectedModel} is loaded.`);
-    } catch (error) { this.say((error as Error).message, true); }
-    finally { this.modelBusy = false; }
-  }
-
-  private async unloadModel() {
-    if (this.modelBusy) return;
-    this.modelBusy = true; this.say("Unloading chat model…");
-    try { await api.unloadChatModel(); if (this.status) this.status = { ...this.status, enabled:false }; await this.refreshModels(true); this.say("Chat model unloaded."); }
-    catch (error) { this.say((error as Error).message, true); }
-    finally { this.modelBusy = false; }
   }
 
   private touchWorkspace() {
@@ -288,6 +289,7 @@ export class OppaiChat extends LitElement {
 
   private activateCharacter(id: string) {
     this.characterID = id;
+    this.mobileNavOpen = false;
     const conversation = this.conversationsFor(id)[0];
     if (conversation) this.activateConversation(conversation.id); else this.newConversation();
   }
@@ -295,6 +297,7 @@ export class OppaiChat extends LitElement {
   private activateConversation(id: string) {
     const conversation = this.workspace.conversations.find((item) => item.id === id); if (!conversation) return;
     this.conversationID = id; this.characterID = conversation.characterId;
+    this.mobileNavOpen = false;
     setIntensity(conversation.intensity); this.armIdle(); void this.scrollToEnd(false);
   }
 
@@ -310,6 +313,7 @@ export class OppaiChat extends LitElement {
       messages:opener ? [{ id:newID(), role:"assistant", content:opener, at:now }] : [], createdAt:now, updatedAt:now,
     };
     this.workspace.conversations.push(conversation); this.conversationID = conversation.id;
+    this.mobileNavOpen = false;
     this.touchWorkspace(); if (save) this.say(`Started a new chat with ${character.name}.`); this.armIdle(); void this.scrollToEnd(false);
   }
 
@@ -346,8 +350,11 @@ export class OppaiChat extends LitElement {
     conversation.messages.push(userMessage); conversation.updatedAt = Date.now();
     if (conversation.title === "New conversation") conversation.title = content.slice(0, 42);
     this.draft = ""; this.busy = true; this.notice = ""; this.touchWorkspace(); this.armIdle(); void this.scrollToEnd();
+    if (!this.status?.enabled && (this.status?.configured || this.status?.modelBackend)) {
+      try { this.status = await api.chatStatus(); } catch { /* The chat request or local fallback below provides the user-facing result. */ }
+    }
     if (!this.status?.enabled) {
-      if (character.id !== "libby") { this.busy = false; this.say("Configure a local chat model in Settings to talk with custom friends.", true); return; }
+      if (character.id !== "libby") { this.busy = false; this.say(this.status?.message || "Load a model in text-generation-webui, then refresh backend status.", true); return; }
       const progression = applyProgression(conversation.progress ?? conversation.intensity, libbyHeatDelta(content, conversation.mode));
       const line = libbyReply(content, conversation.mode, normalizeEmotion(conversation.emotion), progression.intensity, false);
       await new Promise((resolve) => setTimeout(resolve, 350 + Math.random() * 450));
@@ -364,7 +371,12 @@ export class OppaiChat extends LitElement {
       conversation.progress = progression.progress; conversation.intensity = setIntensity(progression.intensity);
       conversation.messages.push({ id:newID(), role:"assistant", content:result.message, at:Date.now(), imageId:result.imageId || undefined });
       conversation.updatedAt = Date.now(); this.touchWorkspace(); void this.scrollToEnd();
-    } catch (error) { this.say((error as Error).message, true); }
+    } catch (error) {
+      if (this.status?.configured || this.status?.modelBackend) {
+        try { this.status = await api.chatStatus(); } catch { /* Keep the generation error when the readiness check also fails. */ }
+      }
+      this.say(!this.status?.enabled && this.status?.message ? this.status.message : (error as Error).message, true);
+    }
     finally { this.busy = false; }
   }
 
@@ -455,17 +467,21 @@ export class OppaiChat extends LitElement {
   private renderSidebar() {
     const character = this.activeCharacter, me = this.workspace.profile.displayName || this.user?.username || "You";
     return html`<aside class="side">
-      <div class="side-head"><span>${character?.name ?? "Chat"}</span><button title="New conversation" @click=${() => this.newConversation()}><span class="material-symbols-rounded">add</span></button></div>
-      <div class="cat"><span>Direct messages</span><button title="New conversation" @click=${() => this.newConversation()}>+</button></div>
+      <div class="side-head"><div class="side-title"><strong>${character?.name ?? "Chat"}</strong><span>Choose a conversation</span></div><button title="Start a new conversation" aria-label="Start a new conversation" @click=${() => this.newConversation()}><span class="material-symbols-rounded">add_comment</span></button></div>
+      <div class="cat"><span>Conversations · ${this.conversationsFor().length}</span><button title="New conversation" @click=${() => this.newConversation()}>+</button></div>
       <div class="convos">${this.conversationsFor().map((conversation) => html`
-        <button class="convo ${conversation.id === this.conversationID ? "on" : ""}" @click=${() => this.activateConversation(conversation.id)}>
-          <span class="material-symbols-rounded" style="font-size:18px">forum</span><span>${conversation.title}</span>
-        </button>`)}
+        <div class="convo-wrap ${conversation.id === this.conversationID ? "on" : ""}">
+          <button class="convo" @click=${() => this.activateConversation(conversation.id)} aria-current=${conversation.id === this.conversationID ? "page" : "false"}>
+            <span class="convo-icon material-symbols-rounded" style="font-size:18px">forum</span><span class="convo-title">${conversation.title}</span>
+            <span class="convo-meta">${conversation.messages.length} messages · ${timeOf(conversation.updatedAt)}</span>
+          </button>
+          <button class="convo-delete" title="Delete conversation" aria-label="Delete ${conversation.title}" @click=${() => this.deleteConversation(conversation.id)}><span class="material-symbols-rounded" style="font-size:16px">delete</span></button>
+        </div>`)}
       </div>
       <div class="side-foot">${this.workspace.profile.avatarImageId
         ? html`<span class="me-avatar"><img src=${api.chatImageURL(this.workspace.profile.avatarImageId)} alt="" /></span>`
         : html`<span class="me-avatar initial">${me.slice(0,2).toUpperCase()}</span>`}
-        <div class="me-copy"><div class="me-name">${me}</div><div class="me-sub">${this.status?.enabled ? "Online" : "Local mode"}</div></div>
+        <div class="me-copy"><div class="me-name">${me}</div><div class="me-sub"><span class="status-dot ${this.status?.enabled ? "online" : ""}"></span>${this.status?.enabled ? `Model: ${this.status.model}` : character?.id === "libby" ? "Libby local replies" : "Model offline"}</div></div>
         <button class="icon-btn" title="Profile" @click=${() => { this.settingsOpen = true; this.editorTab = "profile"; }}><span class="material-symbols-rounded">manage_accounts</span></button>
       </div>
     </aside>`;
@@ -474,6 +490,7 @@ export class OppaiChat extends LitElement {
   private renderSettings() {
     const character = this.activeCharacter, conversation = this.activeConversation; if (!character || !conversation) return nothing;
     return html`<section class="settings">
+      <div class="settings-head"><strong>Chat settings<span>Changes sync between WebUI and Android</span></strong><button class="icon-btn" title="Close settings" aria-label="Close settings" @click=${() => (this.settingsOpen=false)}><span class="material-symbols-rounded">close</span></button></div>
       <div class="tabs">${(["character","generation","images","profile"] as EditorTab[]).map((tab) => html`
         <button class="tab ${this.editorTab === tab ? "on" : ""}" @click=${() => (this.editorTab = tab)}>${tab}</button>`)}</div>
       ${this.editorTab === "character" ? this.renderCharacterPanel(character) : nothing}
@@ -506,10 +523,9 @@ export class OppaiChat extends LitElement {
   private renderGenerationPanel(conversation: ChatConversation) {
     const range = (label:string,key:string,min:number,max:number,step:number,fallback:number) => html`<label>${label}<span class="range"><input type="range" min=${min} max=${max} step=${step} .value=${String(optionNumber(conversation.options,key,fallback))} @input=${(event:Event) => this.updateOption(key,Number((event.target as HTMLInputElement).value))}/><output>${optionNumber(conversation.options,key,fallback)}</output></span></label>`;
     return html`<div class="panel">
-      <label>Loaded model<div class="panel-actions"><select style="flex:1;min-width:180px" .value=${this.selectedModel} @change=${(event:Event)=>(this.selectedModel=(event.target as HTMLSelectElement).value)}>
-        ${this.models?.models.map((model)=>html`<option value=${model}>${model}${model===this.models?.loaded?" (loaded)":""}</option>`) ?? nothing}
-      </select><button class="primary" ?disabled=${!this.models?.supported||!this.selectedModel||this.modelBusy} @click=${()=>void this.loadModel()}>Load</button><button class="secondary" ?disabled=${!this.models?.supported||!this.models.loaded||this.modelBusy} @click=${()=>void this.unloadModel()}>Unload</button><button class="secondary" ?disabled=${this.modelBusy} @click=${()=>void this.refreshModels()}>Refresh</button></div></label>
-      ${this.models && !this.models.supported ? html`<div class="empty">This backend can list models but does not expose text-generation-webui load/unload controls.</div>` : nothing}
+      <label>Text-generation backend<div class="panel-actions"><strong>${this.models?.loaded || this.status?.model || "No model loaded"}</strong><button class="secondary" @click=${()=>void this.refreshModels()}>Refresh status</button></div></label>
+      <div class="empty">Load or unload models in text-generation-webui’s own WebUI. OppaiLib deliberately keeps model management read-only so it cannot destabilize the Docker container.</div>
+      ${this.models?.models.length ? html`<label>Models visible to the backend<select disabled><option>${this.models.models.join(" · ")}</option></select></label>` : nothing}
       <div class="grid">
       <label>Conversation mode<select .value=${conversation.mode} @change=${(event:Event) => this.updateConversation({mode:(event.target as HTMLSelectElement).value})}>${MODES.map((mode) => html`<option value=${mode.id}>${mode.label}</option>`)}</select></label>
       <label>Displayed emotion<select .value=${conversation.emotion} @change=${(event:Event) => this.updateConversation({emotion:(event.target as HTMLSelectElement).value})}>${["neutral","happy","mischievous","surprised","thinking"].map((emotion) => html`<option>${emotion}</option>`)}</select></label>
@@ -543,7 +559,7 @@ export class OppaiChat extends LitElement {
     const character = this.activeCharacter; if (!character) return nothing;
     const grouped = previous?.role === message.role && message.at - previous.at < 5*60_000;
     const friend = message.role === "assistant", name = friend ? character.name : (this.workspace.profile.displayName || this.user?.username || "You");
-    return html`<article class="row ${grouped ? "" : "first"}">${grouped ? html`<span class="stamp">${timeOf(message.at)}</span>` : (friend ? this.avatar(character,"avatar") : html`<span class="avatar initial">${name.slice(0,2).toUpperCase()}</span>`)}
+    return html`<article class="row ${grouped ? "" : "first"} ${friend ? "from-friend" : "from-user"}">${grouped ? html`<span class="stamp">${timeOf(message.at)}</span>` : (friend ? this.avatar(character,"avatar") : html`<span class="avatar initial">${name.slice(0,2).toUpperCase()}</span>`)}
       <div class="message">${grouped ? nothing : html`<div class="who"><span class="author ${friend ? "friend" : ""}">${name}</span>${friend ? html`<span class="bot">BOT</span>` : nothing}<span class="when">Today at ${timeOf(message.at)}</span></div>`}<div class="text">${formatted(message.content)}</div>${message.imageId ? html`<img class="sent-image" src=${api.chatImageURL(message.imageId)} alt="Image sent by ${name}"/>` : nothing}</div>
       <span class="message-actions"><button title="Copy" @click=${() => void navigator.clipboard.writeText(message.content)}><span class="material-symbols-rounded" style="font-size:16px">content_copy</span></button><button title="Edit" @click=${() => this.editMessage(message)}><span class="material-symbols-rounded" style="font-size:16px">edit</span></button><button title="Delete" @click=${() => this.deleteMessage(message.id)}><span class="material-symbols-rounded" style="font-size:16px">delete</span></button></span>
     </article>`;
@@ -554,14 +570,15 @@ export class OppaiChat extends LitElement {
     if (this.loading) return html`<div class="client"><section class="main" style="grid-column:1/-1;place-items:center;display:grid"><md-circular-progress indeterminate></md-circular-progress></section></div>`;
     if (!character || !conversation) return html`<div class="client"><section class="main" style="grid-column:1/-1;padding:24px">Chat workspace is unavailable.</section></div>`;
     const channel=MODES.find((mode)=>mode.id===conversation.mode)??MODES[0];
-    return html`<div class="client" @pointerdown=${this.armIdle}>${this.renderRail()}${this.renderSidebar()}
-      <main class="main"><header class="top"><span class="hash">@</span><span class="name">${character.name}</span><span class="topic">${channel.topic}</span><span class="top-actions"><button class="icon-btn" title="New conversation" @click=${() => this.newConversation()}><span class="material-symbols-rounded">add_comment</span></button><button class="icon-btn" title="Clear messages" @click=${this.clearConversation}><span class="material-symbols-rounded">delete_sweep</span></button><button class="icon-btn" title="Delete conversation" @click=${() => this.deleteConversation(conversation.id)}><span class="material-symbols-rounded">delete</span></button><button class="icon-btn ${this.settingsOpen?"on":""}" title="Chat settings" @click=${()=>(this.settingsOpen=!this.settingsOpen)}><span class="material-symbols-rounded">settings</span></button></span></header>
+    return html`<div class="client ${this.mobileNavOpen ? "nav-open" : ""}" @pointerdown=${this.armIdle}><button class="nav-scrim" aria-label="Close chat navigation" @click=${() => (this.mobileNavOpen=false)}></button>${this.renderRail()}${this.renderSidebar()}
+      <main class="main"><header class="top"><button class="icon-btn mobile-nav" title="Friends and conversations" aria-label="Open friends and conversations" @click=${() => (this.mobileNavOpen=true)}><span class="material-symbols-rounded">menu</span></button>${this.avatar(character,"top-avatar")}<span class="top-title"><span class="name">${character.name}</span><span class="topic">${this.status?.enabled ? this.status.model : character.id === "libby" ? "Local replies" : "Model offline"} · ${channel.topic}</span></span><select class="quick-mode" aria-label="Conversation mode" title="Conversation mode" .value=${conversation.mode} @change=${(event:Event) => this.updateConversation({mode:(event.target as HTMLSelectElement).value})}>${MODES.map((mode)=>html`<option value=${mode.id}>${mode.label}</option>`)}</select><span class="top-actions"><button class="icon-btn" title="New conversation" aria-label="New conversation" @click=${() => this.newConversation()}><span class="material-symbols-rounded">add_comment</span></button><button class="icon-btn destructive-action" title="Clear messages" aria-label="Clear messages" @click=${this.clearConversation}><span class="material-symbols-rounded">delete_sweep</span></button><button class="icon-btn ${this.settingsOpen?"on":""}" title="Chat settings" aria-label="Chat settings" @click=${()=>(this.settingsOpen=!this.settingsOpen)}><span class="material-symbols-rounded">tune</span></button></span></header>
         ${this.settingsOpen?this.renderSettings():nothing}
-        <section class="log"><div class="intro">${this.avatar(character,"round")}<h2>${character.name}</h2><p>${character.description || `This is the beginning of your conversation with ${character.name}.`}${this.status?.enabled?` Running on ${this.status.model}.`:" Local reply mode."}</p></div>
+        ${this.status?.modelBackend && !this.status.enabled ? html`<div class="backend-state" role="status"><strong>Text generation offline.</strong> ${this.status.message || "Load a model in text-generation-webui, then refresh status."}</div>` : nothing}
+        <section class="log"><div class="intro">${this.avatar(character,"round")}<h2>${character.name}</h2><p>${character.description || `This is the beginning of your conversation with ${character.name}.`}${this.status?.enabled?` Running on ${this.status.model}.`:character.id === "libby" ? " Libby is using built-in local replies." : " Connect a local model to start chatting."}</p></div>
           ${conversation.messages.map((message,index)=>this.renderEntry(message,conversation.messages[index-1]))}${this.busy?html`<div class="typing"><b>${character.name}</b> is typing…</div>`:nothing}
         </section>${this.notice?html`<div class="notice ${this.noticeError?"error":""}" role=${this.noticeError?"alert":"status"}>${this.notice}</div>`:nothing}
-        <form class="composer-form" @submit=${(event:Event)=>{event.preventDefault();void this.send();}}><div class="composer"><textarea rows="1" placeholder=${`Message @${character.name}`} .value=${this.draft} @input=${(event:Event)=>(this.draft=(event.target as HTMLTextAreaElement).value)} @keydown=${this.onKey} ?disabled=${this.busy}></textarea><button class="icon-btn" type="submit" ?disabled=${!this.draft.trim()||this.busy}><span class="material-symbols-rounded">send</span></button></div><div class="format-help">"speech" · **action** · *emphasis* · ~~strike~~ · &#96;code&#96;</div></form>
-      </main><aside class="members"><div class="cat">Friends — ${this.workspace.characters.length}</div>${this.workspace.characters.map((friend)=>html`<div class="member" @click=${()=>this.activateCharacter(friend.id)}>${this.avatar(friend,"member-avatar")}<div><div class="member-name">${friend.name}</div><div class="member-status">${friend.id===this.characterID?"Active now":"Friend"}</div></div></div>`)}</aside>
+        <form class="composer-form" @submit=${(event:Event)=>{event.preventDefault();void this.send();}}><div class="composer"><textarea rows="1" aria-label=${`Message ${character.name}`} placeholder=${`Message ${character.name}…`} .value=${this.draft} @input=${(event:Event)=>(this.draft=(event.target as HTMLTextAreaElement).value)} @keydown=${this.onKey} ?disabled=${this.busy}></textarea><button class="icon-btn" type="submit" title="Send message" aria-label="Send message" ?disabled=${!this.draft.trim()||this.busy}><span class="material-symbols-rounded">send</span></button></div><div class="format-help"><span>"speech" · **action** · *emphasis* · ~~strike~~ · &#96;code&#96;</span><span class="send-help"></span></div></form>
+      </main>
     </div>`;
   }
 }

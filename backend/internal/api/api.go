@@ -95,10 +95,10 @@ func NewServer(cfg *config.Config, database *db.DB, store *storage.Store, sc *sc
 	}
 }
 
-// StartBackgroundJobs kicks off one-time startup work: backfilling video posters
-// and indexing comics (page count + cover) that predate the in-app reader. Call
-// once after the server is constructed.
+// StartBackgroundJobs kicks off one-time startup repair work. Call once after
+// the server is constructed.
 func (s *Server) StartBackgroundJobs() {
+	go s.backfillAutoTags()
 	go s.backfillThumbnails()
 	go s.backfillComics()
 }

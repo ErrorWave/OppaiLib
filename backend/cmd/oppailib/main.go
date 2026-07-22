@@ -118,7 +118,7 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	srv := api.NewServer(cfg, database, store, sc, aiMgr, set, ks.KEK(), log)
 	// Push the stored settings into the AI + scraper subsystems before serving.
 	srv.ApplySettings(cur)
-	// Backfill video posters; index comics (page count + cover) for the reader.
+	// Repair missed auto-tags and backfill video posters/comic indexes.
 	srv.StartBackgroundJobs()
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,

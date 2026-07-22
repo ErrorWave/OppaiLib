@@ -7,6 +7,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,6 +21,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -37,16 +39,24 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.NavigationDrawerItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
@@ -77,6 +87,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -96,7 +107,6 @@ import net.fourbakers.oppailib.data.ChatStatus
 import net.fourbakers.oppailib.data.ChatWorkspace
 import net.fourbakers.oppailib.data.LibbyMeter
 import net.fourbakers.oppailib.data.LibbyVoice
-import net.fourbakers.oppailib.data.LoadChatModelRequest
 import net.fourbakers.oppailib.data.Repository
 import net.fourbakers.oppailib.data.StoredChatMessage
 import java.text.SimpleDateFormat
@@ -126,6 +136,7 @@ private val chatStamp = SimpleDateFormat("h:mm a", Locale.getDefault())
 private fun timeOf(ms: Long) = chatStamp.format(Date(ms))
 private fun baseOptions() = buildJsonObject { put("temperature", .8); put("top_p", .95); put("repetition_penalty", 1.1); put("max_tokens", 400) }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(repo: Repository, onBack: () -> Unit) {
     var status by remember { mutableStateOf<ChatStatus?>(null) }
@@ -141,6 +152,8 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
     var addFriend by remember { mutableStateOf(false) }
     var friendName by remember { mutableStateOf("") }
     var imageTags by remember { mutableStateOf("") }
+    var overflowOpen by remember { mutableStateOf(false) }
+    var saveJob by remember { mutableStateOf<Job?>(null) }
     val intensity by LibbyMeter.value.collectAsState()
     val scope = rememberCoroutineScope()
     val list = rememberLazyListState()
@@ -149,9 +162,11 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
 
     fun save(next: ChatWorkspace, quiet: Boolean = true) {
         workspace = next
-        scope.launch {
+        saveJob?.cancel()
+        saveJob = scope.launch {
+            if (quiet) delay(350)
             runCatching { repo.api.saveChatWorkspace(next) }
-                .onSuccess { workspace = it }
+                .onSuccess { if (workspace == next) workspace = it }
                 .onFailure { if (!quiet) message = it.message ?: "Couldn't save chat" }
         }
     }
@@ -238,8 +253,11 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
         val pending = convo.copy(title = if (convo.title == "New conversation") text.take(42) else convo.title, messages = convo.messages + userLine, updatedAt = now)
         workspace = ws.copy(conversations = ws.conversations.map { if (it.id == convo.id) pending else it }); draft = ""; busy = true; message = ""
         scope.launch {
+            if (status?.enabled != true && (status?.configured == true || status?.modelBackend == true)) {
+                runCatching { repo.api.chatStatus() }.getOrNull()?.let { status = it }
+            }
             if (status?.enabled != true) {
-                if (char.id != "libby") { message = "Configure a local chat model to talk with custom friends."; busy = false; return@launch }
+                if (char.id != "libby") { message = status?.message?.ifBlank { null } ?: "Load a model in text-generation-webui, then refresh backend status."; busy = false; return@launch }
                 val progression = LibbyMeter.applyProgression(pending.progress, LibbyVoice.heatDelta(text, pending.mode))
                 val line = LibbyVoice.reply(text, pending.mode, pending.emotion, progression.second, advance = false); delay(350)
                 LibbyMeter.set(progression.second)
@@ -247,13 +265,17 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
                 save(workspace!!.copy(conversations = workspace!!.conversations.map { if (it.id == done.id) done else it })); busy = false; return@launch
             }
             val history = pending.messages.map { ChatMessage(it.role, it.content) }
-            runCatching { repo.api.chat(ChatRequest(pending.mode, history, pending.emotion, pending.intensity, pending.options, char.id)) }
+            val generation = runCatching { repo.api.chat(ChatRequest(pending.mode, history, pending.emotion, pending.intensity, pending.options, char.id)) }
+            generation
                 .onSuccess { reply ->
                     val progression = LibbyMeter.applyProgression(pending.progress, reply.intensity - pending.intensity)
                     LibbyMeter.set(progression.second)
                     val done = pending.copy(emotion = reply.emotion, intensity = progression.second, progress = progression.first, messages = pending.messages + StoredChatMessage(chatID(), "assistant", reply.message, System.currentTimeMillis(), reply.imageId), updatedAt = System.currentTimeMillis())
                     val latest = workspace ?: ws; save(latest.copy(conversations = latest.conversations.map { if (it.id == done.id) done else it }))
-                }.onFailure { message = it.message ?: "Chat failed" }
+                }.onFailure { error ->
+                    status = runCatching { repo.api.chatStatus() }.getOrNull() ?: status
+                    message = status?.takeIf { !it.enabled }?.message?.ifBlank { null } ?: error.message ?: "Chat failed"
+                }
             busy = false
         }
     }
@@ -278,35 +300,69 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
         val ws = workspace; val char = currentCharacter(ws); val convo = currentConversation(ws)
         if (ws == null || char == null || convo == null) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         else Column(Modifier.fillMaxSize().background(ChatColors.main)) {
-            Row(Modifier.fillMaxWidth().height(52.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = ChatColors.muted) }
                 IconButton(onClick = { scope.launch { drawer.open() } }) { Icon(Icons.Filled.Menu, "Friends and conversations", tint = ChatColors.muted) }
-                Text("@ ${char.name}", color = ChatColors.text, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                IconButton(onClick = { save(newConversation(ws, char)) }) { Icon(Icons.Filled.AddComment, "New conversation") }
-                IconButton(onClick = { if (convo.messages.isNotEmpty()) updateConversation { it.copy(messages = emptyList(), title = "New conversation") } }) { Icon(Icons.Filled.DeleteSweep, "Clear messages") }
-                IconButton(onClick = { settingsOpen = !settingsOpen }) { Icon(Icons.Filled.Settings, "Chat settings", tint = if (settingsOpen) ChatColors.accent else ChatColors.muted) }
+                ChatAvatar(repo, char, Modifier.size(36.dp).clip(CircleShape))
+                Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
+                    Text(char.name, color = ChatColors.text, fontWeight = FontWeight.Bold, maxLines = 1)
+                    Text("${convo.mode.replaceFirstChar(Char::uppercase)} · ${if (status?.enabled == true) status?.model.orEmpty() else if (char.id == "libby") "local replies" else "model offline"}", color = ChatColors.muted, fontSize = 11.sp, maxLines = 1)
+                }
+                IconButton(onClick = { settingsOpen = true }) { Icon(Icons.Filled.Settings, "Chat settings", tint = ChatColors.muted) }
+                Box {
+                    IconButton(onClick = { overflowOpen = true }) { Icon(Icons.Filled.MoreVert, "Conversation actions", tint = ChatColors.muted) }
+                    DropdownMenu(expanded = overflowOpen, onDismissRequest = { overflowOpen = false }) {
+                        DropdownMenuItem(text = { Text("New conversation") }, leadingIcon = { Icon(Icons.Filled.AddComment, null) }, onClick = { overflowOpen = false; save(newConversation(ws, char)) })
+                        DropdownMenuItem(text = { Text("Clear messages") }, leadingIcon = { Icon(Icons.Filled.DeleteSweep, null) }, enabled = convo.messages.isNotEmpty(), onClick = { overflowOpen = false; updateConversation { it.copy(messages = emptyList(), title = "New conversation") } })
+                    }
+                }
             }
-            if (settingsOpen) ChatSettings(
-                repo, ws, char, convo, settingsTab, imageTags, models,
-                onTab = { settingsTab = it }, onCharacter = { updateCharacter { _ -> it } }, onConversation = { replacement -> updateConversation { replacement } },
-                onProfile = { save(ws.copy(profile = it)) }, onImageTags = { imageTags = it }, onPickImage = { imagePicker.launch("image/*") },
-                onImport = { cardImporter.launch("*/*") }, onDeleteImage = { image -> scope.launch { runCatching { repo.api.deleteChatImage(image.id) }; save(ws.copy(images = ws.images - image, characters = ws.characters.map { if (it.avatarImageId == image.id) it.copy(avatarImageId = "") else it })) } },
-                onLoadModel = { model -> scope.launch { message = "Loading $model…"; runCatching { repo.api.loadChatModel(LoadChatModelRequest(model)) }.onSuccess { models = repo.api.chatModels(); status = repo.api.chatStatus(); message = "$model is loaded." }.onFailure { message = it.message ?: "Model load failed" } } },
-                onUnloadModel = { scope.launch { message = "Unloading chat model…"; runCatching { repo.api.unloadChatModel() }.onSuccess { models = repo.api.chatModels(); status = status?.copy(enabled = false); message = "Chat model unloaded." }.onFailure { message = it.message ?: "Model unload failed" } } },
-                onRefreshModels = { scope.launch { models = runCatching { repo.api.chatModels() }.getOrNull() } },
-            )
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                chatModes.forEach { mode -> FilterChip(selected = convo.mode == mode.id, onClick = { updateConversation { it.copy(mode = mode.id) } }, label = { Text(mode.label.replaceFirstChar(Char::uppercase)) }) }
+            }
+            if (status?.enabled != true) {
+                val needsModel = char.id != "libby"
+                val backendMessage = status?.message?.takeIf { it.isNotBlank() }
+                Text(
+                    if (needsModel) backendMessage ?: "A local model is required for ${char.name}. Tap for details."
+                    else listOfNotNull(backendMessage, "Using Libby's built-in local replies.").joinToString(" "),
+                    color = if (needsModel) ChatColors.danger else ChatColors.muted,
+                    fontSize = 12.sp,
+                    modifier = Modifier.fillMaxWidth().background(ChatColors.side).clickable { settingsTab = "generation"; settingsOpen = true }.padding(horizontal = 16.dp, vertical = 9.dp),
+                )
+            }
             LazyColumn(state = list, modifier = Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(bottom = 12.dp)) {
                 item { ChatIntro(repo, char, convo, status) }
                 itemsIndexed(convo.messages, key = { _, item -> item.id }) { index, item -> ChatMessageRow(repo, ws, char, item, convo.messages.getOrNull(index - 1)) }
                 if (busy) item { Text("${char.name} is typing…", color = ChatColors.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 68.dp, top = 8.dp)) }
             }
             if (message.isNotBlank()) Text(message, color = if (message.contains("fail", true) || message.contains("couldn", true)) ChatColors.danger else ChatColors.muted, fontSize = 13.sp, modifier = Modifier.fillMaxWidth().background(ChatColors.side).padding(10.dp))
-            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                 TextField(draft, { draft = it }, placeholder = { Text("Message @${char.name}") }, enabled = !busy, maxLines = 4,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = KeyboardActions(onSend = { sendMessage() }),
+                    shape = RoundedCornerShape(22.dp),
                     colors = TextFieldDefaults.colors(focusedContainerColor = ChatColors.input, unfocusedContainerColor = ChatColors.input), modifier = Modifier.weight(1f))
-                IconButton(onClick = { sendMessage() }, enabled = draft.isNotBlank() && !busy) { Icon(Icons.AutoMirrored.Filled.Send, "Send") }
+                IconButton(onClick = { sendMessage() }, enabled = draft.isNotBlank() && !busy, modifier = Modifier.padding(start = 6.dp).clip(CircleShape).background(ChatColors.accent)) { Icon(Icons.AutoMirrored.Filled.Send, "Send", tint = MaterialTheme.colorScheme.onPrimary) }
             }
+        }
+    }
+
+    if (settingsOpen && workspace != null) {
+        val ws = workspace ?: return
+        val char = currentCharacter(ws) ?: return
+        val convo = currentConversation(ws) ?: return
+        ModalBottomSheet(onDismissRequest = { settingsOpen = false }) {
+            ChatSettings(
+                repo, ws, char, convo, settingsTab, imageTags, models,
+                onTab = { settingsTab = it }, onCharacter = { updateCharacter { _ -> it } }, onConversation = { replacement -> updateConversation { replacement } },
+                onProfile = { save(ws.copy(profile = it)) }, onImageTags = { imageTags = it }, onPickImage = { imagePicker.launch("image/*") },
+                onImport = { cardImporter.launch("*/*") }, onDeleteImage = { image -> scope.launch { runCatching { repo.api.deleteChatImage(image.id) }; save(ws.copy(images = ws.images - image, characters = ws.characters.map { if (it.avatarImageId == image.id) it.copy(avatarImageId = "") else it })) } },
+                onRefreshModels = { scope.launch {
+                    models = runCatching { repo.api.chatModels() }.getOrNull()
+                    runCatching { repo.api.chatStatus() }.onSuccess { status = it; message = if (it.enabled) "Connected to ${it.model}." else it.message }
+                        .onFailure { message = it.message ?: "Backend status check failed" }
+                } },
+            )
         }
     }
 }
@@ -316,16 +372,45 @@ private fun ChatDrawer(
     repo: Repository, ws: ChatWorkspace, characterId: String, conversationId: String, online: Boolean,
     onCharacter: (String) -> Unit, onConversation: (String) -> Unit, onNewConversation: () -> Unit, onAddFriend: () -> Unit,
 ) {
-    Row(Modifier.fillMaxHeight().width(330.dp)) {
-        Column(Modifier.fillMaxHeight().width(72.dp).background(ChatColors.rail).padding(vertical = 10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            ws.characters.forEach { char -> Box(Modifier.padding(vertical = 4.dp).size(48.dp).clip(if (char.id == characterId) RoundedCornerShape(14.dp) else CircleShape).background(ChatColors.input).clickable { onCharacter(char.id) }) { ChatAvatar(repo, char, Modifier.fillMaxSize()) } }
-            IconButton(onClick = onAddFriend) { Icon(Icons.Filled.Group, "Add friend", tint = ChatColors.accent) }
-        }
-        Column(Modifier.fillMaxHeight().weight(1f).background(ChatColors.side)) {
-            Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) { Text(ws.characters.firstOrNull { it.id == characterId }?.name ?: "Chat", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f)); IconButton(onClick = onNewConversation) { Icon(Icons.Filled.AddComment, "New") } }
-            Text("CONVERSATIONS", color = ChatColors.muted, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 5.dp))
-            LazyColumn(Modifier.weight(1f)) { items(ws.conversations.filter { it.characterId == characterId }.sortedByDescending { it.updatedAt }) { convo -> Text(convo.title, color = if (convo.id == conversationId) ChatColors.text else ChatColors.muted, modifier = Modifier.fillMaxWidth().clickable { onConversation(convo.id) }.background(if (convo.id == conversationId) ChatColors.input else Color.Transparent).padding(12.dp)) } }
-            Text(if (online) "Online" else "Local mode", color = ChatColors.muted, modifier = Modifier.padding(16.dp))
+    ModalDrawerSheet(Modifier.fillMaxHeight().width(340.dp)) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 20.dp)) {
+            item {
+                Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 14.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) { Text("Chats", fontSize = 23.sp, fontWeight = FontWeight.Bold); Text("Friends and conversation history", color = ChatColors.muted, fontSize = 12.sp) }
+                    IconButton(onClick = onAddFriend) { Icon(Icons.Filled.Group, "Add friend", tint = ChatColors.accent) }
+                }
+                Text("FRIENDS", color = ChatColors.muted, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 20.dp, vertical = 7.dp))
+            }
+            items(ws.characters, key = { "friend-${it.id}" }) { char ->
+                NavigationDrawerItem(
+                    selected = char.id == characterId,
+                    onClick = { onCharacter(char.id) },
+                    icon = { ChatAvatar(repo, char, Modifier.size(36.dp).clip(CircleShape)) },
+                    label = { Column { Text(char.name, fontWeight = FontWeight.SemiBold); Text(if (char.id == characterId) "Current friend" else "View conversations", color = ChatColors.muted, fontSize = 11.sp) } },
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 1.dp),
+                )
+            }
+            item {
+                HorizontalDivider(Modifier.padding(vertical = 12.dp))
+                Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) { Text(ws.characters.firstOrNull { it.id == characterId }?.name ?: "Conversations", fontWeight = FontWeight.Bold); Text("CONVERSATIONS", color = ChatColors.muted, fontSize = 10.sp) }
+                    TextButton(onClick = onNewConversation) { Icon(Icons.Filled.AddComment, null, modifier = Modifier.size(18.dp)); Text(" New") }
+                }
+            }
+            val conversations = ws.conversations.filter { it.characterId == characterId }.sortedByDescending { it.updatedAt }
+            items(conversations, key = { "conversation-${it.id}" }) { convo ->
+                NavigationDrawerItem(
+                    selected = convo.id == conversationId,
+                    onClick = { onConversation(convo.id) },
+                    icon = { Icon(Icons.Filled.AddComment, null) },
+                    label = { Column { Text(convo.title, maxLines = 1); Text("${convo.messages.size} messages · ${timeOf(convo.updatedAt)}", color = ChatColors.muted, fontSize = 10.sp) } },
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 1.dp),
+                )
+            }
+            item {
+                val localLibby = ws.characters.firstOrNull { it.id == characterId }?.id == "libby"
+                Text(if (online) "● Model online" else if (localLibby) "○ Libby local replies" else "○ Model offline", color = if (online) ChatColors.accent else ChatColors.muted, fontSize = 12.sp, modifier = Modifier.padding(20.dp))
+            }
         }
     }
 }
@@ -336,10 +421,12 @@ private fun ChatSettings(
     onTab: (String) -> Unit, onCharacter: (ChatCharacter) -> Unit, onConversation: (ChatConversation) -> Unit,
     onProfile: (net.fourbakers.oppailib.data.ChatProfile) -> Unit, onImageTags: (String) -> Unit, onPickImage: () -> Unit,
     onImport: () -> Unit, onDeleteImage: (ChatImage) -> Unit,
-    onLoadModel: (String) -> Unit, onUnloadModel: () -> Unit, onRefreshModels: () -> Unit,
+    onRefreshModels: () -> Unit,
 ) {
     var advancedOptions by remember(convo.id) { mutableStateOf(convo.options.toString()) }
-    Column(Modifier.fillMaxWidth().background(ChatColors.side).padding(12.dp)) {
+    Column(Modifier.fillMaxWidth().fillMaxHeight(.9f).verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, bottom = 32.dp)) {
+        Text("Chat settings", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        Text("Character, model, images, and your shared profile", color = ChatColors.muted, fontSize = 12.sp, modifier = Modifier.padding(bottom = 10.dp))
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) { listOf("character", "generation", "images", "profile").forEach { name -> Text(name.replaceFirstChar(Char::uppercase), color = if (tab == name) MaterialTheme.colorScheme.onPrimary else ChatColors.text, modifier = Modifier.clip(RoundedCornerShape(5.dp)).background(if (tab == name) ChatColors.accent else ChatColors.input).clickable { onTab(name) }.padding(horizontal = 11.dp, vertical = 7.dp)) } }
         when (tab) {
             "character" -> Column(Modifier.fillMaxWidth().padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -353,15 +440,13 @@ private fun ChatSettings(
                 OutlinedButton(onClick = onImport) { Text("Import SillyTavern JSON") }
             }
             "generation" -> Column(Modifier.fillMaxWidth().padding(top = 8.dp)) {
-                Text("Loaded model", color = ChatColors.muted)
+                Text("Text-generation backend", color = ChatColors.muted)
+                Text(models?.loaded?.ifBlank { null } ?: "No model loaded", color = ChatColors.text, fontWeight = FontWeight.SemiBold)
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                    models?.models?.forEach { model -> FilterChip(selected = model == models.loaded, enabled = models.supported, onClick = { onLoadModel(model) }, label = { Text(model) }) }
+                    models?.models?.forEach { model -> FilterChip(selected = model == models.loaded, enabled = false, onClick = {}, label = { Text(model) }) }
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    OutlinedButton(onClick = onUnloadModel, enabled = models?.supported == true && models.loaded.isNotBlank()) { Text("Unload") }
-                    OutlinedButton(onClick = onRefreshModels) { Text("Refresh") }
-                }
-                if (models != null && !models.supported) Text("This backend lists models but does not support in-app loading.", color = ChatColors.muted, fontSize = 11.sp)
+                OutlinedButton(onClick = onRefreshModels) { Text("Refresh status") }
+                Text("Load or unload models in text-generation-webui's own WebUI. OppaiLib keeps model management read-only so it cannot destabilize the Docker container.", color = ChatColors.muted, fontSize = 11.sp)
                 Text("Mode", color = ChatColors.muted); Row(Modifier.horizontalScroll(rememberScrollState())) { chatModes.forEach { mode -> Text(mode.label, modifier = Modifier.clip(RoundedCornerShape(4.dp)).background(if (convo.mode == mode.id) ChatColors.accent else ChatColors.input).clickable { onConversation(convo.copy(mode = mode.id)) }.padding(10.dp, 6.dp)) } }
                 ChatSlider("Temperature", convo.options, "temperature", 0f, 2f, .8f) { onConversation(convo.copy(options = convo.options.withNumber("temperature", it))) }
                 ChatSlider("Top P", convo.options, "top_p", .05f, 1f, .95f) { onConversation(convo.copy(options = convo.options.withNumber("top_p", it))) }
@@ -395,7 +480,14 @@ private fun ChatSlider(label: String, options: JsonObject, key: String, min: Flo
 
 @Composable
 private fun ChatIntro(repo: Repository, char: ChatCharacter, convo: ChatConversation, status: ChatStatus?) {
-    Column(Modifier.fillMaxWidth().padding(16.dp)) { ChatAvatar(repo, char, Modifier.size(68.dp).clip(CircleShape)); Text(char.name, color = ChatColors.text, fontSize = 25.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp)); Text(char.description.ifBlank { "This is the beginning of your conversation with ${char.name}." } + if (status?.enabled == true) " Running on ${status.model}." else " Local reply mode.", color = ChatColors.muted, fontSize = 13.sp) }
+    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp).clip(RoundedCornerShape(16.dp)).background(ChatColors.side).padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+        ChatAvatar(repo, char, Modifier.size(54.dp).clip(CircleShape))
+        Column(Modifier.padding(start = 12.dp)) {
+            Text(char.name, color = ChatColors.text, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Text(char.description.ifBlank { "This is the beginning of your conversation." }, color = ChatColors.muted, fontSize = 12.sp, maxLines = 2)
+            Text(if (status?.enabled == true) "Running on ${status.model}" else if (char.id == "libby") "Built-in local replies" else "Waiting for a local model", color = if (status?.enabled == true) ChatColors.accent else ChatColors.muted, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+        }
+    }
 }
 
 @Composable
@@ -407,10 +499,33 @@ private fun ChatAvatar(repo: Repository, char: ChatCharacter, modifier: Modifier
 
 @Composable
 private fun ChatMessageRow(repo: Repository, ws: ChatWorkspace, char: ChatCharacter, entry: StoredChatMessage, previous: StoredChatMessage?) {
-    val grouped = previous?.role == entry.role && entry.at - previous.at < 5 * 60_000; val friend = entry.role == "assistant"; val name = if (friend) char.name else ws.profile.displayName.ifBlank { repo.prefs.reauthUsername ?: "You" }
-    Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = if (grouped) 1.dp else 14.dp), verticalAlignment = Alignment.Top) {
-        Box(Modifier.width(52.dp), contentAlignment = Alignment.TopCenter) { if (!grouped) { if (friend) ChatAvatar(repo, char, Modifier.size(40.dp).clip(CircleShape)) else Box(Modifier.size(40.dp).clip(CircleShape).background(ChatColors.accent), contentAlignment = Alignment.Center) { Text(name.take(2).uppercase(), color = MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.Bold) } } }
-        Column(Modifier.weight(1f)) { if (!grouped) Row(verticalAlignment = Alignment.Bottom) { Text(name, color = if (friend) ChatColors.accent else ChatColors.text, fontWeight = FontWeight.SemiBold); if (friend) Text(" BOT ", color = MaterialTheme.colorScheme.onPrimary, fontSize = 9.sp, modifier = Modifier.padding(start = 5.dp).clip(RoundedCornerShape(3.dp)).background(ChatColors.accent)); Text("  ${timeOf(entry.at)}", color = ChatColors.muted, fontSize = 11.sp) }; Text(richChatText(entry.content), color = ChatColors.text, fontSize = 15.sp); if (entry.imageId.isNotBlank()) AsyncImage(repo.chatImageUrl(entry.imageId), "Image sent by $name", imageLoader = repo.imageLoader, modifier = Modifier.fillMaxWidth().height(300.dp).padding(top = 7.dp).clip(RoundedCornerShape(8.dp))) }
+    val grouped = previous?.role == entry.role && entry.at - previous.at < 5 * 60_000
+    val friend = entry.role == "assistant"
+    val name = if (friend) char.name else ws.profile.displayName.ifBlank { repo.prefs.reauthUsername ?: "You" }
+    Row(
+        Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, top = if (grouped) 3.dp else 12.dp),
+        horizontalArrangement = if (friend) Arrangement.Start else Arrangement.End,
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        if (friend) {
+            Box(Modifier.width(44.dp), contentAlignment = Alignment.BottomCenter) {
+                if (!grouped) ChatAvatar(repo, char, Modifier.size(36.dp).clip(CircleShape))
+            }
+        }
+        Column(
+            Modifier.fillMaxWidth(if (friend) .82f else .78f).widthIn(max = 520.dp)
+                .clip(if (friend) RoundedCornerShape(5.dp, 17.dp, 17.dp, 17.dp) else RoundedCornerShape(17.dp, 5.dp, 17.dp, 17.dp))
+                .background(if (friend) ChatColors.side else MaterialTheme.colorScheme.primaryContainer)
+                .padding(horizontal = 13.dp, vertical = 9.dp),
+        ) {
+            if (!grouped) Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(name, color = if (friend) ChatColors.accent else MaterialTheme.colorScheme.onPrimaryContainer, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                Spacer(Modifier.weight(1f))
+                Text(timeOf(entry.at), color = ChatColors.muted, fontSize = 10.sp)
+            }
+            Text(richChatText(entry.content), color = if (friend) ChatColors.text else MaterialTheme.colorScheme.onPrimaryContainer, fontSize = 15.sp, modifier = Modifier.padding(top = if (grouped) 0.dp else 2.dp))
+            if (entry.imageId.isNotBlank()) AsyncImage(repo.chatImageUrl(entry.imageId), "Image sent by $name", imageLoader = repo.imageLoader, modifier = Modifier.fillMaxWidth().height(260.dp).padding(top = 7.dp).clip(RoundedCornerShape(10.dp)))
+        }
     }
 }
 

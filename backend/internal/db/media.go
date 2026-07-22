@@ -8,18 +8,18 @@ import (
 
 // MediaRow mirrors the media table; *_enc fields hold ciphertext.
 type MediaRow struct {
-	ID        int64
-	Kind      string
-	SHA256    string
-	Size      int64
-	BlobPath  string
-	TitleEnc  []byte
-	NotesEnc  []byte
-	SourceEnc []byte
-	Rating    int
-	Favorite  bool
-	Duration  sql.NullFloat64
-	Width     sql.NullInt64
+	ID          int64
+	Kind        string
+	SHA256      string
+	Size        int64
+	BlobPath    string
+	TitleEnc    []byte
+	NotesEnc    []byte
+	SourceEnc   []byte
+	Rating      int
+	Favorite    bool
+	Duration    sql.NullFloat64
+	Width       sql.NullInt64
 	Height      sql.NullInt64
 	PageCount   sql.NullInt64
 	ThumbPath   sql.NullString
@@ -156,6 +156,39 @@ func (d *DB) VideosMissingThumbs(ctx context.Context, limit int) ([]*MediaRow, e
 	for rows.Next() {
 		m := &MediaRow{}
 		if err := rows.Scan(&m.ID, &m.Kind, &m.BlobPath, &m.Size, &m.Duration); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// MediaMissingAITags returns taggable library items with no persisted AI result.
+// It powers the bounded startup/settings backfill, repairing
+// imports made while tagging was disabled or by an ingest path that failed before
+// it could enqueue the model. Existing manual and scraped tags do not count: the
+// AI pass is independent and may add useful content tags alongside them.
+func (d *DB) MediaMissingAITags(ctx context.Context, limit int) ([]*MediaRow, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 500
+	}
+	rows, err := d.sql.QueryContext(ctx, `
+		SELECT m.id, m.kind, m.blob_path, m.size
+		FROM media m
+		WHERE m.kind IN ('image', 'gif', 'video')
+		  AND NOT EXISTS (
+		      SELECT 1 FROM media_tags mt
+		      WHERE mt.media_id = m.id AND mt.source = 'ai'
+		  )
+		ORDER BY m.created_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*MediaRow
+	for rows.Next() {
+		m := &MediaRow{}
+		if err := rows.Scan(&m.ID, &m.Kind, &m.BlobPath, &m.Size); err != nil {
 			return nil, err
 		}
 		out = append(out, m)

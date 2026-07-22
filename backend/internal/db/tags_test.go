@@ -180,3 +180,36 @@ func TestTagsForMediaBatch(t *testing.T) {
 		t.Errorf("batch(nil) = %v", empty)
 	}
 }
+
+func TestMediaMissingAITagsIgnoresManualAndNonTaggableItems(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	wanted := insertMedia(t, d, "sha-missing")
+	manual := insertMedia(t, d, "sha-manual")
+	complete := insertMedia(t, d, "sha-complete")
+	comic, _, err := d.InsertMedia(ctx, &MediaRow{Kind: "comic", SHA256: "sha-comic", Size: 1, BlobPath: "comic.cbz"})
+	if err != nil {
+		t.Fatalf("insert comic: %v", err)
+	}
+	if err := d.AddTag(ctx, manual, "favourite", "general", "manual", 0); err != nil {
+		t.Fatalf("add manual tag: %v", err)
+	}
+	if err := d.AddTag(ctx, complete, "portrait", "meta", "ai", 1); err != nil {
+		t.Fatalf("add ai tag: %v", err)
+	}
+
+	rows, err := d.MediaMissingAITags(ctx, 20)
+	if err != nil {
+		t.Fatalf("missing AI tags: %v", err)
+	}
+	got := map[int64]bool{}
+	for _, row := range rows {
+		got[row.ID] = true
+	}
+	if !got[wanted] || !got[manual] {
+		t.Errorf("taggable items without AI tags missing: %+v", got)
+	}
+	if got[complete] || got[comic] {
+		t.Errorf("completed/non-taggable items returned: %+v", got)
+	}
+}

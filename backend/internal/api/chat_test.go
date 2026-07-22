@@ -17,6 +17,10 @@ func TestChatProxiesLocalOpenAIEndpoint(t *testing.T) {
 		Preset   string        `json:"preset"`
 	}
 	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/internal/model/info" {
+			_, _ = w.Write([]byte(`{"model_name":"test-local"}`))
+			return
+		}
 		gotAuth = r.Header.Get("Authorization")
 		if r.URL.Path != "/v1/chat/completions" {
 			t.Fatalf("path = %q", r.URL.Path)
@@ -31,7 +35,7 @@ func TestChatProxiesLocalOpenAIEndpoint(t *testing.T) {
 	s, token := newTestServer(t)
 	cur := s.settings.Get()
 	cur.ChatURL = llm.URL
-	cur.ChatModel = "test-local"
+	cur.ChatModel = "stale-configured-name"
 	cur.ChatAPIKey = "local-secret"
 	s.settings.Set(cur)
 
@@ -71,6 +75,7 @@ func TestChatRejectsUnknownMode(t *testing.T) {
 
 func TestChatModelLifecycle(t *testing.T) {
 	loaded := "old.gguf"
+	mutations := 0
 	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method + " " + r.URL.Path {
 		case "GET /v1/internal/model/list":
@@ -78,15 +83,11 @@ func TestChatModelLifecycle(t *testing.T) {
 		case "GET /v1/internal/model/info":
 			_, _ = w.Write([]byte(`{"model_name":"` + loaded + `"}`))
 		case "POST /v1/internal/model/load":
-			var in struct {
-				ModelName string `json:"model_name"`
-			}
-			_ = json.NewDecoder(r.Body).Decode(&in)
-			loaded = in.ModelName
-			_, _ = w.Write([]byte(`{"status":"ok"}`))
+			mutations++
+			http.Error(w, "must not be called", http.StatusInternalServerError)
 		case "POST /v1/internal/model/unload":
-			loaded = ""
-			_, _ = w.Write([]byte(`{"status":"ok"}`))
+			mutations++
+			http.Error(w, "must not be called", http.StatusInternalServerError)
 		default:
 			http.NotFound(w, r)
 		}
@@ -99,16 +100,54 @@ func TestChatModelLifecycle(t *testing.T) {
 	cur.ChatModel = loaded
 	s.settings.Set(cur)
 	h := s.Handler()
-	if rec := do(t, h, token, http.MethodGet, "/api/chat/models", ""); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"supported":true`) {
+	if rec := do(t, h, token, http.MethodGet, "/api/chat/models", ""); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"supported":false`) {
 		t.Fatalf("list models: %d %s", rec.Code, rec.Body)
 	}
-	if rec := do(t, h, token, http.MethodPost, "/api/chat/models/load", `{"modelName":"new.gguf"}`); rec.Code != http.StatusOK {
-		t.Fatalf("load model: %d %s", rec.Code, rec.Body)
+	if rec := do(t, h, token, http.MethodPost, "/api/chat/models/load", `{"modelName":"new.gguf"}`); rec.Code != http.StatusConflict {
+		t.Fatalf("load model: %d %s, want safe refusal", rec.Code, rec.Body)
 	}
-	if s.settings.Get().ChatModel != "new.gguf" {
-		t.Fatalf("saved model = %q", s.settings.Get().ChatModel)
+	if s.settings.Get().ChatModel != "old.gguf" {
+		t.Fatalf("configured model changed = %q", s.settings.Get().ChatModel)
 	}
-	if rec := do(t, h, token, http.MethodPost, "/api/chat/models/unload", `{}`); rec.Code != http.StatusOK || loaded != "" {
+	if rec := do(t, h, token, http.MethodPost, "/api/chat/models/unload", `{}`); rec.Code != http.StatusConflict || loaded != "old.gguf" {
 		t.Fatalf("unload model: %d %s loaded=%q", rec.Code, rec.Body, loaded)
+	}
+	if mutations != 0 {
+		t.Fatalf("OppaiLib sent %d unsafe lifecycle requests", mutations)
+	}
+}
+
+func TestChatStatusReportsReachableBackendWithNoLoadedModel(t *testing.T) {
+	generationCalls := 0
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/internal/model/info":
+			_, _ = w.Write([]byte(`{"model_name":"None","lora_names":[],"loader":null}`))
+		case "/v1/models":
+			_, _ = w.Write([]byte(`{"object":"list","data":[]}`))
+		case "/v1/chat/completions":
+			generationCalls++
+			http.Error(w, "must not generate without a model", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer llm.Close()
+
+	s, token := newTestServer(t)
+	cur := s.settings.Get()
+	cur.ChatURL = llm.URL + "/v1"
+	cur.ChatModel = "stale-configured-name"
+	s.settings.Set(cur)
+	rec := do(t, s.Handler(), token, http.MethodGet, "/api/chat/status", "")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"configured":true`) || !strings.Contains(rec.Body.String(), `"enabled":false`) {
+		t.Fatalf("status: %d %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "No model is loaded") {
+		t.Fatalf("status is not actionable: %s", rec.Body)
+	}
+	rec = do(t, s.Handler(), token, http.MethodPost, "/api/chat", `{"mode":"sweet","messages":[{"role":"user","content":"hello"}]}`)
+	if rec.Code != http.StatusServiceUnavailable || generationCalls != 0 {
+		t.Fatalf("generation without a model: %d %s calls=%d", rec.Code, rec.Body, generationCalls)
 	}
 }

@@ -93,6 +93,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 // ApplySettings pushes settings into the live subsystems. Called at startup with
 // the stored values and again on every save, so changes need no restart.
 func (s *Server) ApplySettings(cur settings.Settings) {
+	previous := s.ai.Options()
 	s.settings.Set(cur)
 	cur = s.settings.Get() // re-read: Set clamps
 	s.ai.SetOptions(ai.Options{
@@ -104,6 +105,9 @@ func (s *Server) ApplySettings(cur settings.Settings) {
 	s.scraper.SetOptions(cur.ScrapeUserAgent, cur.ScrapeDelay(), cur.ScrapeRespectRobots)
 	s.scraper.SetF95Credentials(cur.F95Username, cur.F95Password)
 	s.sources.SetRule34Credentials(cur.Rule34UserID, cur.Rule34APIKey)
+	if (!previous.Enabled || !previous.AutoTag) && cur.AIEnabled && cur.AIAutoTag {
+		go s.backfillAutoTags()
+	}
 }
 
 // handleStats summarizes the library for the Settings screen.

@@ -85,7 +85,6 @@ func (s *Server) handleUploadGameGallery(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if !existed {
-		s.ai.TagMediaAsync(mediaID, put.RelPath, string(kind))
 		s.processIngestAsync(mediaID, put.RelPath, string(kind), put.Size, 0)
 	}
 	row, err := s.db.GetMedia(r.Context(), mediaID)

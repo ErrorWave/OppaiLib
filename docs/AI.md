@@ -5,15 +5,20 @@ OppaiLib tags media **entirely on your hardware**. Nothing is sent anywhere.
 ## Libby chat
 
 The Chat tab talks to an OpenAI-compatible LLM on your own network. Configure it
-from **Settings → Libby chat**, or set both startup defaults:
+from **Settings → Libby chat**, or set a startup default:
 
 ```env
-OPPAI_CHAT_URL=http://192.168.1.10:1234
+OPPAI_CHAT_URL=http://192.168.1.10:5000/v1
+# Optional fallback for generic OpenAI-compatible servers:
 OPPAI_CHAT_MODEL=your-local-model-name
 ```
 
-The URL is the server root; OppaiLib appends `/v1/chat/completions`. LM Studio,
-llama.cpp server, and Ollama's OpenAI-compatible bridge can all expose this shape.
+The URL may be the server root or its `/v1` base; OppaiLib normalizes it before
+calling `/v1/chat/completions`. LM Studio, llama.cpp server, and Ollama's
+OpenAI-compatible bridge can all expose this shape. For text-generation-webui,
+load and unload models in its own WebUI (or startup configuration). OppaiLib only
+checks readiness and sends generation requests; its model controls are deliberately
+read-only to avoid racing or destabilizing the backend container.
 Conversation history stays in the current web/Android screen and is sent only to
 that configured endpoint. Libby's Sweet, Playful, Bold, and Roleplay modes change
 the local system prompt; the latter modes permit consensual adult NSFW chat.
@@ -250,9 +255,11 @@ Each frame costs one ffmpeg seek-and-decode plus one model inference, so raising
 `OPPAI_AI_VIDEO_FRAMES` trades import throughput for tag coverage. Background tag
 jobs are bounded by a worker pool (half the core count, max 4), shared shape with
 the thumbnail pool, so a bulk import queues instead of spawning one ffmpeg per
-video at once.
+video at once. Every new-media path uses the same post-ingest hook, and a bounded
+startup pass retries taggable items with no persisted AI result. Turning **Tag on
+import** back on runs that recovery pass immediately as well.
 
 ## Roadmap
 - Comics: tag the cover + sampled pages.
-- Background job queue with retry, so tagging survives a restart. (Note: there is
-  no `jobs` table yet — it needs to be added.)
+- Persist per-attempt job diagnostics so Settings can show failures and retry
+  history beyond the current automatic missing-result recovery.

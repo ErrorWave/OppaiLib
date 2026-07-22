@@ -87,7 +87,6 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 	// Fire-and-forget AI auto-tagging (no-op if disabled or non-image) and the
 	// per-kind ingest work (video posters, comic page index + cover).
 	if !existed {
-		s.ai.TagMediaAsync(id, res.RelPath, string(kind))
 		s.processIngestAsync(id, res.RelPath, string(kind), res.Size, 0)
 	}
 

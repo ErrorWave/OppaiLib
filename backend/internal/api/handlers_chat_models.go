@@ -17,6 +17,12 @@ type chatModelsResponse struct {
 	Supported bool     `json:"supported"`
 }
 
+type chatBackendProbe struct {
+	Ready  bool
+	Loaded string
+	Detail string
+}
+
 func chatBackendBase(raw string) string {
 	return strings.TrimSuffix(strings.TrimRight(raw, "/"), "/v1")
 }
@@ -43,6 +49,59 @@ func (s *Server) chatBackendRequest(ctx context.Context, method, path string, bo
 	return resp.StatusCode, raw, err
 }
 
+// probeChatBackend is deliberately read-only. Model load/unload is owned by the
+// text-generation backend: doing it through OppaiLib can race the backend WebUI,
+// exceed container memory, or leave the API alive with no model loaded.
+func (s *Server) probeChatBackend(ctx context.Context) chatBackendProbe {
+	cur := s.settings.Get()
+	if cur.ChatURL == "" {
+		return chatBackendProbe{Detail: "Chat API URL is not configured."}
+	}
+	status, raw, err := s.chatBackendRequest(ctx, http.MethodGet, "/v1/internal/model/info", nil)
+	if err == nil && status >= 200 && status < 300 {
+		var info struct {
+			ModelName string `json:"model_name"`
+		}
+		if json.Unmarshal(raw, &info) == nil {
+			loaded := strings.TrimSpace(info.ModelName)
+			if loaded == "" || strings.EqualFold(loaded, "none") {
+				return chatBackendProbe{Detail: "No model is loaded in text-generation-webui. Load one in its WebUI, then refresh."}
+			}
+			return chatBackendProbe{Ready: true, Loaded: loaded}
+		}
+	}
+
+	// Generic OpenAI-compatible backends do not expose text-generation-webui's
+	// internal endpoint. A non-empty /models response is the best portable
+	// readiness signal; prefer the configured model when it appears in the list.
+	status, raw, err = s.chatBackendRequest(ctx, http.MethodGet, "/v1/models", nil)
+	if err != nil {
+		return chatBackendProbe{Detail: "Chat API is unreachable: " + err.Error()}
+	}
+	if status < 200 || status >= 300 {
+		return chatBackendProbe{Detail: fmt.Sprintf("Chat API readiness check returned HTTP %d.", status)}
+	}
+	var generic struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(raw, &generic) != nil {
+		return chatBackendProbe{Detail: "Chat API returned an invalid model list."}
+	}
+	if len(generic.Data) == 0 {
+		return chatBackendProbe{Detail: "Chat API is online, but it reports no loaded model."}
+	}
+	loaded := strings.TrimSpace(generic.Data[0].ID)
+	for _, model := range generic.Data {
+		if model.ID == cur.ChatModel {
+			loaded = model.ID
+			break
+		}
+	}
+	return chatBackendProbe{Ready: true, Loaded: loaded}
+}
+
 func (s *Server) handleChatModels(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
@@ -58,9 +117,14 @@ func (s *Server) handleChatModels(w http.ResponseWriter, r *http.Request) {
 					ModelName string `json:"model_name"`
 				}
 				_ = json.Unmarshal(infoRaw, &info)
-				loaded = info.ModelName
+				loaded = strings.TrimSpace(info.ModelName)
+				if strings.EqualFold(loaded, "none") {
+					loaded = ""
+				}
 			}
-			writeJSON(w, http.StatusOK, chatModelsResponse{Models: list.ModelNames, Loaded: loaded, Supported: true})
+			// Listing is read-only. Loading is intentionally left to the backend's
+			// own WebUI/startup flags, which know its loader and memory settings.
+			writeJSON(w, http.StatusOK, chatModelsResponse{Models: list.ModelNames, Loaded: loaded, Supported: false})
 			return
 		}
 	}
@@ -86,61 +150,24 @@ func (s *Server) handleChatModels(w http.ResponseWriter, r *http.Request) {
 			models = append(models, model.ID)
 		}
 	}
-	writeJSON(w, http.StatusOK, chatModelsResponse{Models: models, Loaded: s.settings.Get().ChatModel, Supported: false})
-}
-
-type loadChatModelReq struct {
-	ModelName string         `json:"modelName"`
-	Args      map[string]any `json:"args,omitempty"`
+	loaded := ""
+	if len(models) > 0 {
+		loaded = models[0]
+		configuredModel := s.settings.Get().ChatModel
+		for _, model := range models {
+			if model == configuredModel {
+				loaded = model
+				break
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, chatModelsResponse{Models: models, Loaded: loaded, Supported: false})
 }
 
 func (s *Server) handleLoadChatModel(w http.ResponseWriter, r *http.Request) {
-	var in loadChatModelReq
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&in); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid model request")
-		return
-	}
-	in.ModelName = strings.TrimSpace(in.ModelName)
-	if in.ModelName == "" || len(in.ModelName) > 300 {
-		writeErr(w, http.StatusBadRequest, "modelName is required")
-		return
-	}
-	if in.Args == nil {
-		in.Args = map[string]any{}
-	}
-	payload, _ := json.Marshal(map[string]any{"model_name": in.ModelName, "args": in.Args})
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
-	defer cancel()
-	status, raw, err := s.chatBackendRequest(ctx, http.MethodPost, "/v1/internal/model/load", payload)
-	if err != nil {
-		writeErr(w, http.StatusBadGateway, "model load failed: "+err.Error())
-		return
-	}
-	if status < 200 || status >= 300 {
-		writeErr(w, http.StatusBadGateway, "model load failed: "+truncateChatError(raw))
-		return
-	}
-	cur := s.settings.Get()
-	cur.ChatModel = in.ModelName
-	if err := s.db.PutSettings(r.Context(), cur.Map()); err != nil {
-		writeErr(w, http.StatusInternalServerError, "model loaded but setting could not be saved")
-		return
-	}
-	s.ApplySettings(cur)
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "loaded": in.ModelName})
+	writeErr(w, http.StatusConflict, "OppaiLib model loading is disabled; load the model in text-generation-webui, then refresh chat status")
 }
 
 func (s *Server) handleUnloadChatModel(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
-	defer cancel()
-	status, raw, err := s.chatBackendRequest(ctx, http.MethodPost, "/v1/internal/model/unload", []byte(`{}`))
-	if err != nil {
-		writeErr(w, http.StatusBadGateway, "model unload failed: "+err.Error())
-		return
-	}
-	if status < 200 || status >= 300 {
-		writeErr(w, http.StatusBadGateway, "model unload failed: "+truncateChatError(raw))
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeErr(w, http.StatusConflict, "OppaiLib model unloading is disabled; manage the model in text-generation-webui")
 }

@@ -151,6 +151,8 @@ type Manager struct {
 
 	sem        chan struct{} // bounds concurrent background tag jobs
 	ffmpegWarn sync.Once     // warn once if ffmpeg is missing
+	inFlightMu sync.Mutex
+	inFlight   map[int64]struct{} // suppress duplicate ingest/backfill jobs for one item
 
 	mu   sync.RWMutex
 	opts Options
@@ -201,12 +203,13 @@ func NewManager(cfg Config, store *storage.Store, database *db.DB, log *slog.Log
 	}
 
 	m := &Manager{
-		frames: frames,
-		store:  store,
-		db:     database,
-		log:    log,
-		sem:    make(chan struct{}, workers),
-		opts:   Options{Enabled: cfg.Enabled, AutoTag: true, MinScore: 0.35, MaxTags: 20},
+		frames:   frames,
+		store:    store,
+		db:       database,
+		log:      log,
+		sem:      make(chan struct{}, workers),
+		inFlight: make(map[int64]struct{}),
+		opts:     Options{Enabled: cfg.Enabled, AutoTag: true, MinScore: 0.35, MaxTags: 20},
 	}
 	if t, err := newOnnxTagger(cfg.ModelDir, cfg.Device, log); err == nil {
 		log.Info("ai: using ONNX tagger", "model_dir", cfg.ModelDir, "device", cfg.Device)
@@ -254,11 +257,31 @@ func (m *Manager) TagMediaAsync(id int64, blobPath, kind string) {
 	if !o.Enabled || !o.AutoTag {
 		return
 	}
+	switch models.MediaKind(kind) {
+	case models.KindImage, models.KindGIF, models.KindVideo:
+	default:
+		return
+	}
+	m.inFlightMu.Lock()
+	if m.inFlight == nil {
+		m.inFlight = make(map[int64]struct{})
+	}
+	if _, exists := m.inFlight[id]; exists {
+		m.inFlightMu.Unlock()
+		return
+	}
+	m.inFlight[id] = struct{}{}
+	m.inFlightMu.Unlock()
 	timeout := 2 * time.Minute
 	if kind == string(models.KindVideo) {
 		timeout = videoTagTimeout
 	}
 	go func() {
+		defer func() {
+			m.inFlightMu.Lock()
+			delete(m.inFlight, id)
+			m.inFlightMu.Unlock()
+		}()
 		m.sem <- struct{}{}
 		defer func() { <-m.sem }()
 

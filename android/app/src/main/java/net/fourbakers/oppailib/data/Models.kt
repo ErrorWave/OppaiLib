@@ -198,10 +198,13 @@ data class ChatResponse(
 @Serializable
 data class ChatStatus(
     val enabled: Boolean = false,
+    val configured: Boolean = false,
     val model: String = "",
+    val message: String = "",
     val modes: List<String> = emptyList(),
     val advancedOptions: Boolean = false,
     val modelBackend: Boolean = false,
+    val modelManagement: Boolean = false,
 )
 
 @Serializable

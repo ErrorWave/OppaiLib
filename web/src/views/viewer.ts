@@ -849,8 +849,10 @@ export class OppaiViewer extends LitElement {
       // tag id that no longer carries a timeline.
       this.activeTag = null;
       this.dispatchEvent(new CustomEvent("changed", { bubbles: true, composed: true }));
+      mascotSay(res.tags.length ? `Tags refreshed — ${res.tags.length} found.` : "Tagging finished, but nothing cleared your confidence threshold.", "success");
     } catch (e) {
       console.error("autotag", e);
+      mascotSay(`Auto-tagging failed: ${(e as Error).message}`, "error");
     } finally {
       this.tagging = false;
     }

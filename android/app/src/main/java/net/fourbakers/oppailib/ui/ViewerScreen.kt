@@ -1,6 +1,7 @@
 package net.fourbakers.oppailib.ui
 
 import android.app.Activity
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -1084,6 +1085,7 @@ private fun Chrome(
     var menu by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
 
     /**
      * Sends an edit and adopts what comes back. The response is the row as it now
@@ -1137,17 +1139,23 @@ private fun Chrome(
                     tint = if (media.favorite) Color(0xFFE91E63) else Color.White,
                 )
             }
-            IconButton(onClick = {
+            IconButton(enabled = !tagging, onClick = {
                 tagging = true
                 scope.launch {
-                    runCatching { repo.api.autotag(media.id) }.getOrNull()?.let {
-                        val updated = media.copy(tags = it.tags)
-                        onDetail(updated)
-                        onChanged(updated)
-                    }
+                    runCatching { repo.api.autotag(media.id) }
+                        .onSuccess {
+                            val updated = media.copy(tags = it.tags)
+                            onDetail(updated)
+                            onChanged(updated)
+                            Toast.makeText(context, if (it.tags.isEmpty()) "Tagging finished; no confident tags found" else "Tags refreshed: ${it.tags.size} found", Toast.LENGTH_SHORT).show()
+                        }
+                        .onFailure { Toast.makeText(context, "Auto-tagging failed: ${it.message ?: "unknown error"}", Toast.LENGTH_LONG).show() }
                     tagging = false
                 }
-            }) { Icon(Icons.Filled.AutoAwesome, "Auto-tag", tint = Color.White) }
+            }) {
+                if (tagging) CircularProgressIndicator(Modifier.size(22.dp), color = Color.White, strokeWidth = 2.dp)
+                else Icon(Icons.Filled.AutoAwesome, "Auto-tag", tint = Color.White)
+            }
             // Edit and delete moved behind an overflow: the top bar had run out of room
             // once favouriting earned a place on it, and of the three, deleting is the
             // one that should take an extra tap.

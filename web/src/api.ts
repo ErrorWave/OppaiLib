@@ -121,10 +121,13 @@ export interface ChatMessage {
 
 export interface ChatStatus {
   enabled: boolean;
+  configured?: boolean;
   model?: string;
+  message?: string;
   modes: string[];
   advancedOptions?: boolean;
   modelBackend?: boolean;
+  modelManagement?: boolean;
 }
 
 export interface ChatModels {

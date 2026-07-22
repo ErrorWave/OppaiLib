@@ -246,7 +246,10 @@ func (s *Settings) Clamp() {
 	s.ChatURL = strings.TrimRight(strings.TrimSpace(s.ChatURL), "/")
 	s.ChatModel = strings.TrimSpace(s.ChatModel)
 	s.ChatAPIKey = strings.TrimSpace(s.ChatAPIKey)
-	s.ChatEnabled = s.ChatURL != "" && s.ChatModel != ""
+	// A text-generation-webui model is selected in its own WebUI/startup config;
+	// its OpenAI endpoint does not require OppaiLib to own that lifecycle or even
+	// send a model field. The live readiness probe decides whether Chat can run.
+	s.ChatEnabled = s.ChatURL != ""
 }
 
 // ScrapeDelay is the politeness delay as a Duration.

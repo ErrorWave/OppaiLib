@@ -1274,16 +1274,17 @@ export class OppaiSettings extends LitElement {
                 <div class="field-text">
                   <div class="field-label">Libby chat</div>
                   <div class="field-help">
-                    OpenAI-compatible base URL and model for your local LLM, such as LM Studio,
-                    llama.cpp, or Ollama's <code>/v1</code> bridge. OppaiLib appends
-                    <code>/v1/chat/completions</code>. Both values are required to enable Chat.
+                    OpenAI-compatible API base URL for your local LLM, such as
+                    <code>http://host:5000/v1</code>. The model name is an optional fallback;
+                    OppaiLib detects the model actually loaded by text-generation-webui.
+                    Load and unload models in that backend's own WebUI—OppaiLib never changes its model lifecycle.
                   </div>
                 </div>
                 <div class="field-control">
                   <input
                     type="text"
                     autocomplete="off"
-                    placeholder="http://host:1234"
+                    placeholder="http://host:5000/v1"
                     .value=${s.chatUrl}
                     ?disabled=${!this.canEdit}
                     @change=${(e: Event) => this.edit({ chatUrl: (e.target as HTMLInputElement).value })}
@@ -1293,7 +1294,7 @@ export class OppaiSettings extends LitElement {
                   <input
                     type="text"
                     autocomplete="off"
-                    placeholder="Local model name"
+                    placeholder="Optional fallback model name"
                     .value=${s.chatModel}
                     ?disabled=${!this.canEdit}
                     @change=${(e: Event) => this.edit({ chatModel: (e.target as HTMLInputElement).value })}
