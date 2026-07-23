@@ -247,8 +247,42 @@ func validChatID(id string, allowLibby bool) bool {
 // images by a real character id.
 const profileImageOwner = "profile"
 
+// avatarImageOwnerPrefix owns a character's face, for the same reason: a picture
+// set as someone's avatar is not one of the pictures they might send you, so it
+// must not appear in their gallery nor be eligible as a reply attachment.
+const avatarImageOwnerPrefix = "avatar:"
+
+// avatarImageOwnerFor is the owner string the clients build for a character's face.
+// Kept next to the prefix so the two can never drift apart.
+func avatarImageOwnerFor(characterID string) string {
+	return avatarImageOwnerPrefix + characterID
+}
+
+// characterBehindOwner maps an image owner to the character that must exist for it,
+// and reports whether one has to. A reserved owner names a *slot* rather than a
+// gallery: "profile" has no character behind it at all, and "avatar:<id>" is backed
+// by the character the prefix carries, not by a character literally named
+// "avatar:<id>". Resolving that here is what the upload handler's existence check
+// was missing — it looked the owner up verbatim, so every avatar and profile
+// picture upload was rejected as "no such character".
+func characterBehindOwner(owner string) (characterID string, required bool) {
+	if owner == profileImageOwner {
+		return "", false
+	}
+	if id, isAvatar := strings.CutPrefix(owner, avatarImageOwnerPrefix); isAvatar {
+		return id, true
+	}
+	return owner, true
+}
+
 func validChatImageOwner(id string) bool {
-	return id == profileImageOwner || validChatID(id, true)
+	if id == profileImageOwner {
+		return true
+	}
+	if rest, isAvatar := strings.CutPrefix(id, avatarImageOwnerPrefix); isAvatar {
+		return validChatID(rest, true)
+	}
+	return validChatID(id, true)
 }
 
 func cleanLimited(v string, n int) (string, bool) {
@@ -474,16 +508,18 @@ func (s *Server) handleUploadChatImage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "too many character images")
 		return
 	}
-	found := false
-	for _, c := range ws.Characters {
-		if c.ID == req.CharacterID {
-			found = true
-			break
+	if owner, required := characterBehindOwner(req.CharacterID); required {
+		found := false
+		for _, c := range ws.Characters {
+			if c.ID == owner {
+				found = true
+				break
+			}
 		}
-	}
-	if !found {
-		writeErr(w, http.StatusBadRequest, "no such character")
-		return
+		if !found {
+			writeErr(w, http.StatusBadRequest, "no such character")
+			return
+		}
 	}
 	dir := filepath.Dir(s.chatImagePath(u.ID, meta.ID))
 	if err := os.MkdirAll(dir, 0o700); err != nil {

@@ -15,6 +15,8 @@ import {
   type ImageGenStatus,
 } from "../api.js";
 import { libbyReact } from "../libby-voice.js";
+import { canvasToBlob, cutOutBackground, loadImage } from "../cutout.js";
+import type { LibbyEmotion } from "../libby.js";
 import "./imagegen-gallery.js";
 import "./civitai.js";
 import type { OppaiInvokeGallery } from "./imagegen-gallery.js";
@@ -87,6 +89,41 @@ const SCHEDULERS: { id: string; label: string }[] = [
   ].map(([id, label]) => ({ id, label })),
 ];
 
+// ── outfit helper ──────────────────────────────────────────────────────────────
+//
+// Libby's wardrobe wants one image per expression per heat tier — twenty-five of
+// them for a complete outfit, all of the same character in the same clothes. Typing
+// that by hand is where consistency goes to die, so the helper owns the parts that
+// have to stay identical across the set and varies only the face and the mood.
+//
+// It composes a prompt *fragment* rather than writing into the prompt box, so it
+// stays live as the pose is stepped through and can be switched off without having
+// to unpick text someone has since edited.
+
+/** The five poses the wardrobe has slots for, and the face each one wants. */
+const OUTFIT_FACES: { id: LibbyEmotion; label: string; face: string }[] = [
+  { id: "neutral", label: "Neutral", face: "calm neutral expression, relaxed face, looking at viewer" },
+  { id: "happy", label: "Happy", face: "warm genuine smile, bright eyes, cheerful expression" },
+  { id: "mischievous", label: "Mischievous", face: "smirk, half-lidded eyes, teasing knowing expression" },
+  { id: "surprised", label: "Surprised", face: "surprised expression, wide eyes, slightly open mouth" },
+  { id: "thinking", label: "Thinking", face: "thoughtful expression, looking to the side, hand near chin" },
+];
+
+/** The five heat tiers, matching libby-meter's 1–5. Posture and flush, not clothing. */
+const OUTFIT_TIERS: { label: string; mood: string }[] = [
+  { label: "Calm", mood: "composed posture, arms relaxed" },
+  { label: "Warm", mood: "soft light blush, inviting posture, slight lean forward" },
+  { label: "Flirty", mood: "flirty pose, hand on hip, confident stance, blush" },
+  { label: "Heated", mood: "heavy blush, sultry pose, parted lips, heavy-lidded eyes" },
+  { label: "Peak", mood: "deep blush, flushed skin, breathless needy expression" },
+];
+
+/** Terms that push the model toward something a flat cut-out can actually work on. */
+const CUTOUT_PROMPT = "solid flat white background, plain background, no scenery, full body, " +
+  "standing, centered, even lighting, no cast shadow";
+const CUTOUT_NEGATIVE = "detailed background, scenery, room, furniture, gradient background, " +
+  "shadow on background, floor, horizon, text, watermark, signature, border, frame";
+
 // A character being edited (or created — id undefined until saved).
 interface CharDraft {
   id?: string;
@@ -123,6 +160,23 @@ export class OppaiImageGen extends LitElement {
   @state() private selectedLoras: Record<string, number> = {};
   @state() private selectedTriggers: string[] = [];
   @state() private loraPage = 0;
+  // Outfit helper. `outfitOn` gates the whole fragment so it can be switched off
+  // without losing the wardrobe being worked on.
+  @state() private outfitOn = false;
+  @state() private outfitText = "";
+  @state() private outfitFace = 0;
+  @state() private outfitTier = 0;
+  @state() private outfitCutout = true;
+
+  /** The cut-out being previewed, if any. */
+  @state() private cutout: { url: string; name: string } | null = null;
+  @state() private cutoutTolerance = 42;
+  @state() private cutoutBusy = false;
+  @state() private cutoutError = "";
+  @query(".cutout-canvas") private cutoutHost?: HTMLElement;
+  /** Held so it can be encoded on demand without redoing the fill. */
+  private cutoutCanvas: HTMLCanvasElement | null = null;
+
   @state() private characters: GenCharacter[] = [];
   @state() private selectedChars: string[] = [];
   @state() private charDraft: CharDraft | null = null;
@@ -752,6 +806,47 @@ export class OppaiImageGen extends LitElement {
         margin-right: auto;
         color: var(--oppai-error, #f2b8b5);
       }
+      /* Outfit helper: plain checkbox rows, wide enough to hit on a phone. */
+      .switch {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+        color: var(--oppai-text-dim);
+        cursor: pointer;
+      }
+      .switch input {
+        accent-color: var(--oppai-primary);
+        width: 16px;
+        height: 16px;
+      }
+      .cutout-dialog {
+        width: min(560px, 100%);
+      }
+      /* The checkerboard is the point: transparency has to be visible to be judged. */
+      .cutout-canvas {
+        display: grid;
+        place-items: center;
+        min-height: 180px;
+        max-height: 46vh;
+        overflow: auto;
+        border-radius: 12px;
+        background-color: #6b6b6b;
+        background-image:
+          linear-gradient(45deg, #4a4a4a 25%, transparent 25%, transparent 75%, #4a4a4a 75%),
+          linear-gradient(45deg, #4a4a4a 25%, transparent 25%, transparent 75%, #4a4a4a 75%);
+        background-size: 20px 20px;
+        background-position: 0 0, 10px 10px;
+      }
+      .cutout-canvas canvas {
+        max-width: 100%;
+        max-height: 42vh;
+        object-fit: contain;
+      }
+      .cutout-dialog input[type="range"] {
+        width: 100%;
+        accent-color: var(--oppai-primary);
+      }
       .btn {
         border: none;
         border-radius: 10px;
@@ -964,9 +1059,38 @@ export class OppaiImageGen extends LitElement {
    * The final prompt pair sent to the generator: the typed prompt, plus the selected
    * characters' fragments, threaded through the selected template's "{prompt}" slot.
    */
+  /**
+   * The outfit helper's contribution: the clothes, then this pose's face and mood,
+   * then the flat-backdrop terms when the set is meant to be cut out.
+   *
+   * Order matters — the outfit leads because it is the constant across the whole
+   * wardrobe, and the per-image variation follows it.
+   */
+  private outfitFragment(): { prompt: string; negative: string } {
+    if (!this.outfitOn) return { prompt: "", negative: "" };
+    const parts = [this.outfitText.trim(), OUTFIT_FACES[this.outfitFace].face, OUTFIT_TIERS[this.outfitTier].mood];
+    if (this.outfitCutout) parts.push(CUTOUT_PROMPT);
+    return {
+      prompt: parts.filter(Boolean).join(", "),
+      negative: this.outfitCutout ? CUTOUT_NEGATIVE : "",
+    };
+  }
+
+  /**
+   * Steps to the next slot in the wardrobe: through the five faces, then on to the
+   * next heat tier. Generate, Next pose, generate — that loop is the helper.
+   */
+  private nextOutfitPose() {
+    const face = this.outfitFace + 1;
+    if (face < OUTFIT_FACES.length) { this.outfitFace = face; return; }
+    this.outfitFace = 0;
+    this.outfitTier = (this.outfitTier + 1) % OUTFIT_TIERS.length;
+  }
+
   private assemblePrompts(): { prompt: string; negative: string } {
-    const parts = [this.prompt.trim(), ...this.selectedTriggers];
-    const negParts = [this.negative.trim()];
+    const outfit = this.outfitFragment();
+    const parts = [this.prompt.trim(), ...this.selectedTriggers, outfit.prompt];
+    const negParts = [this.negative.trim(), outfit.negative];
     for (const id of this.selectedChars) {
       const c = this.characters.find((ch) => ch.id === id);
       if (!c) continue;
@@ -991,7 +1115,9 @@ export class OppaiImageGen extends LitElement {
 
   // ── generate / save ─────────────────────────────────────────────────────────
   private async generate() {
-    if (this.generating || !this.prompt.trim()) return;
+    // The outfit helper can carry the whole prompt on its own, so what matters is
+    // whether anything assembles — not whether the box itself has text in it.
+    if (this.generating || !this.assemblePrompts().prompt.trim()) return;
     const { prompt, negative } = this.assemblePrompts();
     this.generating = true;
     this.error = "";
@@ -1044,7 +1170,7 @@ export class OppaiImageGen extends LitElement {
   private async save(shot: Shot) {
     if (shot.saved) return;
     try {
-      const title = this.prompt.trim().slice(0, 80) || "Generated image";
+      const title = (this.prompt.trim() || this.outfitText.trim()).slice(0, 80) || "Generated image";
       await api.saveGenerated({ id: shot.id, title });
       this.shots = this.shots.map((s) => (s.id === shot.id ? { ...s, saved: true } : s));
       this.showToast("Saved to library");
@@ -1296,6 +1422,7 @@ export class OppaiImageGen extends LitElement {
       ${this.charDraft ? this.renderCharEditor(this.charDraft) : nothing}
       ${this.metaDraft ? this.renderMetaEditor(this.metaDraft) : nothing}
       ${this.expandedShot ? this.renderLightbox(this.expandedShot) : nothing}
+      ${this.renderCutoutDialog()}
       ${this.toast ? html`<div class="toast">${this.toast}</div>` : nothing}`;
   }
 
@@ -1463,6 +1590,7 @@ export class OppaiImageGen extends LitElement {
           ${this.renderSettingsSection(invoke, st.boards ?? [])}
           ${this.renderTemplateSection(st.templates ?? [])}
           ${this.renderCharacterSection()}
+          ${this.renderOutfitSection()}
         </aside>
         <div>
           ${invoke
@@ -1483,6 +1611,8 @@ export class OppaiImageGen extends LitElement {
               <oppai-invoke-gallery
                 @boards-changed=${() => this.loadStatus()}
                 @board-changed=${(e: CustomEvent<{ board: string }>) => (this.board = e.detail.board)}
+                @cut-out=${(e: CustomEvent<{ url: string; name: string }>) =>
+                  void this.openCutout(e.detail.url, e.detail.name)}
               ></oppai-invoke-gallery>
             </aside>`
           : nothing}
@@ -1819,6 +1949,170 @@ export class OppaiImageGen extends LitElement {
     return this.section("characters", "Characters", picked ? `${picked} picked` : String(this.characters.length), body);
   }
 
+  private renderOutfitSection() {
+    const face = OUTFIT_FACES[this.outfitFace], tier = OUTFIT_TIERS[this.outfitTier];
+    const slot = this.outfitFace + 1 + this.outfitTier * OUTFIT_FACES.length;
+    const body = html`
+      <div class="sec-note">
+        Builds one wardrobe: the same character in the same clothes, once per expression
+        and heat tier. Describe the outfit once, then step the pose between generations —
+        the twenty-five images that come out are what a Libby outfit is made of.
+      </div>
+      <label class="switch">
+        <input type="checkbox" .checked=${this.outfitOn}
+          @change=${(e: Event) => (this.outfitOn = (e.target as HTMLInputElement).checked)} />
+        Add outfit terms to the prompt
+      </label>
+      <div>
+        <label class="field">Outfit</label>
+        <textarea rows="2" .value=${this.outfitText} placeholder="black lace lingerie, thigh highs, choker"
+          @input=${(e: Event) => (this.outfitText = (e.target as HTMLTextAreaElement).value)}></textarea>
+      </div>
+      <div>
+        <label class="field">Expression</label>
+        <select class="num" .value=${String(this.outfitFace)}
+          @change=${(e: Event) => (this.outfitFace = Number((e.target as HTMLSelectElement).value))}>
+          ${OUTFIT_FACES.map((item, index) => html`<option value=${index}>${item.label}</option>`)}
+        </select>
+      </div>
+      <div>
+        <label class="field">Heat tier</label>
+        <select class="num" .value=${String(this.outfitTier)}
+          @change=${(e: Event) => (this.outfitTier = Number((e.target as HTMLSelectElement).value))}>
+          ${OUTFIT_TIERS.map((item, index) => html`<option value=${index}>${index + 1} · ${item.label}</option>`)}
+        </select>
+      </div>
+      <label class="switch">
+        <input type="checkbox" .checked=${this.outfitCutout}
+          @change=${(e: Event) => (this.outfitCutout = (e.target as HTMLInputElement).checked)} />
+        Flat backdrop, for cutting out
+      </label>
+      <button class="side-add" @click=${() => this.nextOutfitPose()}>
+        <span class="material-symbols-rounded" style="font-size:17px;">skip_next</span>
+        Next pose (${slot} of ${OUTFIT_FACES.length * OUTFIT_TIERS.length})
+      </button>
+      <div class="sec-note">Now generating: <strong>${tier.label} · ${face.label}</strong>.</div>
+    `;
+    return this.section("outfit", "Outfit helper", this.outfitOn ? `${tier.label} · ${face.label}` : "off", body);
+  }
+
+  // ── background cut-out ──────────────────────────────────────────────────────
+
+  private async openCutout(url: string, name: string) {
+    this.cutout = { url, name };
+    this.cutoutError = "";
+    await this.renderCutout();
+  }
+
+  /**
+   * Runs the fill and puts the result on screen.
+   *
+   * The canvas is kept rather than a data URL so the tolerance slider can re-run
+   * cheaply and so saving does not have to re-decode anything.
+   */
+  private async renderCutout() {
+    const target = this.cutout;
+    if (!target) return;
+    this.cutoutBusy = true;
+    this.cutoutError = "";
+    try {
+      const image = await loadImage(target.url);
+      this.cutoutCanvas = cutOutBackground(image, { tolerance: this.cutoutTolerance });
+      await this.updateComplete;
+      const host = this.cutoutHost;
+      if (host) { host.replaceChildren(this.cutoutCanvas); }
+    } catch (e) {
+      this.cutoutError = (e as Error).message;
+    } finally {
+      this.cutoutBusy = false;
+    }
+  }
+
+  private closeCutout() {
+    this.cutout = null;
+    this.cutoutCanvas = null;
+    this.cutoutError = "";
+  }
+
+  private cutoutName(): string {
+    const base = (this.cutout?.name ?? "cutout").replace(/\.[a-z0-9]+$/i, "").slice(0, 60);
+    return `${base || "cutout"}-cutout.png`;
+  }
+
+  private async downloadCutout() {
+    if (!this.cutoutCanvas) return;
+    try {
+      const blob = await canvasToBlob(this.cutoutCanvas);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url; link.download = this.cutoutName();
+      link.click();
+      // Revoked on the next tick: revoking synchronously can beat the download in
+      // some browsers, and the object is small enough that a tick costs nothing.
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (e) {
+      this.cutoutError = (e as Error).message;
+    }
+  }
+
+  private async saveCutout() {
+    if (!this.cutoutCanvas || this.cutoutBusy) return;
+    this.cutoutBusy = true;
+    try {
+      const blob = await canvasToBlob(this.cutoutCanvas);
+      const name = this.cutoutName();
+      await api.upload(new File([blob], name, { type: "image/png" }), name);
+      this.dispatchEvent(new CustomEvent("imported", {
+        detail: { count: 1, kind: "image", title: name },
+        bubbles: true, composed: true,
+      }));
+      this.showToast("Cut-out saved to your library.");
+      this.closeCutout();
+    } catch (e) {
+      this.cutoutError = (e as Error).message;
+    } finally {
+      this.cutoutBusy = false;
+    }
+  }
+
+  private renderCutoutDialog() {
+    if (!this.cutout) return nothing;
+    return html`
+      <div class="overlay" @click=${(e: Event) => { if (e.target === e.currentTarget) this.closeCutout(); }}>
+        <div class="dialog cutout-dialog">
+          <h3>Cut out the background</h3>
+          <div class="sec-note">
+            Fills inward from the edges and stops at the subject, so anything the fill
+            never reaches stays opaque. Raise the tolerance if a rim of backdrop is left;
+            lower it if it starts eating into the picture.
+          </div>
+          <div class="cutout-canvas"></div>
+          ${this.cutoutError ? html`<div class="banner">${this.cutoutError}</div>` : nothing}
+          <div>
+            <label class="field">Tolerance · ${this.cutoutTolerance}</label>
+            <input type="range" min="4" max="140" step="2" .value=${String(this.cutoutTolerance)}
+              @change=${(e: Event) => {
+                this.cutoutTolerance = Number((e.target as HTMLInputElement).value);
+                void this.renderCutout();
+              }} />
+          </div>
+          <div class="dialog-actions">
+            <button class="btn" @click=${() => this.closeCutout()}>Close</button>
+            <button class="btn" ?disabled=${this.cutoutBusy || !this.cutoutCanvas}
+              @click=${() => void this.downloadCutout()}>
+              <span class="material-symbols-rounded" style="font-size:17px;">download</span> Download PNG
+            </button>
+            <button class="btn primary" ?disabled=${this.cutoutBusy || !this.cutoutCanvas}
+              @click=${() => void this.saveCutout()}>
+              <span class="material-symbols-rounded" style="font-size:17px;">save</span>
+              ${this.cutoutBusy ? "Working…" : "Save to library"}
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   private renderCharEditor(d: CharDraft) {
     const existingThumb =
       d.imageData ?? (d.id && this.characters.find((c) => c.id === d.id)?.hasThumb
@@ -1946,7 +2240,7 @@ export class OppaiImageGen extends LitElement {
         ${this.showOptions ? this.renderPromptOptions() : nothing}
       </div>
 
-      <button class="generate" ?disabled=${this.generating || !this.prompt.trim()} @click=${() => this.generate()}>
+      <button class="generate" ?disabled=${this.generating || !this.assemblePrompts().prompt.trim()} @click=${() => this.generate()}>
         ${this.generating
           ? html`<md-circular-progress indeterminate style="--md-circular-progress-size:22px;"></md-circular-progress> Generating…`
           : html`<span class="material-symbols-rounded">auto_awesome</span> Generate`}
@@ -2035,6 +2329,10 @@ export class OppaiImageGen extends LitElement {
                     >${shot.saved ? "check" : "save"}</span
                   >
                   ${shot.saved ? "Saved" : "Save"}
+                </button>
+                <button class="act" title="Cut the background out"
+                  @click=${() => void this.openCutout(api.genPreviewURL(shot.id), `seed-${shot.seed}`)}>
+                  <span class="material-symbols-rounded" style="font-size:16px;">background_replace</span>
                 </button>
                 ${this.status?.backend === "invokeai" ? html`<button class="act"
                   title="Set as this model's preview in InvokeAI" @click=${() => this.useAsModelThumb(shot)}>

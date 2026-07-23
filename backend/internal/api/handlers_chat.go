@@ -447,6 +447,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if catalogue := photoCatalogue(ws, character.ID); catalogue != "" {
 		modePrompt += "\n\n" + catalogue
 	}
+	// Libby alone gets the library snapshot. She is this server's librarian, so
+	// knowing what is on the shelves and how the box is doing is in character; an
+	// imported card is somebody else's character and has no business being handed
+	// the user's collection.
+	if character.ID == "libby" {
+		modePrompt += s.buildLibbyContext(r.Context()).promptBlock()
+	}
 	modePrompt += "\n\n" + moodDirective
 	if len(in.PhotoTags) > 0 {
 		modePrompt += "\n\n" + photoDirective(in.PhotoTags)

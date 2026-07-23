@@ -35,6 +35,9 @@ type Server struct {
 	kek      []byte
 	log      *slog.Logger
 
+	// When this process came up, so Libby can answer "how long have you been up?".
+	startedAt time.Time
+
 	// Image generation. The client is stateless (the A1111 URL is read from settings
 	// per call); genCache holds just-generated images in memory so they can be
 	// previewed and saved without ever touching disk — the "don't save unless asked"
@@ -84,10 +87,11 @@ func NewServer(cfg *config.Config, database *db.DB, store *storage.Store, sc *sc
 		// Built-in source definitions are embedded; /config/sources overrides them, so
 		// a site that restyles can be repaired without a rebuild.
 		sources:  sources.NewRegistry(scraperFetcher{e: sc}, filepath.Join(cfg.ConfigDir, "sources"), log),
-		kek:      kek,
-		log:      log,
-		thumbSem: make(chan struct{}, workers),
-		login:    newLoginGuard(),
+		kek:       kek,
+		log:       log,
+		startedAt: time.Now(),
+		thumbSem:  make(chan struct{}, workers),
+		login:     newLoginGuard(),
 
 		imagegen:     imagegen.New(),
 		genCache:     newGenCache(),
@@ -212,6 +216,9 @@ func (s *Server) Handler() http.Handler {
 
 	// Libby outfits: user-made wardrobes for the mascot, one image per emotion.
 	// Which outfit is worn is a per-device choice; the server only stores the art.
+	// What Libby knows about the library and the box she runs on. Read by the web
+	// client so her built-in replies can answer library questions with no model loaded.
+	mux.HandleFunc("GET /api/libby/context", s.requireAuth(s.handleLibbyContext))
 	mux.HandleFunc("GET /api/libby/outfits", s.requireAuth(s.handleListLibbyOutfits))
 	mux.HandleFunc("POST /api/libby/outfits", s.requireAuth(s.handleSaveLibbyOutfit))
 	mux.HandleFunc("DELETE /api/libby/outfits/{id}", s.requireAuth(s.handleDeleteLibbyOutfit))

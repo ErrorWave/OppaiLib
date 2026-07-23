@@ -1,8 +1,10 @@
 import { LitElement, html, css, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { iconStyles, motionStyles } from "../theme.js";
-import { api, mascotSay, type GalleryBoard, type GalleryImage } from "../api.js";
-import { libbyReact } from "../libby-voice.js";
+import { api, mascotSay, type ChatCharacter, type GalleryBoard, type GalleryImage } from "../api.js";
+import { libbyReact, type LibbyItemFacts } from "../libby-voice.js";
+import { shareImageWithCharacter } from "../chat-share.js";
+import { openMenu } from "../context-menu.js";
 
 const PAGE = 40;
 
@@ -446,11 +448,53 @@ export class OppaiInvokeGallery extends LitElement {
     try {
       await api.saveGalleryImage({ name: img.name });
       this.savedNames = new Set(this.savedNames).add(img.name);
-      this.dispatchEvent(new CustomEvent("imported", { bubbles: true, composed: true }));
+      this.dispatchEvent(new CustomEvent<LibbyItemFacts>("imported", {
+        detail: { count: 1, kind: "image", title: img.name },
+        bubbles: true, composed: true,
+      }));
     } catch (e) {
       this.error = (e as Error).message;
     } finally {
       this.busy = false;
+    }
+  }
+
+  // ── share with a character ──────────────────────────────────────────────────
+  // The same handoff Library offers, from the generator's own gallery: an image you
+  // just made is the one you most want to show someone. It goes through chat-share
+  // so Chat needs to know nothing about InvokeAI, exactly as it knows nothing about
+  // the library grid.
+
+  private async openShareMenu(img: GalleryImage, x: number, y: number) {
+    let characters: ChatCharacter[] = [];
+    try {
+      characters = (await api.chatWorkspace()).characters ?? [];
+    } catch (e) {
+      mascotSay((e as Error).message || "Couldn't load your chat characters.", "error");
+      return;
+    }
+    if (!characters.length) {
+      mascotSay("No chat characters yet — add one in Chat first.", "error");
+      return;
+    }
+    openMenu({
+      x, y, title: "Show this to",
+      items: characters.map((character) => ({
+        label: character.name, icon: "person",
+        run: () => void this.share(img, character),
+      })),
+    });
+  }
+
+  private async share(img: GalleryImage, character: ChatCharacter) {
+    try {
+      await shareImageWithCharacter(api.galleryFullURL(img.name), character.id, img.name);
+      // Only leave the generator once the bytes are in hand, so a failed read does
+      // not strand the user in Chat with nothing to show.
+      this.expanded = null;
+      this.dispatchEvent(new CustomEvent("open-chat", { bubbles: true, composed: true }));
+    } catch (e) {
+      mascotSay((e as Error).message || `Couldn't share with ${character.name}.`, "error");
     }
   }
 
@@ -586,6 +630,11 @@ export class OppaiInvokeGallery extends LitElement {
                   <button
                     class="tile ${this.selecting ? "selectable" : ""} ${picked ? "picked" : ""}"
                     title=${img.name}
+                    @contextmenu=${(e: MouseEvent) => {
+                      if (this.selecting) return;
+                      e.preventDefault();
+                      void this.openShareMenu(img, e.clientX, e.clientY);
+                    }}
                     @click=${() =>
                       this.selecting ? this.toggleSelected(img.name) : (this.expanded = img)}
                   >
@@ -634,6 +683,15 @@ export class OppaiInvokeGallery extends LitElement {
           <button class="obtn primary" ?disabled=${this.busy || saved} @click=${() => this.saveToLibrary(img)}>
             <span class="material-symbols-rounded" style="font-size:17px;">${saved ? "check" : "save"}</span>
             ${saved ? "In library" : "Save to library"}
+          </button>
+          <button class="obtn" ?disabled=${this.busy}
+            @click=${(e: MouseEvent) => void this.openShareMenu(img, e.clientX, e.clientY)}>
+            <span class="material-symbols-rounded" style="font-size:17px;">forum</span> Send to chat
+          </button>
+          <button class="obtn" @click=${() => this.dispatchEvent(new CustomEvent("cut-out", {
+            detail: { url: api.galleryFullURL(img.name), name: img.name }, bubbles: true, composed: true,
+          }))}>
+            <span class="material-symbols-rounded" style="font-size:17px;">background_replace</span> Cut out
           </button>
           <button class="obtn danger" ?disabled=${this.busy} @click=${() => this.deleteImage(img)}>
             <span class="material-symbols-rounded" style="font-size:17px;">delete</span> Delete

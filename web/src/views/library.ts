@@ -2,7 +2,7 @@ import { LitElement, html, css, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { api, mascotSay, type ChatCharacter, type Media, type User } from "../api.js";
 import { canShare, shareWithCharacter } from "../chat-share.js";
-import { libbyReact } from "../libby-voice.js";
+import { libbyReact, type LibbyItemFacts } from "../libby-voice.js";
 import { iconStyles, motionStyles, loadTheme, saveTheme, applyTheme } from "../theme.js";
 import { logoSVG } from "../logo.js";
 import { dismissDownload, downloadTasks, type DownloadTask } from "../downloads.js";
@@ -1010,12 +1010,33 @@ export class OppaiLibrary extends LitElement {
     const list = Array.from(files);
     if (!list.length) return;
     this.uploadOpen = false;
+    let added = 0;
+    let only: Media | undefined;
     for (const f of list) {
       try {
-        await api.upload(f);
+        const { id } = await api.upload(f);
+        added++;
+        // Fetched rather than guessed from the File: the server decides the kind and
+        // the title, and one upload is the case where Libby has something specific to
+        // say about it — worth a round trip to let her say it. A failure here is not
+        // an upload failure, so it costs the detail and nothing else.
+        if (list.length === 1) only = await api.getMedia(id).catch(() => undefined);
       } catch (err) {
         console.error("upload", err);
       }
+    }
+    // Only a real addition is worth remarking on: announcing a batch that failed
+    // outright would have her congratulate the user on nothing.
+    if (added) {
+      this.dispatchEvent(new CustomEvent<LibbyItemFacts>("imported", {
+        detail: {
+          count: added,
+          title: only?.title,
+          kind: only?.kind,
+          tags: only?.tags?.map((tag) => tag.name),
+        },
+        bubbles: true, composed: true,
+      }));
     }
     this.refresh();
   }
@@ -1088,7 +1109,8 @@ export class OppaiLibrary extends LitElement {
             ? html`<oppai-browse @imported=${() => this.refresh()}></oppai-browse>`
             : nothing}
           ${isImageGen
-            ? html`<oppai-imagegen @imported=${() => this.refresh()}></oppai-imagegen>`
+            ? html`<oppai-imagegen @imported=${() => this.refresh()}
+                @open-chat=${() => this.selectSection("chat")}></oppai-imagegen>`
             : nothing}
           ${isChat ? html`<oppai-chat .user=${this.user}></oppai-chat>` : nothing}
           ${isGrid || isFavorites || isSearch

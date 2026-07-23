@@ -3,7 +3,8 @@ import { customElement, property, query, state } from "lit/decorators.js";
 import { keyed } from "lit/directives/keyed.js";
 import {
   api, PROFILE_IMAGE_OWNER, type ChatCharacter, type ChatConversation, type ChatImage, type ChatMessage,
-  type ChatModels, type ChatOptions, type ChatStatus, type ChatWorkspace, type StoredChatMessage, type User,
+  type ChatModels, type ChatOptions, type ChatStatus, type ChatWorkspace, type LibbyContext,
+  type StoredChatMessage, type User,
 } from "../api.js";
 import { iconStyles, motionStyles } from "../theme.js";
 import {
@@ -11,7 +12,7 @@ import {
   normalizeEmotion, normalizeIntensity, type LibbyEmotion,
 } from "../libby.js";
 import { applyProgression, getIntensity, setIntensity } from "../libby-meter.js";
-import { libbyHeatDelta, libbyOpener, libbyReact, libbyReply } from "../libby-voice.js";
+import { libbyHeatDelta, libbyLibraryAnswer, libbyOpener, libbyReact, libbyReply, type LibbyLine } from "../libby-voice.js";
 import { menuDivider, nativeMenuWanted, openMenu, type MenuItem } from "../context-menu.js";
 import { SHARE_EVENT, takePendingShare } from "../chat-share.js";
 
@@ -56,12 +57,41 @@ const AUTO_KEY = "oppai_chat_autopilot";
     PROFILE_IMAGE_OWNER, which does the same for the user's own picture. */
 const avatarOwner = (characterID: string) => `avatar:${characterID}`;
 
-const newID = () => crypto.randomUUID().replaceAll("-", "");
+/**
+ * A 32-hex id, the shape the server validates conversation and message ids against.
+ *
+ * crypto.randomUUID only exists in a secure context, so it is missing when the server
+ * is reached over plain HTTP on a LAN — a supported way to run this. Falling back to
+ * getRandomValues keeps ids working there instead of throwing on the first render.
+ */
+const newID = () => {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID().replaceAll("-", "");
+  return [...crypto.getRandomValues(new Uint8Array(16))]
+    .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+};
 const timeOf = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 const defaultOptions = (): ChatOptions => ({ temperature: 0.8, top_p: 0.95, repetition_penalty: 1.1, max_tokens: 400 });
 
 function emptyWorkspace(): ChatWorkspace {
   return { profile: { displayName: "", persona: "" }, characters: [], conversations: [], images: [] };
+}
+
+/**
+ * The stand-in workspace used when the stored one cannot be read.
+ *
+ * Libby answers locally with no server round trip, so a failed load leaves the screen
+ * usable rather than dead. It is deliberately never persisted — see workspaceLoaded,
+ * which blocks saving while this is what is on screen, so a transient read failure
+ * cannot overwrite the real workspace with this shell.
+ */
+function fallbackWorkspace(): ChatWorkspace {
+  return {
+    ...emptyWorkspace(),
+    characters: [{
+      id: "libby", name: "Libby", builtIn: true, promptWeight: 1, defaultMode: "sweet",
+      description: "OppaiLib's librarian and resident mascot.",
+    }],
+  };
 }
 
 function optionNumber(options: ChatOptions | undefined, key: string, fallback: number): number {
@@ -125,6 +155,17 @@ export class OppaiChat extends LitElement {
   @state() private draft = "";
   @state() private busy = false;
   @state() private loading = true;
+  /**
+   * Whether the workspace on screen is the stored one.
+   *
+   * False means the fetch failed and fallbackWorkspace() is standing in. Saving is
+   * blocked while it is false, so a server that was briefly unreachable cannot have
+   * the user's characters and conversations overwritten by the empty stand-in the
+   * moment they type anything.
+   */
+  @state() private workspaceLoaded = true;
+  /** Why the initial load failed, shown as a banner with a retry. */
+  @state() private loadError = "";
   @state() private settingsOpen = false;
   @state() private editorTab: EditorTab = "character";
   @state() private notice = "";
@@ -158,6 +199,9 @@ export class OppaiChat extends LitElement {
   @query(".composer textarea") private composer?: HTMLTextAreaElement;
   private callTimer = 0;
   private autoTimer = 0;
+  /** Cached library snapshot for her no-model answers; see libraryFacts(). */
+  private facts: LibbyContext | null = null;
+  private factsAt = 0;
   private saveTimer = 0;
   /** Bumped on every local mutation so an in-flight save can tell it went stale. */
   private editSeq = 0;
@@ -312,6 +356,9 @@ export class OppaiChat extends LitElement {
     .notice.error { border-color:var(--md-sys-color-error); color:var(--md-sys-color-error); }
     .backend-state { padding:9px 16px; border-bottom:1px solid var(--line); background:var(--side); color:var(--muted); font-size:12px; }
     .backend-state strong { color:var(--md-sys-color-error); }
+    .backend-state.load-error { display:flex; align-items:center; flex-wrap:wrap; gap:8px;
+      border-left:3px solid var(--md-sys-color-error); }
+    .backend-state.load-error .autobar-btn { margin-left:auto; }
     form.composer-form { padding:0 16px 14px; }.composer { display:flex; align-items:flex-end; gap:9px; background:var(--input); border:1px solid transparent; border-radius:14px; padding:10px 12px; }
     .composer:focus-within { border-color:var(--accent); box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 18%,transparent); }
     .composer textarea { resize:none; border:0; outline:0; background:transparent; color:inherit; max-height:140px; min-height:22px; line-height:22px; flex:1; padding:0; }
@@ -539,22 +586,68 @@ export class OppaiChat extends LitElement {
       .sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
+  /**
+   * Brings the chat screen up.
+   *
+   * The two fetches are settled independently. Only one of them talks to the text
+   * generation box, and whether that box is up has nothing to do with whether the
+   * user's own conversations can be shown — joining them with Promise.all meant a
+   * slow or unreachable generator decided if the screen loaded at all. Whichever
+   * answers is used, and a workspace that cannot be read falls back to a local
+   * Libby rather than an empty view, so the screen always ends up interactive.
+   */
   private async load() {
+    const [status, workspace] = await Promise.allSettled([api.chatStatus(), api.chatWorkspace()]);
     try {
-      const [status, workspace] = await Promise.all([api.chatStatus(), api.chatWorkspace()]);
-      this.status = status; this.workspace = workspace;
-      this.characterID = workspace.characters[0]?.id ?? "libby";
+      if (status.status === "fulfilled") this.status = status.value;
+      if (workspace.status === "fulfilled") {
+        this.workspace = workspace.value;
+        this.workspaceLoaded = true;
+      } else {
+        this.workspace = fallbackWorkspace();
+        this.workspaceLoaded = false;
+        this.loadError = (workspace.reason as Error)?.message || "Couldn't load your chat workspace.";
+      }
+      this.characterID = this.workspace.characters[0]?.id ?? "libby";
       const existing = this.conversationsFor(this.characterID)[0];
       if (existing) this.activateConversation(existing.id);
       else this.newConversation(false);
-      if (status.modelBackend) void this.refreshModels(true);
-    } catch (error) { this.say((error as Error).message, true); }
-    finally { this.loading = false; }
+      if (this.status?.modelBackend) void this.refreshModels(true);
+    } catch (error) {
+      // Anything thrown while building the opening conversation would otherwise
+      // leave the spinner up forever, since a render that throws leaves the last
+      // DOM in place. Report it and let the finally clause hand over a usable view.
+      this.loadError = (error as Error).message || "Chat failed to start.";
+    } finally { this.loading = false; }
+  }
+
+  /** Re-runs the initial load after a failure, from the banner's Retry button. */
+  private async retryLoad() {
+    if (this.loading) return;
+    this.loadError = ""; this.loading = true;
+    await this.load();
   }
 
   private say(message: string, error = false) {
     this.notice = message; this.noticeError = error;
     window.clearTimeout(this.noticeTimer); this.noticeTimer = window.setTimeout(() => (this.notice = ""), 4200);
+  }
+
+  /**
+   * The library snapshot Libby answers from when no model is loaded.
+   *
+   * Cached for a minute: it is fetched on the reply path, so asking her three things
+   * in a row should not mean three round trips, and the numbers do not move fast
+   * enough for a fresher copy to read any differently. A failure is swallowed —
+   * she loses the facts, not the reply.
+   */
+  private async libraryFacts(): Promise<LibbyContext | null> {
+    if (this.facts && Date.now() - this.factsAt < 60_000) return this.facts;
+    try {
+      this.facts = await api.libbyContext();
+      this.factsAt = Date.now();
+    } catch { /* The ordinary reply engine still answers. */ }
+    return this.facts;
   }
 
   private async refreshModels(quiet = false) {
@@ -574,6 +667,9 @@ export class OppaiChat extends LitElement {
 
   private async saveWorkspace() {
     window.clearTimeout(this.saveTimer);
+    // The stand-in workspace is not the user's: writing it back would replace real
+    // characters and conversations with an empty shell. Retry is the way out.
+    if (!this.workspaceLoaded) return;
     const seq = this.editSeq;
     try {
       const saved = await api.saveChatWorkspace(this.workspace);
@@ -813,9 +909,20 @@ export class OppaiChat extends LitElement {
     if (!this.status?.enabled) {
       if (character.id !== "libby") { this.busy = false; this.say(this.status?.message || "Load a model in text-generation-webui, then refresh backend status.", true); return false; }
       const progression = applyProgression(conversation.progress ?? conversation.intensity, continuation ? 0 : libbyHeatDelta(seed, conversation.mode));
-      const line = continuation
-        ? libbyReact("idle", { intensity: progression.intensity })
-        : libbyReply(seed, conversation.mode, normalizeEmotion(conversation.emotion), progression.intensity, false);
+      // Read before any await: the autosave replaces this object, and everything past
+      // that point has to go through liveConversation.
+      const mode = conversation.mode, mood = normalizeEmotion(conversation.emotion);
+      let line: LibbyLine;
+      if (continuation) {
+        line = libbyReact("idle", { intensity: progression.intensity });
+      } else {
+        // Library and server questions get a real answer even with no model loaded —
+        // she is the librarian of this collection, and "what did I add lately?" has a
+        // factual answer that does not need one. Anything else falls through.
+        const facts = await this.libraryFacts();
+        line = (facts && libbyLibraryAnswer(seed, facts, { intensity: progression.intensity }))
+          ?? libbyReply(seed, mode, mood, progression.intensity, false);
+      }
       await this.typeLikeAPerson(line.message, 0);
       const live = this.liveConversation(conversationID);
       if (!live) { this.busy = false; this.typingPhase = "idle"; return false; }
@@ -1541,6 +1648,9 @@ export class OppaiChat extends LitElement {
     return html`<div class="client ${this.mobileNavOpen ? "nav-open" : ""} ${stage!==nothing ? "with-stage" : ""}" @pointerdown=${this.armIdle} @contextmenu=${this.chatMenu}><button class="nav-scrim" aria-label="Close chat navigation" @click=${() => (this.mobileNavOpen=false)}></button>${this.renderRail()}${this.renderSidebar()}
       <main class="main"><header class="top"><button class="icon-btn mobile-nav" title="Friends and conversations" aria-label="Open friends and conversations" @click=${() => (this.mobileNavOpen=true)}><span class="material-symbols-rounded">menu</span></button>${this.avatar(character,"top-avatar")}<span class="top-title"><span class="name">${character.name}</span><span class="topic">${this.status?.enabled ? this.status.model : character.id === "libby" ? "Local replies" : "Model offline"} · ${channel.topic}</span></span><select class="quick-mode" aria-label="Conversation mode" title="Conversation mode" .value=${conversation.mode} @change=${(event:Event) => this.updateConversation({mode:(event.target as HTMLSelectElement).value})}>${MODES.map((mode)=>html`<option value=${mode.id}>${mode.label}</option>`)}</select><span class="top-actions"><button class="icon-btn ${this.callOpen?"on":""}" title="Video call" aria-label="Video call" @click=${()=>this.startCall()}><span class="material-symbols-rounded">videocam</span></button><button class="icon-btn ${this.autopilot?"on":""}" title=${this.autopilot?"Turn off autopilot":"Let the AI continue on its own"} aria-label="Autopilot" aria-pressed=${this.autopilot?"true":"false"} @click=${()=>this.toggleAutopilot()}><span class="material-symbols-rounded">smart_toy</span></button><button class="icon-btn stage-toggle ${this.stageOpen?"on":""}" title=${this.stageOpen?"Hide portrait":"Show portrait"} aria-label="Portrait" aria-pressed=${this.stageOpen?"true":"false"} @click=${()=>(this.stageOpen=!this.stageOpen)}><span class="material-symbols-rounded">wallpaper</span></button><button class="icon-btn" title="New conversation" aria-label="New conversation" @click=${() => this.newConversation()}><span class="material-symbols-rounded">add_comment</span></button><button class="icon-btn destructive-action" title="Clear messages" aria-label="Clear messages" @click=${this.clearConversation}><span class="material-symbols-rounded">delete_sweep</span></button><button class="icon-btn ${this.settingsOpen?"on":""}" title="Chat settings" aria-label="Chat settings" @click=${()=>(this.settingsOpen=!this.settingsOpen)}><span class="material-symbols-rounded">tune</span></button></span></header>
         ${this.settingsOpen?this.renderSettings():nothing}
+        ${this.loadError ? html`<div class="backend-state load-error" role="alert"><strong>Chat didn't load.</strong> ${this.loadError}
+          ${this.workspaceLoaded ? nothing : html` Your saved characters and conversations aren't shown, and nothing is being saved until this succeeds.`}
+          <button class="autobar-btn" @click=${() => void this.retryLoad()}>Retry</button></div>` : nothing}
         ${this.status?.modelBackend && !this.status.enabled ? html`<div class="backend-state" role="status"><strong>Text generation offline.</strong> ${this.status.message || "Load a model in text-generation-webui, then refresh status."}</div>` : nothing}
         ${this.renderAutopilotBar(character)}
         <section class="log">${conversation.messages.length ? nothing : html`<div class="intro">${this.avatar(character,"round")}<h2>${character.name}</h2><p>${character.description || `This is the beginning of your conversation with ${character.name}.`}${this.status?.enabled?` Running on ${this.status.model}.`:character.id === "libby" ? " Libby is using built-in local replies." : " Connect a local model to start chatting."}</p></div>`}

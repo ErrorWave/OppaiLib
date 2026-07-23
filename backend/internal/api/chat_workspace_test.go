@@ -69,6 +69,46 @@ func TestChatImageIsScannedStoredAndOwned(t *testing.T) {
 	}
 }
 
+// Both reserved owners are exercised here because neither is a character: "profile"
+// has no character behind it at all, and "avatar:<id>" is backed by the character the
+// prefix names. The upload handler used to look the owner string up verbatim in the
+// character list, so setting either picture failed with "no such character".
+func TestChatReservedImageOwnersAreAcceptedAndKeptOutOfGalleries(t *testing.T) {
+	s, token := newTestServer(t)
+	h := s.Handler()
+
+	for _, owner := range []string{"profile", "avatar:libby"} {
+		rec := do(t, h, token, http.MethodPost, "/api/chat/images",
+			`{"characterId":"`+owner+`","name":"Face","imageData":"data:image/png;base64,`+validChatPNG+`"}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("upload under %q: %d %s", owner, rec.Code, rec.Body)
+		}
+		var image chatImage
+		if err := json.Unmarshal(rec.Body.Bytes(), &image); err != nil || image.ID == "" {
+			t.Fatalf("upload under %q response: %v %+v", owner, err, image)
+		}
+		if image.CharacterID != owner {
+			t.Fatalf("upload under %q kept owner %q", owner, image.CharacterID)
+		}
+		// The point of the reserved owner: a face is never a picture the character
+		// might send, so it must not be attachable to a reply.
+		ws, err := s.readChatWorkspace(1)
+		if err != nil {
+			t.Fatalf("read workspace: %v", err)
+		}
+		if got := matchingChatImage(ws, "libby", "face", ""); got == image.ID {
+			t.Fatalf("image under %q was offered as a reply attachment", owner)
+		}
+	}
+
+	// An avatar owner still has to name a real character.
+	rec := do(t, h, token, http.MethodPost, "/api/chat/images",
+		`{"characterId":"avatar:`+strings.Repeat("d", 32)+`","name":"Face","imageData":"data:image/png;base64,`+validChatPNG+`"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("avatar for unknown character: %d %s, want 400", rec.Code, rec.Body)
+	}
+}
+
 const validChatPNG = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAAQSURBVBhXY/jPwPCfARkAAB7zAf+x9MCaAAAAAElFTkSuQmCC"
 
 func containsString(items []string, wanted string) bool {

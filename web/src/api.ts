@@ -549,6 +549,33 @@ export interface InstallJob {
   totalBytes?: number;
 }
 
+/**
+ * What Libby knows about this server: the library in numbers, plus what was added
+ * most recently. Read so her built-in replies can answer library questions with no
+ * model loaded — the same snapshot is folded into the system prompt when one is.
+ */
+export interface LibbyContext {
+  version: string;
+  uptimeSec: number;
+  items: number;
+  bytes: number;
+  tags: number;
+  kinds: KindStat[];
+  aiEnabled: boolean;
+  aiTagger: string;
+  imageGen: boolean;
+  chatModel?: string;
+  recent: LibbyRecentItem[];
+}
+
+export interface LibbyRecentItem {
+  id: number;
+  title: string;
+  kind: string;
+  tags?: string[];
+  at: number;
+}
+
 /** A Libby outfit: a name plus which emotions/tiers have art uploaded. */
 export interface LibbyOutfit {
   id: string;
@@ -840,7 +867,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ mode, messages, emotion, intensity, options, characterId, photoTags, photoImageId }),
     }, 125_000),
-  chatWorkspace: () => request<ChatWorkspace>("/api/chat/workspace"),
+  // Bounded, like every other chat call. This one is what the Chat screen blocks its
+  // spinner on, so an unbounded fetch here is the difference between "an error you can
+  // act on" and a view that spins forever with nothing on screen to explain it.
+  chatWorkspace: () => request<ChatWorkspace>("/api/chat/workspace", {}, 30_000),
   chatModels: () => request<ChatModels>("/api/chat/models", {}, 20_000),
   loadChatModel: (modelName: string, args: Record<string, unknown> = {}) =>
     request<{ status: string; loaded: string }>("/api/chat/models/load", {
@@ -851,7 +881,7 @@ export const api = {
     request<ChatWorkspace>("/api/chat/workspace", {
       method: "PUT",
       body: JSON.stringify(workspace),
-    }),
+    }, 30_000),
   uploadChatImage: (body: { characterId: string; name: string; imageData: string; tags?: string[] }) =>
     request<ChatImage>("/api/chat/images", { method: "POST", body: JSON.stringify(body) }, 120_000),
   deleteChatImage: (id: string) =>
@@ -972,6 +1002,8 @@ export const api = {
   // ── Libby outfits ──────────────────────────────────────────────────────────
   // User-made wardrobes for the mascot: one image per emotion, stored encrypted
   // server-side. Which outfit is worn is a per-device choice (see libby.ts).
+
+  libbyContext: () => request<LibbyContext>("/api/libby/context", {}, 15_000),
 
   libbyOutfits: () => request<{ outfits: LibbyOutfit[] }>("/api/libby/outfits"),
   saveLibbyOutfit: (body: { id?: string; name: string }) =>

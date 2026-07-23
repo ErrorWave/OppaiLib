@@ -8,7 +8,19 @@ import { applyImageFallback, inferErrorEmotion, libbyAssetCandidates,
 import { libbyReact } from "../libby-voice.js";
 import { getIntensity } from "../libby-meter.js";
 
-const loginGreeting = libbyReact("greeting", { intensity: getIntensity() });
+/**
+ * The hottest tier Libby is drawn at on the login screen.
+ *
+ * The heat meter is a *chat* thing — it belongs to a conversation you chose to have.
+ * The sign-in page is the one screen shown before anyone has consented to anything,
+ * and it is the one most likely to be seen over a shoulder or on a shared display,
+ * so the heated (4) and peak (5) artwork never appears here. She is calm, warm, or
+ * flirty at most, whatever the meter says elsewhere.
+ */
+const LOGIN_MAX_INTENSITY = 3;
+const loginIntensity = (value?: number) => Math.min(LOGIN_MAX_INTENSITY, normalizeIntensity(value));
+
+const loginGreeting = libbyReact("greeting", { intensity: loginIntensity(getIntensity()) });
 const loginEmotions: LibbyEmotion[] = ["happy", "neutral", "thinking", "mischievous", "surprised"];
 
 @customElement("oppai-login")
@@ -18,7 +30,7 @@ export class OppaiLogin extends LitElement {
   @state() private libbyMessage = loginGreeting.message;
   @state() private libbyTone: "success" | "error" = "success";
   @state() private libbyEmotion: LibbyEmotion = loginEmotions[Math.floor(Math.random() * loginEmotions.length)];
-  @state() private libbyIntensity = getIntensity();
+  @state() private libbyIntensity = loginIntensity(getIntensity());
   private libbyTimer?: number;
 
   static styles = [
@@ -155,7 +167,7 @@ export class OppaiLogin extends LitElement {
     this.libbyTone = event.detail.tone;
     const inferred = event.detail.tone === "error" ? inferErrorEmotion(event.detail.message) : { emotion: "happy" as const, intensity: 1 };
     this.libbyEmotion = normalizeEmotion(event.detail.emotion ?? inferred.emotion);
-    this.libbyIntensity = normalizeIntensity(event.detail.intensity ?? inferred.intensity);
+    this.libbyIntensity = loginIntensity(event.detail.intensity ?? inferred.intensity);
     if (this.libbyTimer) clearTimeout(this.libbyTimer);
     this.libbyTimer = window.setTimeout(() => {
       this.libbyMessage = "";

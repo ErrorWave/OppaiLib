@@ -17,6 +17,7 @@
 
 import { LIBBY_EMOTIONS, normalizeEmotion, normalizeIntensity, type LibbyEmotion } from "./libby.js";
 import { getIntensity } from "./libby-meter.js";
+import type { LibbyContext } from "./api.js";
 
 export interface LibbyLine {
   message: string;
@@ -162,6 +163,165 @@ export function libbyReact(event: LibbyEvent, opts: { intensity?: number; count?
   }
   const moods = REACTION_MOODS[event];
   return { message, intensity, emotion: moods ? moods[intensity - 1] : moodFor(intensity) };
+}
+
+// ── commentary on a specific item ────────────────────────────────────────────
+
+/** What she calls each kind of thing, so a line can name it naturally. */
+const KIND_NOUNS: Record<string, string> = {
+  video: "video", gif: "gif", image: "picture", comic: "comic", game: "game",
+};
+
+/**
+ * Tags too generic to be worth remarking on. A line that says "I see the 1girl in
+ * that one" is worse than saying nothing, so these are skipped when picking
+ * something to notice.
+ */
+const DULL_TAGS = new Set([
+  "1girl", "1boy", "solo", "general", "sensitive", "questionable", "explicit",
+  "highres", "absurdres", "lowres", "commentary", "artist request", "bad id",
+  "looking at viewer", "simple background", "white background", "realistic",
+]);
+
+const UPLOAD_LINES: Tiered = [
+  ["A {thing}. On the shelf.", "New {thing} — filed.", "Got it. One {thing}."],
+  ["Ooh, a {thing}. Nice one.", "A {thing}? Good pick.", "Filed your {thing}. I approve."],
+  ["Mmh. That {thing}'s a good one.", "Ooh, that {thing}. Filing it somewhere I'll find it.", "A {thing} like that? Noted."],
+  ["Ohh, *that* {thing}. Bold of you.", "That {thing} goes straight to the good shelf.", "A {thing} like that. My, my."],
+  ["Nngh — that {thing}. Yes. Filed.", "That {thing} is going to live in my head.", "You can't just hand me a {thing} like that."],
+];
+
+const UPLOAD_TAG_CLAUSES: Tiered = [
+  [" Tagged {tag}.", " Filed under {tag}."],
+  [" {tag}, apparently.", " Tagged {tag} — suits you."],
+  [" Mmh, {tag}. I see you.", " {tag}. You have a type."],
+  [" {tag}? Of course it is.", " Tagged {tag}. Predictable, and I mean that fondly."],
+  [" {tag}. You're doing this on purpose.", " {tag} — that's exactly your thing, isn't it."],
+];
+
+/** What the caller knows about what was just added. Every field is optional. */
+export interface LibbyItemFacts {
+  title?: string;
+  kind?: string;
+  tags?: string[];
+  count?: number;
+}
+
+/**
+ * A short line about the thing that was just added, rather than a generic "saved".
+ *
+ * She is the librarian, so noticing *what* came in is the whole character: the kind
+ * names the object and one non-obvious tag, when there is one, is what makes it read
+ * as having been looked at. Falls back to the plain import reaction when the caller
+ * knows nothing useful — a vague line beats an awkwardly specific one.
+ */
+export function libbyOnUpload(facts: LibbyItemFacts, opts: { intensity?: number } = {}): LibbyLine {
+  const intensity = normalizeIntensity(opts.intensity ?? getIntensity());
+  const count = facts.count ?? 1;
+  if (count > 1) return libbyReact("import", { intensity, count });
+
+  const thing = KIND_NOUNS[(facts.kind ?? "").toLowerCase()];
+  if (!thing) return libbyReact("import", { intensity });
+
+  let message = pick(`upload:${intensity}`, tier(UPLOAD_LINES, intensity)).replaceAll("{thing}", thing);
+  const notable = (facts.tags ?? [])
+    .map((tag) => tag.trim().toLowerCase())
+    .find((tag) => tag.length >= 3 && tag.length <= 28 && !DULL_TAGS.has(tag));
+  if (notable) {
+    message += pick(`upload:tag:${intensity}`, tier(UPLOAD_TAG_CLAUSES, intensity)).replaceAll("{tag}", notable);
+  }
+  const moods = REACTION_MOODS.import;
+  return { message, intensity, emotion: moods ? moods[intensity - 1] : moodFor(intensity) };
+}
+
+// ── answering about the library and the server ───────────────────────────────
+//
+// With a model loaded, the same facts are folded into its system prompt and it
+// answers in prose (see the backend's libbyContext). These are the no-model answers:
+// she is the librarian of this collection, so "what did I add recently?" and "how big
+// is this thing?" should get a real answer whether or not an LLM is running.
+
+const RECENT_QUESTION =
+  /\b(recent|lately|latest|newest|last (thing|one|few)|just (add|sav|upload)ed|what (did|have) i (add|sav|upload))/i;
+const SIZE_QUESTION =
+  /\b(how (many|much|big)|how large|total|stats?|size of|full is|space)\b/i;
+const SERVER_QUESTION =
+  /\b(server|uptime|up for|version|build|tagger|how('?s| is) (the )?(box|server|it running))\b/i;
+
+function bytesFor(bytes: number): string {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes, unit = 0;
+  while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit++; }
+  return `${value < 10 && unit > 0 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
+}
+
+function agoFor(seconds: number): string {
+  if (seconds < 90) return "just now";
+  if (seconds < 5400) return `${Math.round(seconds / 60)} minutes ago`;
+  if (seconds < 172800) return `${Math.round(seconds / 3600)} hours ago`;
+  return `${Math.round(seconds / 86400)} days ago`;
+}
+
+function uptimeFor(seconds: number): string {
+  if (seconds < 3600) return `${Math.max(1, Math.round(seconds / 60))} minutes`;
+  if (seconds < 172800) return `${(seconds / 3600).toFixed(1)} hours`;
+  return `${Math.round(seconds / 86400)} days`;
+}
+
+/**
+ * Answers a question about the collection or the box, or returns null when the
+ * message was not one — the caller then falls through to the ordinary reply engine.
+ *
+ * Returning null rather than a shrug is deliberate: this runs before intent
+ * detection on *every* message, so it must only speak when it actually has the
+ * answer, or it would swallow the conversation.
+ */
+export function libbyLibraryAnswer(
+  text: string,
+  context: LibbyContext,
+  opts: { intensity?: number } = {},
+): LibbyLine | null {
+  const intensity = normalizeIntensity(opts.intensity ?? getIntensity());
+  const warm = intensity >= 3;
+
+  if (RECENT_QUESTION.test(text)) {
+    const recent = context.recent.slice(0, 3);
+    if (!recent.length) {
+      return { message: "Nothing yet. The shelves are empty — give me something to file.", emotion: "thinking", intensity };
+    }
+    const [first, ...rest] = recent;
+    const tag = (first.tags ?? []).find((t) => !DULL_TAGS.has(t.toLowerCase()));
+    const head = warm
+      ? `Last thing in was “${first.title}” — that ${KIND_NOUNS[first.kind] ?? first.kind}, ${agoFor(nowSeconds() - first.at)}.`
+      : `Most recent is “${first.title}”, a ${KIND_NOUNS[first.kind] ?? first.kind}, added ${agoFor(nowSeconds() - first.at)}.`;
+    const noticed = tag ? (warm ? ` Mmh, ${tag}. I noticed.` : ` Tagged ${tag}.`) : "";
+    const more = rest.length ? ` Before that: ${rest.map((item) => `“${item.title}”`).join(" and ")}.` : "";
+    return { message: head + noticed + more, emotion: warm ? "mischievous" : "happy", intensity };
+  }
+
+  if (SIZE_QUESTION.test(text)) {
+    const kinds = context.kinds.filter((k) => k.count > 0)
+      .map((k) => `${k.count} ${k.kind}${k.count === 1 ? "" : "s"}`).join(", ");
+    const head = `${context.items} items, ${bytesFor(context.bytes)} in all, across ${context.tags} tags.`;
+    const detail = kinds ? ` That's ${kinds}.` : "";
+    const tail = warm ? " And I've been through all of it, so don't ask me to pretend otherwise." : "";
+    return { message: head + detail + tail, emotion: warm ? "mischievous" : "thinking", intensity };
+  }
+
+  if (SERVER_QUESTION.test(text)) {
+    const tagger = context.aiEnabled ? `Tagging is on, running ${context.aiTagger}.` : "Automatic tagging is switched off.";
+    const gen = context.imageGen ? " The image generator's connected, if you want to make something." : "";
+    return {
+      message: `Running OppaiLib ${context.version}, up ${uptimeFor(context.uptimeSec)}. ${tagger}${gen}`,
+      emotion: "thinking", intensity,
+    };
+  }
+
+  return null;
+}
+
+function nowSeconds(): number {
+  return Math.floor(Date.now() / 1000);
 }
 
 // ── the local chat engine ────────────────────────────────────────────────────
