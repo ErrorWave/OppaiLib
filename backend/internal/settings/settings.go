@@ -58,6 +58,24 @@ type Settings struct {
 	ChatAPIKey    string `json:"chatApiKey"`
 	ChatAPIKeySet bool   `json:"chatApiKeySet"`
 	ChatEnabled   bool   `json:"chatEnabled"`
+
+	// How Libby generates pictures when the user approves one of her offers.
+	//
+	// Separate from whatever the image studio's controls are set to, and deliberately
+	// so: the studio is a workbench whose settings change with every experiment, and
+	// her offer has to produce her, consistently, without the user having to leave the
+	// conversation and set up a generation first. These are the defaults that make
+	// "make me a picture of you on the balcony" mean something.
+	LibbyGenModel      string  `json:"libbyGenModel"`      // checkpoint, blank = the generator's own default
+	LibbyGenLora       string  `json:"libbyGenLora"`       // one LoRA applied to everything she makes
+	LibbyGenLoraWeight float64 `json:"libbyGenLoraWeight"` // its strength, -2..2
+	LibbyGenBoard      string  `json:"libbyGenBoard"`      // InvokeAI board her pictures are filed into
+	// LibbyGenPrompt is who she is, in generator words: the tokens that make a picture
+	// look like Libby rather than like a stranger. Prefixed to whatever she describes,
+	// so her offer only has to say what is happening in the picture.
+	LibbyGenPrompt string `json:"libbyGenPrompt"`
+	// LibbyGenNegativePrompt is what to keep out of every picture she makes.
+	LibbyGenNegativePrompt string `json:"libbyGenNegativePrompt"`
 }
 
 // Setting keys as stored in the settings table.
@@ -79,6 +97,13 @@ const (
 	keyChatURL             = "chat.url"
 	keyChatModel           = "chat.model"
 	keyChatAPIKey          = "chat.api_key"
+
+	keyLibbyGenModel      = "libby.gen.model"
+	keyLibbyGenLora       = "libby.gen.lora"
+	keyLibbyGenLoraWeight = "libby.gen.lora_weight"
+	keyLibbyGenBoard      = "libby.gen.board"
+	keyLibbyGenPrompt     = "libby.gen.prompt"
+	keyLibbyGenNegative   = "libby.gen.negative_prompt"
 )
 
 // Defaults derives the baseline from environment config.
@@ -164,6 +189,26 @@ func Merge(base Settings, stored map[string]string) Settings {
 	if v, ok := stored[keyChatAPIKey]; ok {
 		s.ChatAPIKey = v
 	}
+	// Presence wins throughout: clearing Libby's model or LoRA is a real choice
+	// ("use the generator's default"), not a fallback to anything.
+	if v, ok := stored[keyLibbyGenModel]; ok {
+		s.LibbyGenModel = v
+	}
+	if v, ok := stored[keyLibbyGenLora]; ok {
+		s.LibbyGenLora = v
+	}
+	if v, err := strconv.ParseFloat(stored[keyLibbyGenLoraWeight], 64); err == nil {
+		s.LibbyGenLoraWeight = v
+	}
+	if v, ok := stored[keyLibbyGenBoard]; ok {
+		s.LibbyGenBoard = v
+	}
+	if v, ok := stored[keyLibbyGenPrompt]; ok {
+		s.LibbyGenPrompt = v
+	}
+	if v, ok := stored[keyLibbyGenNegative]; ok {
+		s.LibbyGenNegativePrompt = v
+	}
 	s.Clamp()
 	return s
 }
@@ -188,6 +233,13 @@ func (s Settings) Map() map[string]string {
 		keyChatURL:             s.ChatURL,
 		keyChatModel:           s.ChatModel,
 		keyChatAPIKey:          s.ChatAPIKey,
+
+		keyLibbyGenModel:      s.LibbyGenModel,
+		keyLibbyGenLora:       s.LibbyGenLora,
+		keyLibbyGenLoraWeight: strconv.FormatFloat(s.LibbyGenLoraWeight, 'f', -1, 64),
+		keyLibbyGenBoard:      s.LibbyGenBoard,
+		keyLibbyGenPrompt:     s.LibbyGenPrompt,
+		keyLibbyGenNegative:   s.LibbyGenNegativePrompt,
 	}
 }
 
@@ -250,6 +302,19 @@ func (s *Settings) Clamp() {
 	// its OpenAI endpoint does not require OppaiLib to own that lifecycle or even
 	// send a model field. The live readiness probe decides whether Chat can run.
 	s.ChatEnabled = s.ChatURL != ""
+	s.LibbyGenModel = strings.TrimSpace(s.LibbyGenModel)
+	s.LibbyGenLora = strings.TrimSpace(s.LibbyGenLora)
+	// The same range the image studio allows, so a weight set here behaves the way the
+	// identical number does there. Zero means "unset" and is filled in at use, not
+	// here, so an explicit 0 is still storable.
+	if s.LibbyGenLoraWeight < -2 {
+		s.LibbyGenLoraWeight = -2
+	} else if s.LibbyGenLoraWeight > 2 {
+		s.LibbyGenLoraWeight = 2
+	}
+	s.LibbyGenBoard = strings.TrimSpace(s.LibbyGenBoard)
+	s.LibbyGenPrompt = strings.TrimSpace(s.LibbyGenPrompt)
+	s.LibbyGenNegativePrompt = strings.TrimSpace(s.LibbyGenNegativePrompt)
 }
 
 // ScrapeDelay is the politeness delay as a Duration.

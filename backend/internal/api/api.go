@@ -86,7 +86,7 @@ func NewServer(cfg *config.Config, database *db.DB, store *storage.Store, sc *sc
 		cfg: cfg, db: database, store: store, scraper: sc, ai: aiMgr, settings: set,
 		// Built-in source definitions are embedded; /config/sources overrides them, so
 		// a site that restyles can be repaired without a rebuild.
-		sources:  sources.NewRegistry(scraperFetcher{e: sc}, filepath.Join(cfg.ConfigDir, "sources"), log),
+		sources:   sources.NewRegistry(scraperFetcher{e: sc}, filepath.Join(cfg.ConfigDir, "sources"), log),
 		kek:       kek,
 		log:       log,
 		startedAt: time.Now(),
@@ -149,6 +149,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/media/{id}", s.requireAuth(s.handleDeleteMedia))
 	mux.HandleFunc("GET /api/media/{id}/stream", s.requireAuth(s.handleStreamMedia))
 	mux.HandleFunc("GET /api/media/{id}/thumb", s.requireAuth(s.handleThumb))
+	mux.HandleFunc("GET /api/media/{id}/frames", s.requireAuth(s.handlePosterFrames))
+	mux.HandleFunc("PUT /api/media/{id}/thumb", s.requireAuth(s.handleSetPoster))
 	mux.HandleFunc("POST /api/media/{id}/autotag", s.requireAuth(s.handleAutotag))
 	mux.HandleFunc("POST /api/ai/scan-image", s.requireAuth(s.handleScanImage))
 
@@ -219,9 +221,15 @@ func (s *Server) Handler() http.Handler {
 	// What Libby knows about the library and the box she runs on. Read by the web
 	// client so her built-in replies can answer library questions with no model loaded.
 	mux.HandleFunc("GET /api/libby/context", s.requireAuth(s.handleLibbyContext))
+	// Performs one action the user has approved in the chat. Nothing reaches here
+	// without an explicit press; see handlers_libby_actions.go.
+	mux.HandleFunc("POST /api/libby/act", s.requireAuth(s.handleLibbyAct))
 	mux.HandleFunc("GET /api/libby/outfits", s.requireAuth(s.handleListLibbyOutfits))
 	mux.HandleFunc("POST /api/libby/outfits", s.requireAuth(s.handleSaveLibbyOutfit))
 	mux.HandleFunc("DELETE /api/libby/outfits/{id}", s.requireAuth(s.handleDeleteLibbyOutfit))
+	mux.HandleFunc("GET /api/libby/outfits/{id}/thumb", s.requireAuth(s.handleGetLibbyOutfitThumb))
+	mux.HandleFunc("PUT /api/libby/outfits/{id}/thumb", s.requireAuth(s.handleSetLibbyOutfitThumb))
+	mux.HandleFunc("DELETE /api/libby/outfits/{id}/thumb", s.requireAuth(s.handleDeleteLibbyOutfitThumb))
 	mux.HandleFunc("GET /api/libby/outfits/{id}/emotions/{emotion}", s.requireAuth(s.handleGetLibbyEmotion))
 	mux.HandleFunc("PUT /api/libby/outfits/{id}/emotions/{emotion}", s.requireAuth(s.handleSetLibbyEmotion))
 	mux.HandleFunc("DELETE /api/libby/outfits/{id}/emotions/{emotion}", s.requireAuth(s.handleDeleteLibbyEmotion))

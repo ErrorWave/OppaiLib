@@ -38,10 +38,11 @@ container on Unraid, with a companion Android app.
 - **Libby, your library's companion:** a built-in adult AI chat character who knows
   your collection — she can recommend and open items, react to what's on your screen
   while you **browse together**, comment on a video as you watch it, send pictures of
-  herself, and shift expression and mood as you talk. Custom character cards
-  (SillyTavern V2 / PNG) and per-device outfits are supported. Talks to any local
-  OpenAI-compatible LLM you point it at; nothing leaves the box. Works on web and
-  Android.
+  herself, and shift expression and mood as you talk. She can also offer to import a
+  URL, tag or favorite an item, or generate a picture; every proposed action is shown
+  on a card and waits for you to press **Allow**. Custom character cards (SillyTavern
+  V2 / PNG) and custom outfits are supported. Talks to any local OpenAI-compatible
+  LLM you point it at; nothing leaves the box. Works on web and Android.
 - **Local image generation:** optional bridge to a self-hosted image generator
   (auto-detects InvokeAI), with a Civitai model browser, character prompts, and a
   one-tap path from a generated image into the library.
@@ -81,18 +82,30 @@ Libby is OppaiLib's mascot and resident librarian — an adult chat companion wh
 actually knows your library. She lives beside the collection, not bolted on to it:
 
 - **Library-aware:** ask her what to watch, play, or read and she recommends real
-  items from your shelves and links them so you can open them in one tap.
+  items from your shelves. Recommendations include a thumbnail and open the real item
+  in one tap on both web and Android.
 - **Browse together:** open the shared-viewing screen and she reacts to whatever is
   on-screen — has opinions, points you at things, and **comments on a video as it
-  plays** rather than reading its tags back at you.
-- **Expressive:** she picks her own mood each reply, and the artwork beside the chat
-  changes with it. The pose shown above is her *Calm* look.
+  plays** rather than reading its tags back at you. A compact Libby drawer also keeps
+  her available while you move through the library and viewer.
+- **Helpful, with permission:** she can offer to import a URL, add tags, favorite an
+  item, or generate and file a picture. Her reply only creates an approval card;
+  nothing changes until you press **Allow**, and **Not now** safely declines it.
+- **More expressive:** she chooses her mood and intensity each reply from twelve
+  emotions — neutral, happy, surprised, thinking, mischievous, shy, smug, sad,
+  annoyed, sleepy, loving, and excited — and the portrait changes with the moment.
+  The pose shown above is her *Calm* look.
 - **Sends pictures of herself** when they fit, recognises a picture of herself when
-  you share one, and can wear per-device **outfits** you drop in.
+  you share one, and can wear custom **outfits** you create in Settings. Each outfit
+  can have cover art and different artwork for every emotion and intensity; missing
+  optional poses gracefully borrow the closest core expression.
 - **Yours to shape:** import SillyTavern V2 / PNG character cards to chat with anyone
-  you like, tune modes and advanced sampler options, and set a persona for yourself.
+  you like, tune modes and advanced sampler options, set a persona for yourself, and
+  configure the local image-generation model, LoRA, and prompt used for her pictures.
 - **Fully local:** point it at any OpenAI-compatible LLM on your network. No cloud,
-  no telemetry — the same promise as the rest of the app.
+  no telemetry — the same promise as the rest of the app. App-control tags are
+  stripped from replies, and imported characters are never granted Libby's library
+  actions.
 
 ---
 

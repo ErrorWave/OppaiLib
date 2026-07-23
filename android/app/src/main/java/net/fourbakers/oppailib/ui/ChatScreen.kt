@@ -38,8 +38,18 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AddComment
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.Gif
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.Sell
+import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Group
@@ -81,6 +91,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -112,6 +123,9 @@ import net.fourbakers.oppailib.data.ChatModels
 import net.fourbakers.oppailib.data.ChatRequest
 import net.fourbakers.oppailib.data.ChatStatus
 import net.fourbakers.oppailib.data.ChatWorkspace
+import net.fourbakers.oppailib.data.LibbyAction
+import net.fourbakers.oppailib.data.LibbyActRequest
+import net.fourbakers.oppailib.data.LibbyLink
 import net.fourbakers.oppailib.data.LibbyMeter
 import net.fourbakers.oppailib.data.LibbyVoice
 import net.fourbakers.oppailib.data.Repository
@@ -138,7 +152,6 @@ private val chatModes = listOf(
     ChatMode("bold", "bold", "surprised"), ChatMode("roleplay", "roleplay", "thinking"),
     ChatMode("horny", "horny", "mischievous"),
 )
-private val chatEmotions = listOf("neutral", "happy", "mischievous", "surprised", "thinking")
 private fun chatID() = UUID.randomUUID().toString().replace("-", "")
 private val chatStamp = SimpleDateFormat("h:mm a", Locale.getDefault())
 private fun timeOf(ms: Long) = chatStamp.format(Date(ms))
@@ -197,9 +210,18 @@ private suspend fun typeLikeAPerson(text: String, spentMs: Long, phase: (TypingP
     phase(TypingPhase.IDLE)
 }
 
+/**
+ * Opens a library item a reply pointed at.
+ *
+ * Chat does not own the viewer — the library screen does — so a chip tap is a request
+ * that rises to whoever mounted this screen, the same way the web client's chips
+ * dispatch OPEN_MEDIA_EVENT up to the app shell.
+ */
+typealias OpenMedia = (Long) -> Unit
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(repo: Repository, onBack: () -> Unit) {
+fun ChatScreen(repo: Repository, onBack: () -> Unit, onOpenMedia: OpenMedia = {}) {
     var status by remember { mutableStateOf<ChatStatus?>(null) }
     var models by remember { mutableStateOf<ChatModels?>(null) }
     var workspace by remember { mutableStateOf<ChatWorkspace?>(null) }
@@ -379,7 +401,7 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
                         LibbyMeter.applyProgression(pending.progress, reply.intensity - pending.intensity)
                     }
                     LibbyMeter.set(level)
-                    val done = pending.copy(emotion = reply.emotion, intensity = level, progress = progress, messages = pending.messages + StoredChatMessage(chatID(), "assistant", reply.message, System.currentTimeMillis(), reply.imageId), updatedAt = System.currentTimeMillis())
+                    val done = pending.copy(emotion = reply.emotion, intensity = level, progress = progress, messages = pending.messages + StoredChatMessage(chatID(), "assistant", reply.message, System.currentTimeMillis(), reply.imageId, reply.links, reply.actions), updatedAt = System.currentTimeMillis())
                     val latest = workspace ?: ws; save(latest.copy(conversations = latest.conversations.map { if (it.id == done.id) done else it }))
                 }.onFailure { error ->
                     status = runCatching { repo.api.chatStatus() }.getOrNull() ?: status
@@ -450,7 +472,7 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
                 // The intro card is a placeholder for an empty log, not a permanent
                 // header — once there is conversation to read, it is only taking room.
                 if (convo.messages.isEmpty()) item { ChatIntro(repo, char, convo, status) }
-                itemsIndexed(convo.messages, key = { _, item -> item.id }) { index, item -> ChatMessageRow(repo, ws, char, item, convo.messages.getOrNull(index - 1)) }
+                itemsIndexed(convo.messages, key = { _, item -> item.id }) { index, item -> ChatMessageRow(repo, ws, char, item, convo.messages.getOrNull(index - 1), onOpenMedia) }
                 if (busy && typingPhase == TypingPhase.TYPING) item { Text("${char.name} is typing…", color = ChatColors.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 68.dp, top = 8.dp)) }
             }
             if (message.isNotBlank()) Text(message, color = if (message.contains("fail", true) || message.contains("couldn", true)) ChatColors.danger else ChatColors.muted, fontSize = 13.sp, modifier = Modifier.fillMaxWidth().background(ChatColors.side).padding(10.dp))
@@ -624,7 +646,7 @@ private fun ChatAvatar(repo: Repository, char: ChatCharacter, modifier: Modifier
 }
 
 @Composable
-private fun ChatMessageRow(repo: Repository, ws: ChatWorkspace, char: ChatCharacter, entry: StoredChatMessage, previous: StoredChatMessage?) {
+private fun ChatMessageRow(repo: Repository, ws: ChatWorkspace, char: ChatCharacter, entry: StoredChatMessage, previous: StoredChatMessage?, onOpenMedia: OpenMedia) {
     val grouped = previous?.role == entry.role && entry.at - previous.at < 5 * 60_000
     val friend = entry.role == "assistant"
     val name = if (friend) char.name else ws.profile.displayName.ifBlank { repo.prefs.reauthUsername ?: "You" }
@@ -651,6 +673,135 @@ private fun ChatMessageRow(repo: Repository, ws: ChatWorkspace, char: ChatCharac
             }
             Text(richChatText(entry.content), color = if (friend) ChatColors.text else MaterialTheme.colorScheme.onPrimaryContainer, fontSize = 15.sp, modifier = Modifier.padding(top = if (grouped) 0.dp else 2.dp))
             if (entry.imageId.isNotBlank()) AsyncImage(repo.chatImageUrl(entry.imageId), "Image sent by $name", imageLoader = repo.imageLoader, modifier = Modifier.fillMaxWidth().height(260.dp).padding(top = 7.dp).clip(RoundedCornerShape(10.dp)))
+            ChatLinkChips(repo, entry.links, onOpenMedia)
+            ChatActionCards(repo, entry.actions)
+        }
+    }
+}
+
+/**
+ * What Libby has offered to do, as things you have to say yes to.
+ *
+ * The card states the action in full — what will happen, and to what — because this is
+ * the only place the user gets to check it. Nothing runs until Allow is tapped, and
+ * that tap is the only caller of the act endpoint.
+ *
+ * The decision is held here rather than in the stored message: it is about this
+ * session ("you approved this, just now"), whereas the log round-trips through the
+ * server and the web client. Persisting "already allowed" would also make an old card
+ * look pressable after a reload, which is either a lie or a second import.
+ */
+@Composable
+private fun ChatActionCards(repo: Repository, actions: List<LibbyAction>) {
+    if (actions.isEmpty()) return
+    val scope = rememberCoroutineScope()
+    Column(Modifier.fillMaxWidth().padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        actions.forEach { action ->
+            // Keyed on the action so a redraw of the list does not reset a decision.
+            var state by remember(action.id) { mutableStateOf("pending") }
+            var status by remember(action.id) { mutableStateOf("") }
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                    .background(ChatColors.input).padding(10.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Icon(
+                    actionIcon(action.kind), null, tint = ChatColors.muted,
+                    modifier = Modifier.size(20.dp).padding(top = 1.dp),
+                )
+                Column(Modifier.weight(1f).padding(start = 10.dp)) {
+                    Text(action.label, color = ChatColors.text, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Text(action.detail, color = ChatColors.muted, fontSize = 12.sp)
+                    when (state) {
+                        "pending" -> Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Button(onClick = {
+                                state = "running"
+                                scope.launch {
+                                    runCatching { repo.api.libbyAct(action.toRequest()) }
+                                        .onSuccess { state = "done"; status = actionDone(action.kind) }
+                                        .onFailure { state = "failed"; status = it.message ?: "That didn't work." }
+                                }
+                            }) { Text("Allow") }
+                            TextButton(onClick = { state = "declined"; status = "You said no." }) { Text("Not now") }
+                        }
+                        "running" -> Text("Working on it…", color = ChatColors.muted, fontSize = 12.sp)
+                        else -> Text(
+                            status,
+                            color = if (state == "failed") ChatColors.danger else ChatColors.muted,
+                            fontSize = 12.sp,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun LibbyAction.toRequest() =
+    LibbyActRequest(kind = kind, prompt = prompt, url = url, mediaId = mediaId, tags = tags)
+
+/** Icon per action kind, falling back to a generic mark so a kind this build has never
+    heard of still renders as a card the user can read and refuse. */
+private fun actionIcon(kind: String) = when (kind) {
+    "generate" -> Icons.Filled.AutoAwesome
+    "import" -> Icons.Filled.Download
+    "tag" -> Icons.Filled.Sell
+    "favorite" -> Icons.Filled.Favorite
+    else -> Icons.Filled.Bolt
+}
+
+/** What a completed action says. Specific where it can be: "Done" is true but tells
+    the user nothing about where the thing went. */
+private fun actionDone(kind: String) = when (kind) {
+    "generate" -> "Made it — it's in your library."
+    "import" -> "Added to your library."
+    "tag" -> "Tags added."
+    "favorite" -> "Favorited."
+    else -> "Done."
+}
+
+/** Icon per library kind, matching the library's own nav so a chip reads as the
+    same object you would find on the shelf. */
+private fun linkIcon(kind: String) = when (kind) {
+    "video" -> Icons.Filled.Movie
+    "gif" -> Icons.Filled.Gif
+    "comic" -> Icons.AutoMirrored.Filled.MenuBook
+    "game" -> Icons.Filled.SportsEsports
+    else -> Icons.Filled.Image
+}
+
+/**
+ * What a reply pointed at, as things you can open.
+ *
+ * The title is already in the prose — the server substitutes it for the link tag — so
+ * this is a chip rather than a card: it is the "open it" affordance for something she
+ * has already named, not a second copy of the sentence. Same reasoning, and the same
+ * shape, as the web client's renderLinkChips.
+ */
+@Composable
+private fun ChatLinkChips(repo: Repository, links: List<LibbyLink>, onOpenMedia: OpenMedia) {
+    if (links.isEmpty()) return
+    Column(Modifier.fillMaxWidth().padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        links.forEach { link ->
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                    .background(ChatColors.input).clickable { onOpenMedia(link.id) }
+                    .padding(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (link.hasThumb) AsyncImage(
+                    repo.thumbUrl(link.id), null, imageLoader = repo.imageLoader,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.size(36.dp).clip(RoundedCornerShape(8.dp)),
+                ) else Box(
+                    Modifier.size(36.dp).clip(RoundedCornerShape(8.dp)).background(ChatColors.side),
+                    contentAlignment = Alignment.Center,
+                ) { Icon(linkIcon(link.kind), null, tint = ChatColors.muted, modifier = Modifier.size(20.dp)) }
+                Column(Modifier.weight(1f).padding(start = 10.dp, end = 6.dp)) {
+                    Text(link.title, color = ChatColors.text, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                    Text(link.kind.replaceFirstChar(Char::uppercase), color = ChatColors.muted, fontSize = 11.sp, maxLines = 1)
+                }
+            }
         }
     }
 }

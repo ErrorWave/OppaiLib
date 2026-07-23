@@ -209,6 +209,38 @@ data class LibbyLink(
     val hasThumb: Boolean = false,
 )
 
+/**
+ * Something Libby has offered to do.
+ *
+ * Nothing here has happened. The server parses these out of her reply and hands them
+ * over as proposals; only [ApiService.libbyAct] performs one, and only an Allow button
+ * calls that — so the user's press is the sole path by which anything she says changes
+ * the library. [label] and [detail] are written server-side, so a card renders without
+ * this client holding a table of action kinds.
+ */
+@Serializable
+data class LibbyAction(
+    val id: String = "",
+    val kind: String = "",
+    val label: String = "",
+    val detail: String = "",
+    val prompt: String = "",
+    val url: String = "",
+    val mediaId: Long = 0,
+    val mediaTitle: String = "",
+    val tags: List<String> = emptyList(),
+)
+
+/** The approved half of a [LibbyAction], as the act endpoint takes it. */
+@Serializable
+data class LibbyActRequest(
+    val kind: String,
+    val prompt: String = "",
+    val url: String = "",
+    val mediaId: Long = 0,
+    val tags: List<String> = emptyList(),
+)
+
 @Serializable
 data class ChatResponse(
     val message: String,
@@ -218,6 +250,9 @@ data class ChatResponse(
     /** Library items this reply points at. The titles are already substituted into
         the prose server-side, so a client that does not draw chips still reads right. */
     val links: List<LibbyLink> = emptyList(),
+    /** Things Libby has asked to do. Proposals only — a card with an Allow button is
+        what turns one into an action. */
+    val actions: List<LibbyAction> = emptyList(),
     /**
      * True when the character stated its own mood rather than one being inferred.
      * A stated mood is applied as-is; an inferred one drifts by the session
@@ -293,6 +328,9 @@ data class StoredChatMessage(
     /** Library items this message pointed at. Carried so a workspace round-trip
         through this client does not strip what the web UI draws as chips. */
     val links: List<LibbyLink> = emptyList(),
+    /** Offers Libby made in this message, kept so the card survives a redraw. Whether
+        one was approved is session state, deliberately not part of the log. */
+    val actions: List<LibbyAction> = emptyList(),
 )
 
 @Serializable
@@ -482,10 +520,27 @@ data class LibbyOutfit(
     val emotions: List<String> = emptyList(),
     /** For each emotion, which horniness tiers (0..4) have art. */
     val emotionLevels: Map<String, List<Int>> = emptyMap(),
+    /** Whether the cover endpoint will return a picture — an explicit cover, or any
+        slot art to fall back on. Absent from older servers, which reads as false. */
+    val hasThumb: Boolean = false,
+    /** How many (emotion, tier) squares have art. What a card can honestly show. */
+    val slots: Int = 0,
 )
 
 @Serializable
 data class LibbyOutfitsResponse(val outfits: List<LibbyOutfit> = emptyList())
+
+/** One candidate poster frame. [image] is an inline data URL, so the whole strip
+    arrives in a single response — every frame read costs a decrypt server-side. */
+@Serializable
+data class PosterFrame(val at: Double, val image: String = "")
+
+@Serializable
+data class PosterFramesResponse(val duration: Double = 0.0, val frames: List<PosterFrame> = emptyList())
+
+/** [at] is an offset in seconds; the server re-renders the poster from that frame. */
+@Serializable
+data class SetPosterRequest(val at: Double)
 
 @Serializable
 data class LibbyOutfitSaveRequest(val id: String? = null, val name: String)

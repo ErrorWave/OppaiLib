@@ -126,6 +126,14 @@ class Repository(private val appContext: Context, val prefs: Prefs) {
         return if (level > 0) "$base?level=$level" else base
     }
 
+    /** An outfit's card art. `v` busts Coil's cache after a cover changes — the URL is
+        otherwise stable, and a card still showing the old picture is indistinguishable
+        from a save that did not work. */
+    fun libbyOutfitThumbUrl(outfitId: String, v: Int = 0): String {
+        val base = "${baseUrl}api/libby/outfits/${URLEncoder.encode(outfitId, "UTF-8")}/thumb"
+        return if (v > 0) "$base?v=$v" else base
+    }
+
     /**
      * The whole library (or one kind of it), walked a page at a time.
      *

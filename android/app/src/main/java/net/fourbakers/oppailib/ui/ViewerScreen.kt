@@ -1109,6 +1109,7 @@ private fun Chrome(
     if (editing) {
         EditMediaDialog(
             media = media,
+            repo = repo,
             onDismiss = { editing = false },
             onSave = { change -> editing = false; patch(change) },
         )

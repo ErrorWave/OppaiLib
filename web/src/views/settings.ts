@@ -11,17 +11,32 @@ import {
   applyTheme,
 } from "../theme.js";
 import { KIND_META, type Kind, type ComicFit, loadComicFit, saveComicFit } from "../media-meta.js";
-import { loadHideLibby, loadLibbyOutfit, saveHideLibby, saveLibbyOutfit } from "../libby.js";
+import { defaultLibbyArt, loadHideLibby, loadLibbyOutfit, saveHideLibby, saveLibbyOutfit } from "../libby.js";
 import type { LibbyOutfit } from "../api.js";
 import { LIBBY_PROGRESSION_MULTIPLIERS, getProgressionMultiplier, setProgressionMultiplier } from "../libby-meter.js";
 
-/** Libby's emotion slots, in the order the outfit editor lays them out. */
-const LIBBY_EMOTIONS: { id: string; label: string; hint: string }[] = [
+/**
+ * Libby's emotion slots, in the order the outfit editor lays them out.
+ *
+ * The first five are drawn by the bundled wardrobe and are what every outfit should
+ * cover — leave one empty and she falls all the way back to the default art. The rest
+ * are finer moods she can express but that no bundled picture distinguishes: each
+ * borrows a drawn pose (`borrows` below) until an outfit gives it one of its own.
+ * They are optional by construction, which is why they come second.
+ */
+const LIBBY_EMOTION_SLOTS: { id: string; label: string; hint: string; borrows?: string }[] = [
   { id: "neutral", label: "Neutral", hint: "Login screen and error popups" },
   { id: "happy", label: "Happy", hint: "Chat · Sweet mode" },
   { id: "mischievous", label: "Mischievous", hint: "Chat · Playful mode" },
   { id: "surprised", label: "Surprised", hint: "Chat · Bold mode" },
   { id: "thinking", label: "Thinking", hint: "Chat · Roleplay mode" },
+  { id: "shy", label: "Shy", hint: "Bashful, flustered, caught out", borrows: "Surprised" },
+  { id: "smug", label: "Smug", hint: "Proud of herself, vindicated", borrows: "Mischievous" },
+  { id: "sad", label: "Sad", hint: "Hurt, wistful, let down", borrows: "Thinking" },
+  { id: "annoyed", label: "Annoyed", hint: "Irritated, pouty, impatient", borrows: "Thinking" },
+  { id: "sleepy", label: "Sleepy", hint: "Tired, dozy, winding down", borrows: "Neutral" },
+  { id: "loving", label: "Loving", hint: "Tender, adoring, soft on you", borrows: "Happy" },
+  { id: "excited", label: "Excited", hint: "Thrilled, eager, buzzing", borrows: "Happy" },
 ];
 
 /** Horniness art tiers 0..4, calmest first — the level Libby wears rises with the
@@ -58,6 +73,11 @@ const SETTINGS_TABS: { id: SettingsTab; label: string; icon: string; group: stri
 interface OutfitDraft {
   id?: string;
   name: string;
+  /** A newly picked cover, as a data URL. Uploads with the rest on Save. */
+  cover?: string;
+  /** Whether the server already has a cover for this outfit (explicit or borrowed
+      from its slot art), so the editor can show the current card without probing. */
+  hasCover?: boolean;
   /** "emotion:level" pairs that already have art on the server. */
   existing: string[];
   /** Newly dropped art as data URLs, keyed "emotion:level". */
@@ -97,6 +117,15 @@ export class OppaiSettings extends LitElement {
   @state() private wornOutfit = loadLibbyOutfit();
   @state() private outfitDraft: OutfitDraft | null = null;
   @state() private outfitBusy = false;
+  /** Cache-buster for cover URLs; bumped whenever one is written or cleared. */
+  @state() private outfitCoverVersion = 0;
+
+  // The generator's own lists, so Libby's image-generation fields are pickers rather
+  // than free text. Empty when it is unreachable; see loadGenLists.
+  @state() private genModels: string[] = [];
+  @state() private genLoras: string[] = [];
+  @state() private genBoards: string[] = [];
+  @state() private genError = "";
 
   @state() private pwCurrent = "";
   @state() private pwNew = "";
@@ -516,6 +545,111 @@ export class OppaiSettings extends LitElement {
         color: var(--oppai-on-accent);
         border-color: var(--oppai-accent);
       }
+      /* The wardrobe, as cards. A list of names could not answer the only question
+         being asked here — "which one is this?" — and outfits are pictures. */
+      .outfit-cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+        gap: 12px;
+        margin-top: 10px;
+      }
+      .outfit-card {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        border: 1px solid var(--oppai-border);
+        border-radius: 14px;
+        overflow: hidden;
+        background: var(--oppai-surface-2, rgba(255, 255, 255, 0.03));
+        text-align: left;
+        cursor: pointer;
+        padding: 0;
+        font: inherit;
+        color: inherit;
+        transition: border-color 0.12s, transform 0.12s;
+      }
+      .outfit-card:hover { transform: translateY(-2px); border-color: var(--oppai-border-strong); }
+      .outfit-card.on { border-color: var(--oppai-accent); }
+      /* Portraits are tall; 3:4 shows the pose without letterboxing the common case. */
+      .outfit-card .cover {
+        aspect-ratio: 3 / 4;
+        width: 100%;
+        object-fit: cover;
+        display: block;
+        background: var(--oppai-surface);
+      }
+      .outfit-card .cover-empty {
+        aspect-ratio: 3 / 4;
+        display: grid;
+        place-items: center;
+        color: var(--oppai-text-muted);
+        font-size: 12px;
+        text-align: center;
+        padding: 8px;
+      }
+      .outfit-card .card-body { padding: 8px 10px 10px; }
+      .outfit-card .card-name {
+        font-size: 13px;
+        font-weight: 600;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .outfit-card .card-meta { font-size: 11px; color: var(--oppai-text-muted); margin-top: 2px; }
+      /* "Wearing" sits on the art, because that is the one fact you scan a grid for. */
+      .outfit-card .worn-badge {
+        position: absolute;
+        top: 8px;
+        left: 8px;
+        background: var(--oppai-accent);
+        color: var(--oppai-on-accent);
+        border-radius: 999px;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        padding: 3px 8px;
+      }
+      .outfit-card .card-edit {
+        position: absolute;
+        top: 6px;
+        right: 6px;
+        border: 0;
+        border-radius: 8px;
+        background: rgba(0, 0, 0, 0.55);
+        color: #fff;
+        font: inherit;
+        font-size: 11px;
+        padding: 4px 8px;
+        cursor: pointer;
+        opacity: 0;
+        transition: opacity 0.12s;
+      }
+      .outfit-card:hover .card-edit,
+      .outfit-card:focus-within .card-edit { opacity: 1; }
+      /* The cover picker inside the editor. */
+      .cover-picker {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        margin: 10px 0 4px;
+      }
+      .cover-picker img,
+      .cover-picker .cover-blank {
+        width: 84px;
+        aspect-ratio: 3 / 4;
+        object-fit: cover;
+        border-radius: 10px;
+        border: 1px solid var(--oppai-border);
+        background: var(--oppai-surface-2, rgba(255, 255, 255, 0.03));
+        display: grid;
+        place-items: center;
+        font-size: 11px;
+        color: var(--oppai-text-muted);
+        text-align: center;
+      }
+      .cover-picker .cover-copy { flex: 1; min-width: 0; font-size: 12px; color: var(--oppai-text-muted); }
+      .cover-picker .cover-copy .row { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
       .outfit-overlay {
         position: fixed;
         inset: 0;
@@ -624,6 +758,7 @@ export class OppaiSettings extends LitElement {
     super.connectedCallback();
     this.load();
     void this.loadOutfits();
+    void this.loadGenLists();
   }
 
   private async loadOutfits() {
@@ -983,38 +1118,198 @@ export class OppaiSettings extends LitElement {
             </div>
           </div>
           <div class="field-control" style="display:block;">
-            <div class="outfit-row" style="border-top:none;">
-              <span class="name">Default Libby</span>
+            <div class="outfit-cards">
+              <!-- The bundled wardrobe is a card like any other, shown in its own art
+                   rather than as a "none" row: it is a look you choose, not the absence
+                   of one. -->
               <button
-                class="outfit-btn ${this.wornOutfit === "" ? "on" : ""}"
+                class="outfit-card ${this.wornOutfit === "" ? "on" : ""}"
                 @click=${() => this.wearOutfit("")}
-              >${this.wornOutfit === "" ? "Wearing" : "Wear"}</button>
-            </div>
-            ${this.outfits.map(
-              (o) => html`<div class="outfit-row">
-                <span class="name">${o.name}</span>
-                <span class="meta">${o.emotions.length}/5 emotions</span>
-                <button
-                  class="outfit-btn ${this.wornOutfit === o.id ? "on" : ""}"
-                  @click=${() => this.wearOutfit(this.wornOutfit === o.id ? "" : o.id)}
-                >${this.wornOutfit === o.id ? "Wearing" : "Wear"}</button>
-                <button class="outfit-btn" @click=${() => this.openOutfitEditor(o)}>Edit</button>
-              </div>`,
-            )}
-            <div class="outfit-row" style="border-top:none; padding-top:12px;">
-              <button
-                class="outfit-btn"
-                @click=${() => (this.outfitDraft = { name: "", existing: [], staged: {}, level: 0 })}
+                title="Wear Libby’s default artwork"
               >
-                <span class="material-symbols-rounded" style="font-size:14px; vertical-align:-2px;">add</span>
-                New outfit
+                <img class="cover" src=${defaultLibbyArt("happy", 1)} alt="Default Libby" />
+                ${this.wornOutfit === "" ? html`<span class="worn-badge">Wearing</span>` : nothing}
+                <div class="card-body">
+                  <div class="card-name">Default Libby</div>
+                  <div class="card-meta">Bundled artwork</div>
+                </div>
+              </button>
+              ${this.outfits.map((o) => this.renderOutfitCard(o))}
+              <button
+                class="outfit-card"
+                @click=${() => (this.outfitDraft = { name: "", existing: [], staged: {}, level: 0 })}
+                title="Create a new outfit"
+              >
+                <div class="cover-empty">
+                  <span>
+                    <span class="material-symbols-rounded" style="font-size:26px; display:block;">add</span>
+                    New outfit
+                  </span>
+                </div>
+                <div class="card-body">
+                  <div class="card-name">New outfit</div>
+                  <div class="card-meta">Drop in your own art</div>
+                </div>
               </button>
             </div>
           </div>
         </div>
       </section>
+      ${this.renderLibbyImageGen()}
       ${this.outfitDraft ? this.renderOutfitEditor(this.outfitDraft) : nothing}
     `;
+  }
+
+  /**
+   * How Libby makes a picture when you approve one of her offers.
+   *
+   * Server-side settings on an otherwise per-device panel, and they belong here rather
+   * than beside the studio's own URL box: these are about *her*, not about the
+   * generator. The studio is a workbench whose settings change with every experiment;
+   * this is the fixed setup that makes "make me a picture of you on the balcony"
+   * produce her, consistently, without leaving the conversation.
+   *
+   * The model and LoRA lists are read live from the generator, so the fields are
+   * pickers rather than free text wherever it is reachable — a mistyped checkpoint
+   * name fails at generation time, minutes after the mistake.
+   */
+  private renderLibbyImageGen() {
+    const s = this.settings;
+    if (!s) return nothing;
+    if (!s.imageGenEnabled) {
+      return html`<section class="card">
+        <h3><span class="material-symbols-rounded">auto_awesome</span>Libby’s image generation</h3>
+        <p class="card-sub">
+          Set an image generator URL under <strong>Library</strong> and Libby can offer to make
+          pictures for you in chat. She always asks first — nothing is generated or saved until
+          you press Allow.
+        </p>
+      </section>`;
+    }
+    const models = this.genModels;
+    const loras = this.genLoras;
+    const boards = this.genBoards;
+    return html`<section class="card">
+      <h3><span class="material-symbols-rounded">auto_awesome</span>Libby’s image generation</h3>
+      <p class="card-sub">
+        What she uses when she offers to make you a picture. She always asks first — nothing is
+        generated or saved until you press Allow.
+        ${this.genError ? html`<br /><span style="color:var(--oppai-danger,#ff6b6b);">${this.genError}</span>` : nothing}
+      </p>
+
+      <div class="field">
+        <div class="field-text">
+          <div class="field-label">Model</div>
+          <div class="field-help">The checkpoint her pictures are made with. Leave on the
+            generator’s default to use whatever it loads.</div>
+        </div>
+        <div class="field-control">
+          ${models.length
+            ? html`<select ?disabled=${!this.canEdit}
+                @change=${(e: Event) => this.edit({ libbyGenModel: (e.target as HTMLSelectElement).value })}>
+                <option value="" ?selected=${!s.libbyGenModel}>Generator’s default</option>
+                ${models.map((m) => html`<option value=${m} ?selected=${m === s.libbyGenModel}>${m}</option>`)}
+              </select>`
+            : html`<input type="text" autocomplete="off" placeholder="Generator’s default"
+                .value=${s.libbyGenModel} ?disabled=${!this.canEdit}
+                @change=${(e: Event) => this.edit({ libbyGenModel: (e.target as HTMLInputElement).value })} />`}
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="field-text">
+          <div class="field-label">LoRA</div>
+          <div class="field-help">One LoRA applied to everything she makes — usually the one
+            that makes the picture look like her.</div>
+        </div>
+        <div class="field-control" style="display:flex; gap:8px; align-items:center;">
+          ${loras.length
+            ? html`<select ?disabled=${!this.canEdit}
+                @change=${(e: Event) => this.edit({ libbyGenLora: (e.target as HTMLSelectElement).value })}>
+                <option value="" ?selected=${!s.libbyGenLora}>None</option>
+                ${loras.map((l) => html`<option value=${l} ?selected=${l === s.libbyGenLora}>${l}</option>`)}
+              </select>`
+            : html`<input type="text" autocomplete="off" placeholder="None"
+                .value=${s.libbyGenLora} ?disabled=${!this.canEdit}
+                @change=${(e: Event) => this.edit({ libbyGenLora: (e.target as HTMLInputElement).value })} />`}
+          <input type="number" step="0.05" min="-2" max="2" style="width:90px;"
+            aria-label="LoRA strength"
+            .value=${String(s.libbyGenLoraWeight || 1)} ?disabled=${!this.canEdit || !s.libbyGenLora}
+            @change=${(e: Event) => this.edit({ libbyGenLoraWeight: Number((e.target as HTMLInputElement).value) })} />
+        </div>
+      </div>
+
+      ${boards.length
+        ? html`<div class="field">
+            <div class="field-text">
+              <div class="field-label">Board</div>
+              <div class="field-help">The InvokeAI board her pictures are filed into, so what she
+                makes stays separate from your own generations.</div>
+            </div>
+            <div class="field-control">
+              <select ?disabled=${!this.canEdit}
+                @change=${(e: Event) => this.edit({ libbyGenBoard: (e.target as HTMLSelectElement).value })}>
+                <option value="" ?selected=${!s.libbyGenBoard}>Uncategorized</option>
+                ${boards.map((b) => html`<option value=${b} ?selected=${b === s.libbyGenBoard}>${b}</option>`)}
+              </select>
+            </div>
+          </div>`
+        : nothing}
+
+      <div class="field stack">
+        <div class="field-text">
+          <div class="field-label">Her prompt</div>
+          <div class="field-help">
+            Who she is, in generator words — the tokens that make the picture look like Libby
+            rather than a stranger. This goes in front of whatever she describes, so her offer
+            only has to say what is happening in the picture.
+          </div>
+        </div>
+        <div class="field-control">
+          <textarea rows="3" style="width:100%;"
+            placeholder="1girl, long orange hair, red eyes, glasses, …"
+            .value=${s.libbyGenPrompt} ?disabled=${!this.canEdit}
+            @change=${(e: Event) => this.edit({ libbyGenPrompt: (e.target as HTMLTextAreaElement).value })}></textarea>
+        </div>
+      </div>
+
+      <div class="field stack">
+        <div class="field-text">
+          <div class="field-label">Negative prompt</div>
+          <div class="field-help">What to keep out of every picture she makes.</div>
+        </div>
+        <div class="field-control">
+          <textarea rows="2" style="width:100%;"
+            placeholder="lowres, bad anatomy, watermark, …"
+            .value=${s.libbyGenNegativePrompt} ?disabled=${!this.canEdit}
+            @change=${(e: Event) => this.edit({ libbyGenNegativePrompt: (e.target as HTMLTextAreaElement).value })}></textarea>
+        </div>
+      </div>
+    </section>`;
+  }
+
+  /**
+   * Reads the generator's model, LoRA and board lists so the fields above can be
+   * pickers. Failures are reported and then dropped: the fields fall back to free text,
+   * which is worse but still usable, and a settings screen that will not open because
+   * an optional service is down is a bad trade.
+   */
+  private async loadGenLists() {
+    try {
+      const status = await api.imageGenStatus();
+      if (!status.enabled || !status.reachable) {
+        if (status.enabled) this.genError = status.error || "The image generator isn't reachable.";
+        return;
+      }
+      // The generate request takes a checkpoint *title* and a LoRA *name*, so these
+      // lists carry exactly what will be sent — not a prettier label the backend would
+      // then fail to resolve.
+      this.genModels = (status.models ?? []).map((m) => m.title || m.model_name).filter(Boolean);
+      this.genLoras = (status.loras ?? []).map((l) => l.name).filter(Boolean);
+      this.genBoards = (status.boards ?? []).map((b) => b.name).filter(Boolean);
+    } catch (e) {
+      this.genError = (e as Error).message;
+    }
   }
 
   // ── Libby outfits ───────────────────────────────────────────────────────────
@@ -1035,7 +1330,80 @@ export class OppaiSettings extends LitElement {
     } else {
       for (const emotion of o.emotions) existing.push(slotKey(emotion, 0));
     }
-    this.outfitDraft = { id: o.id, name: o.name, existing, staged: {}, level: 0 };
+    this.outfitDraft = { id: o.id, name: o.name, existing, staged: {}, level: 0, hasCover: o.hasThumb !== false };
+  }
+
+  /**
+   * The outfit's card art.
+   *
+   * A cover is optional by design — the server falls back to the outfit's own slot art
+   * — so this is framed as an override rather than a required step. It is worth having
+   * separately because covers and poses want different pictures: the slots are
+   * portraits cropped to stand beside a conversation, and a good card is often a wider,
+   * posed shot that would look wrong there.
+   */
+  private renderCoverPicker(d: OutfitDraft) {
+    const showing = d.cover
+      || (d.id && d.hasCover ? api.libbyOutfitThumbURL(d.id, this.outfitCoverVersion) : "");
+    return html`<div class="cover-picker">
+      ${showing
+        ? html`<img src=${showing} alt="Outfit cover" />`
+        : html`<div class="cover-blank">No cover</div>`}
+      <div class="cover-copy">
+        Card art for the wardrobe. Leave it empty and the card uses this outfit’s own
+        artwork.
+        <div class="row">
+          <label class="outfit-btn">
+            Choose cover
+            <input
+              type="file"
+              accept="image/*"
+              style="display:none;"
+              @change=${(e: Event) => {
+                const input = e.target as HTMLInputElement;
+                this.stageCover(input.files?.[0]);
+                input.value = "";
+              }}
+            />
+          </label>
+          ${d.cover || d.hasCover
+            ? html`<button class="outfit-btn" @click=${() => this.clearCover()}>Use outfit art</button>`
+            : nothing}
+        </div>
+      </div>
+    </div>`;
+  }
+
+  private stageCover(file: File | undefined) {
+    if (!file || !file.type.startsWith("image/") || !this.outfitDraft) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (!this.outfitDraft) return;
+      this.outfitDraft = { ...this.outfitDraft, cover: String(reader.result) };
+    };
+    reader.readAsDataURL(file);
+  }
+
+  /**
+   * Drops the chosen cover, returning the card to the outfit's own art.
+   *
+   * The server call happens now rather than on Save, unlike everything else in the
+   * editor: there is nothing to stage — an absence cannot be previewed as a data URL —
+   * and the operation is idempotent, so a cancelled edit that already cleared the cover
+   * is a smaller surprise than a Save button that silently means two different things.
+   */
+  private async clearCover() {
+    const d = this.outfitDraft;
+    if (!d) return;
+    this.outfitDraft = { ...d, cover: undefined, hasCover: false };
+    if (!d.id) return;
+    try {
+      await api.clearLibbyOutfitThumb(d.id);
+      this.outfitCoverVersion = Date.now();
+      await this.loadOutfits();
+    } catch (e) {
+      this.loadError = (e as Error).message;
+    }
   }
 
   /** Reads a dropped/picked image file into the draft's staging area for the given
@@ -1065,6 +1433,12 @@ export class OppaiSettings extends LitElement {
         const [emotion, level] = key.split(":");
         await api.setLibbyEmotion(saved.id, emotion, dataUrl, Number(level));
       }
+      if (d.cover) {
+        await api.setLibbyOutfitThumb(saved.id, d.cover);
+        // The cover URL is otherwise stable, so a card would keep showing the picture
+        // the browser already has. Bumping the version is what makes the save visible.
+        this.outfitCoverVersion = Date.now();
+      }
       this.outfitDraft = null;
       await this.loadOutfits();
     } catch (e) {
@@ -1093,6 +1467,64 @@ export class OppaiSettings extends LitElement {
     }
   }
 
+  /**
+   * One outfit as a card.
+   *
+   * The card itself wears the outfit — that is the action you take on a wardrobe nine
+   * times out of ten — and Edit is a corner affordance that only appears on hover, so
+   * the common case is a single click on a picture. Clicking the worn one takes it
+   * off, matching the old toggle.
+   */
+  private renderOutfitCard(o: LibbyOutfit) {
+    const worn = this.wornOutfit === o.id;
+    const slots = o.slots ?? o.emotions.length;
+    return html`<button
+      class="outfit-card ${worn ? "on" : ""}"
+      @click=${() => this.wearOutfit(worn ? "" : o.id)}
+      title=${worn ? `Take off “${o.name}”` : `Wear “${o.name}”`}
+    >
+      ${o.hasThumb === false
+        ? html`<div class="cover-empty">No art yet</div>`
+        : html`<img
+            class="cover"
+            src=${api.libbyOutfitThumbURL(o.id, this.outfitCoverVersion)}
+            alt=${o.name}
+            loading="lazy"
+            @error=${(e: Event) => {
+              // An outfit with no art at all 404s here. Swap in the placeholder rather
+              // than leaving a broken image: "not drawn yet" is a real state, and the
+              // list flag can be stale on an older server that never sent it.
+              const img = e.target as HTMLImageElement;
+              img.replaceWith(Object.assign(document.createElement("div"), {
+                className: "cover-empty", textContent: "No art yet",
+              }));
+            }}
+          />`}
+      ${worn ? html`<span class="worn-badge">Wearing</span>` : nothing}
+      <span
+        class="card-edit"
+        role="button"
+        tabindex="0"
+        title=${`Edit “${o.name}”`}
+        @click=${(e: Event) => { e.stopPropagation(); this.openOutfitEditor(o); }}
+        @keydown=${(e: KeyboardEvent) => {
+          if (e.key !== "Enter" && e.key !== " ") return;
+          e.preventDefault();
+          e.stopPropagation();
+          this.openOutfitEditor(o);
+        }}
+      >Edit</span>
+      <div class="card-body">
+        <div class="card-name">${o.name}</div>
+        <div class="card-meta">
+          ${o.emotions.length}/${LIBBY_EMOTION_SLOTS.length} emotions${slots > o.emotions.length
+            ? html` · ${slots} images`
+            : nothing}
+        </div>
+      </div>
+    </button>`;
+  }
+
   private renderOutfitEditor(d: OutfitDraft) {
     return html`
       <div class="outfit-overlay" @click=${(e: Event) => { if (e.target === e.currentTarget) this.outfitDraft = null; }}>
@@ -1118,8 +1550,9 @@ export class OppaiSettings extends LitElement {
               ? "Baseline art — worn when the meter is low, and the fallback for any tier you leave empty."
               : `Shown as Libby’s horniness meter climbs into the “${LIBBY_TIERS[d.level]}” range.`}
           </p>
+          ${this.renderCoverPicker(d)}
           <div class="slots">
-            ${LIBBY_EMOTIONS.map((em) => {
+            ${LIBBY_EMOTION_SLOTS.map((em) => {
               const key = slotKey(em.id, d.level);
               const staged = d.staged[key];
               const existing = !staged && d.id && d.existing.includes(key)
@@ -1146,7 +1579,11 @@ export class OppaiSettings extends LitElement {
                       ? html`<img src=${existing} alt=${em.label} />`
                       : html`<div class="drop-hint">Drop an image here<br />or click to browse</div>`}
                   <div class="slot-label">${em.label}</div>
-                  <div class="slot-hint">${em.hint}</div>
+                  <div class="slot-hint">
+                    ${em.hint}${em.borrows
+                      ? html`<br /><span style="opacity:.75;">Optional — borrows ${em.borrows}</span>`
+                      : nothing}
+                  </div>
                   <input
                     type="file"
                     accept="image/*"

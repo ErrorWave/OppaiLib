@@ -28,6 +28,8 @@ import "./browse.js";
 import "./imagegen.js";
 import "./chat.js";
 import "./together.js";
+import { libbyWhere } from "./libby-drawer.js";
+import "./libby-drawer.js";
 
 type Section = "home" | "favorites" | "browse" | "imagegen" | "chat" | "together" | "settings" | Kind;
 
@@ -1095,6 +1097,25 @@ export class OppaiLibrary extends LitElement {
    *
    * An id whose item has since been deleted is dropped rather than rendered as a hole.
    */
+  /**
+   * What Libby's drawer is looking at, for whichever screen is showing.
+   *
+   * The same lists the grid draws, so "what is on screen" means literally that rather
+   * than the whole library. Screens with no shelf of their own (settings, the studio,
+   * an outside site) fall back to the collection, which is still true — she is beside
+   * the user in their library — and is what makes "pick something for me" work from
+   * anywhere.
+   */
+  private onScreenItems(isGrid: boolean, isFavorites: boolean, isSearch: boolean): Media[] {
+    if (isFavorites) return this.items.filter((m) => this.favorites.has(m.id));
+    if (isSearch) {
+      const terms = this.search.trim().toLowerCase().split(/\s+/).filter(Boolean);
+      return this.items.filter((m) => matchesSearch(m, terms));
+    }
+    if (isGrid) return this.itemsForKind(this.section as Kind);
+    return this.items;
+  }
+
   private get viewerQueue(): Media[] {
     return this.viewerList
       .map((id) => this.items.find((m) => m.id === id))
@@ -1168,6 +1189,15 @@ export class OppaiLibrary extends LitElement {
             : nothing}
         </main>
       </div>
+      <!-- Libby, available from anywhere rather than only on the screen named after
+           her. She is told what is on screen so she can react to it; the Chat and
+           Together screens suppress her, since they already are the conversation. -->
+      <oppai-libby-drawer
+        .items=${activeItem ? [activeItem, ...this.onScreenItems(isGrid, isFavorites, isSearch)] : this.onScreenItems(isGrid, isFavorites, isSearch)}
+        .focused=${activeItem}
+        .where=${libbyWhere(isSearch ? "search" : this.section)}
+        ?suppressed=${isChat || isTogether}
+      ></oppai-libby-drawer>
       ${this.renderUpload()}
       ${this.renderBulkBar()}
       ${this.renderDownloads()}

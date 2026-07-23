@@ -24,10 +24,41 @@ import (
 // only storage: encrypted under /config/libby, same scheme as the character
 // library, because outfit art is the user's own and may be anything.
 
-// libbyEmotions is the fixed emotion vocabulary — the five poses the clients
-// actually render (neutral is the popup/login pose; the rest map to chat modes).
+// libbyEmotions is the emotion vocabulary an outfit can supply art for.
+//
+// The first five are the *drawn* poses: the bundled wardrobe has one of each at every
+// horniness tier, and they are what a client falls back to. The rest are finer moods
+// added later — the bundled art does not distinguish them, so a client renders each
+// one as the drawn pose it is closest to (see libbyDrawnPose, and the clients' own
+// copies of the same table). What they buy is expressiveness at both ends: the
+// character can say it feels shy rather than merely surprised, and an outfit can draw
+// that shyness as its own picture instead of reusing the surprised one.
+//
+// Order matters: it is the order the outfit editor lays its slots out in, drawn poses
+// first so the five that every outfit should cover come before the optional extras.
 var libbyEmotions = []string{
 	"neutral", "happy", "surprised", "thinking", "mischievous",
+	"shy", "smug", "sad", "annoyed", "sleepy", "loving", "excited",
+}
+
+// libbyDrawnPose maps every emotion onto one of the five poses the bundled wardrobe
+// actually has art for. The drawn five map to themselves.
+//
+// This is the same table the web client (EMOTION_FALLBACK in libby.ts) and the phone
+// (mascotAsset in LibbyPortrait.kt) hold. It lives here too because the server decides
+// what a mood tag is allowed to mean, and a mood with no route to a picture is a mood
+// that shows as a stuck face.
+var libbyDrawnPose = map[string]string{
+	"neutral": "neutral", "happy": "happy", "surprised": "surprised",
+	"thinking": "thinking", "mischievous": "mischievous",
+
+	"shy":     "surprised",
+	"smug":    "mischievous",
+	"sad":     "thinking",
+	"annoyed": "thinking",
+	"sleepy":  "neutral",
+	"loving":  "happy",
+	"excited": "happy",
 }
 
 // maxLibbyLevel is the highest horniness art tier. There are five tiers, 0..4:
@@ -74,6 +105,13 @@ type libbyOutfitView struct {
 	libbyOutfit
 	Emotions      []string         `json:"emotions"`
 	EmotionLevels map[string][]int `json:"emotionLevels"`
+	// HasThumb says whether GET .../thumb will return a picture, so a card grid knows
+	// whether to draw art or a placeholder without a request per outfit that 404s.
+	HasThumb bool `json:"hasThumb"`
+	// Slots is how many (emotion, tier) squares this outfit has art in, which is the
+	// one number a card can show that means anything: "3/5 emotions" undercounts an
+	// outfit drawn across every tier.
+	Slots int `json:"slots"`
 }
 
 func (s *Server) libbyOutfitPath(id string) string {
@@ -113,13 +151,120 @@ func (s *Server) libbyOutfitView(o *libbyOutfit) libbyOutfitView {
 		for level := 0; level <= maxLibbyLevel; level++ {
 			if _, err := os.Stat(s.libbyEmotionPath(o.ID, e, level)); err == nil {
 				v.EmotionLevels[e] = append(v.EmotionLevels[e], level)
+				v.Slots++
 				if level == 0 {
 					v.Emotions = append(v.Emotions, e)
 				}
 			}
 		}
 	}
+	// Any art at all is a cover, because the thumb endpoint falls back to it.
+	v.HasThumb = v.Slots > 0
+	if _, err := os.Stat(s.libbyOutfitThumbPath(o.ID)); err == nil {
+		v.HasThumb = true
+	}
 	return v
+}
+
+// libbyOutfitThumbPath is the outfit's chosen cover art, when the user has picked one.
+func (s *Server) libbyOutfitThumbPath(id string) string {
+	return filepath.Join(s.libbyDir, id+".thumb.enc")
+}
+
+// libbyOutfitCover reads whatever should represent this outfit on a card.
+//
+// An explicit cover wins. Failing that it falls back to the outfit's own art, walking
+// the emotion vocabulary in order and the tiers from calm upward — which lands on the
+// neutral baseline for a typical outfit and on *something* for an unusual one. Making
+// the user choose a cover before their outfit could be seen would be a step between
+// dropping in art and having a wardrobe, and there is nothing to decide at that point.
+func (s *Server) libbyOutfitCover(id string) ([]byte, bool) {
+	if blob, err := os.ReadFile(s.libbyOutfitThumbPath(id)); err == nil {
+		if data, err := crypto.OpenBytes(s.kek, blob, []byte("libby-outfit-thumb")); err == nil {
+			return data, true
+		}
+	}
+	for _, e := range libbyEmotions {
+		for level := 0; level <= maxLibbyLevel; level++ {
+			blob, err := os.ReadFile(s.libbyEmotionPath(id, e, level))
+			if err != nil {
+				continue
+			}
+			if data, err := crypto.OpenBytes(s.kek, blob, []byte("libby-emotion")); err == nil {
+				return data, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func (s *Server) handleGetLibbyOutfitThumb(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !charIDPattern.MatchString(id) {
+		writeErr(w, http.StatusBadRequest, "bad outfit id")
+		return
+	}
+	data, ok := s.libbyOutfitCover(id)
+	if !ok {
+		writeErr(w, http.StatusNotFound, "this outfit has no art yet")
+		return
+	}
+	w.Header().Set("Content-Type", safeInlineContentType(http.DetectContentType(data)))
+	w.Header().Set("Cache-Control", "private, max-age=60")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+// handleSetLibbyOutfitThumb stores a chosen cover. Kept separate from the emotion
+// slots on purpose: a cover is often a wider, posed shot that would be wrong to render
+// as a portrait beside the conversation.
+func (s *Server) handleSetLibbyOutfitThumb(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !charIDPattern.MatchString(id) {
+		writeErr(w, http.StatusBadRequest, "bad outfit id")
+		return
+	}
+	if _, err := s.readLibbyOutfit(id); err != nil {
+		writeErr(w, http.StatusNotFound, "no such outfit")
+		return
+	}
+	var req setLibbyEmotionReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ImageData == "" {
+		writeErr(w, http.StatusBadRequest, "imageData is required")
+		return
+	}
+	data, err := decodeDataImage(req.ImageData)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad image data")
+		return
+	}
+	if len(data) == 0 || len(data) > maxModelThumbBytes {
+		writeErr(w, http.StatusBadRequest, "image is empty or too large")
+		return
+	}
+	blob, err := crypto.SealBytes(s.kek, data, []byte("libby-outfit-thumb"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "encrypt failed")
+		return
+	}
+	if err := os.WriteFile(s.libbyOutfitThumbPath(id), blob, 0o600); err != nil {
+		writeErr(w, http.StatusInternalServerError, "write failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+}
+
+// handleDeleteLibbyOutfitThumb drops a chosen cover, returning the card to the
+// automatic one. Not an error when there was none: the outcome the caller asked for
+// (no explicit cover) already holds.
+func (s *Server) handleDeleteLibbyOutfitThumb(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !charIDPattern.MatchString(id) {
+		writeErr(w, http.StatusBadRequest, "bad outfit id")
+		return
+	}
+	_ = os.Remove(s.libbyOutfitThumbPath(id))
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 
 func (s *Server) handleListLibbyOutfits(w http.ResponseWriter, r *http.Request) {
@@ -203,6 +348,7 @@ func (s *Server) handleDeleteLibbyOutfit(w http.ResponseWriter, r *http.Request)
 			_ = os.Remove(s.libbyEmotionPath(id, e, level))
 		}
 	}
+	_ = os.Remove(s.libbyOutfitThumbPath(id))
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 

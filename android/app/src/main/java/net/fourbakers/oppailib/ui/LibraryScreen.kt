@@ -188,6 +188,9 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
     // Non-empty means the grid is in selection mode: tiles toggle instead of opening.
     var selected by remember { mutableStateOf(emptySet<Long>()) }
     var confirmBulkDelete by remember { mutableStateOf(false) }
+    // A library item some other screen asked us to open, held until the grid contains
+    // it. See openLinked.
+    var pendingOpenId by remember { mutableStateOf<Long?>(null) }
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -246,6 +249,30 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
         }
     }
 
+    /**
+     * Opens one library item by id, on behalf of a screen that has no viewer of its own
+     * — a link chip in chat, so far.
+     *
+     * The viewer pages through exactly what the grid shows, so a target sitting behind
+     * a kind filter, a search, or the favorites toggle would be unreachable. Dropping
+     * the filters is what makes it findable, and it also leaves the user somewhere
+     * coherent when they close the viewer rather than back inside a filter they never
+     * set from here. A kind filter is fetched server-side, so changing it needs a
+     * reload; the id is parked until the item actually turns up (see below).
+     */
+    fun openLinked(id: Long) {
+        showChat = false
+        query = ""
+        searching = false
+        favoritesOnly = false
+        selected = emptySet()
+        pendingOpenId = id
+        if (kind.isNotEmpty()) {
+            kind = ""
+            refresh()
+        }
+    }
+
     val terms = remember(query) { query.trim().lowercase().split(' ').filter { it.isNotEmpty() } }
     val shown = remember(items, terms, sort, favoritesOnly) {
         var filtered = if (terms.isEmpty()) items else items.filter { matches(it, terms) }
@@ -256,6 +283,19 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
     LaunchedEffect(Unit) {
         refresh()
         runCatching { repo.api.health() }.getOrNull()?.let { aiTagger = if (it.aiEnabled) it.aiTagger else "off" }
+    }
+
+    // A parked open request lands as soon as the grid holds its item. Keyed on `shown`
+    // as well as the id because openLinked may have just triggered a reload, and the
+    // index only exists once that has come back. An item that is genuinely gone —
+    // deleted since the reply named it — simply never resolves and is dropped on the
+    // next request rather than leaving the screen stuck.
+    LaunchedEffect(pendingOpenId, shown) {
+        val id = pendingOpenId ?: return@LaunchedEffect
+        if (loading) return@LaunchedEffect
+        val index = shown.indexOfFirst { it.id == id }
+        pendingOpenId = null
+        if (index >= 0) viewerAt = index
     }
 
     // Imports received through Android's share sheet happen outside this composable.
@@ -318,7 +358,7 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
     }
 
     if (showChat) {
-        ChatScreen(repo = repo, onBack = { showChat = false })
+        ChatScreen(repo = repo, onBack = { showChat = false }, onOpenMedia = { id -> openLinked(id) })
         return
     }
 

@@ -63,10 +63,11 @@ const DEFAULT_ART: Record<number, Record<string, string>> = {
   5: { neutral: "/Libby_New/Peak/Peak Neutral.png", happy: "/Libby_New/Peak/Peak Happy.png", mischievous: "/Libby_New/Peak/Peak Mis.png", surprised: "/Libby_New/Peak/Peak Suprise.png", thinking: "/Libby_New/Peak/Peak Thinking.png" },
 };
 
-/** The bundled wardrobe has every drawable emotion at every intensity tier. */
+/** The bundled wardrobe has every *drawn* pose at every intensity tier; a finer mood
+    borrows the pose it is closest to. See DRAWN_POSE. */
 export function defaultLibbyArt(emotion: string, intensity = 1): string {
-  const mood = normalizeEmotion(emotion);
-  return DEFAULT_ART[normalizeIntensity(intensity)][mood] ?? DEFAULT_ART[1].neutral;
+  const pose = DRAWN_POSE[normalizeEmotion(emotion)];
+  return DEFAULT_ART[normalizeIntensity(intensity)][pose] ?? DEFAULT_ART[1].neutral;
 }
 
 /**
@@ -88,11 +89,44 @@ export function ambientIntensity(value?: number): number {
   return Math.min(AMBIENT_MAX_INTENSITY, normalizeIntensity(value));
 }
 
+/**
+ * Everything Libby can feel.
+ *
+ * The first five are *drawn*: the bundled wardrobe has one image of each at every
+ * horniness tier. The rest are finer moods with no art of their own — each renders as
+ * the drawn pose it is closest to (DRAWN_POSE below) until an outfit supplies a
+ * picture for it, which is the whole point of them: the character can say she feels
+ * shy rather than merely surprised, and a wardrobe can draw that shyness.
+ *
+ * Kept in step with the server's libbyEmotions (handlers_libby.go), which decides
+ * which slots an outfit may store art in and which moods a reply may declare.
+ */
 export const LIBBY_EMOTIONS = [
   "neutral", "happy", "mischievous", "surprised", "thinking",
+  "shy", "smug", "sad", "annoyed", "sleepy", "loving", "excited",
 ] as const;
 
 export type LibbyEmotion = (typeof LIBBY_EMOTIONS)[number];
+
+/** The five the bundled art actually draws. An outfit slot grid puts these first. */
+export const DRAWN_EMOTIONS = LIBBY_EMOTIONS.slice(0, 5) as readonly LibbyEmotion[];
+
+/** Which bundled pose stands in for each emotion. Mirrors libbyDrawnPose server-side. */
+const DRAWN_POSE: Record<LibbyEmotion, string> = {
+  neutral: "neutral", happy: "happy", mischievous: "mischievous",
+  surprised: "surprised", thinking: "thinking",
+  shy: "surprised", smug: "mischievous", sad: "thinking", annoyed: "thinking",
+  sleepy: "neutral", loving: "happy", excited: "happy",
+};
+
+/** Labels for the settings and outfit UIs. The ids are lowercase words; these are
+    what a person reads next to a slot. */
+export const EMOTION_LABELS: Record<LibbyEmotion, string> = {
+  neutral: "Neutral", happy: "Happy", mischievous: "Mischievous",
+  surprised: "Surprised", thinking: "Thinking",
+  shy: "Shy", smug: "Smug", sad: "Sad", annoyed: "Annoyed",
+  sleepy: "Sleepy", loving: "Loving", excited: "Excited",
+};
 export type LibbyTone = "success" | "error";
 
 export interface LibbyCue {
@@ -109,7 +143,9 @@ export interface LibbyCue {
 export function normalizeEmotion(value?: string): LibbyEmotion {
   let emotion = (value ?? "").trim().toLowerCase();
   if (emotion === "default") emotion = "neutral";
-  if (emotion === "sad" || emotion === "worried") emotion = "thinking";
+  // Legacy names from before the vocabulary grew. "sad" is a real emotion now and is
+  // deliberately no longer folded into thinking.
+  if (emotion === "worried") emotion = "thinking";
   if (emotion === "horniness") emotion = "mischievous";
   return (LIBBY_EMOTIONS as readonly string[]).includes(emotion)
     ? emotion as LibbyEmotion
@@ -129,11 +165,18 @@ export function libbyAssetCandidates(emotion?: string, intensity?: number, outfi
     // Outfits can carry a separate image per horniness tier (server levels 0..4,
     // where level = intensity-1). Try the tier for this intensity and every calmer
     // one down to the baseline, so a tier the user never drew shows a cooler pose.
-    const outfitBase = `/api/libby/outfits/${encodeURIComponent(outfit)}/emotions/${encodeURIComponent(mood)}`;
-    for (let tier = level - 1; tier >= 1; tier--) paths.push(`${outfitBase}?level=${tier}`);
-    paths.push(outfitBase); // level 0, the suffix-free baseline
+    //
+    // The fine emotion is tried first and the drawn pose it borrows second, so an
+    // outfit that has "surprised" but not "shy" shows *its own* surprised art rather
+    // than dropping to the bundled wardrobe. Skipping that step would mean adding a
+    // finer emotion silently undressed every existing outfit whenever she felt it.
+    for (const slot of [...new Set([mood, DRAWN_POSE[mood]])]) {
+      const outfitBase = `/api/libby/outfits/${encodeURIComponent(outfit)}/emotions/${encodeURIComponent(slot)}`;
+      for (let tier = level - 1; tier >= 1; tier--) paths.push(`${outfitBase}?level=${tier}`);
+      paths.push(outfitBase); // level 0, the suffix-free baseline
+    }
   }
-  // The bundled wardrobe is complete — every emotion at every tier — so the last
+  // The bundled wardrobe is complete — every drawn pose at every tier — so the last
   // two entries are the end of the chain. There is deliberately no third fallback:
   // the pre-pixel mascot art it used to land on is gone, and a chain that ends on a
   // file which is not in the build is a broken image, not a safety net.

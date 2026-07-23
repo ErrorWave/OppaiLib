@@ -235,6 +235,19 @@ interface ApiService {
     @GET("api/imagegen/civitai/installs")
     suspend fun civitaiInstalls(): InstallJobsResponse
 
+    // ── Video poster frames ──────────────────────────────────────────────
+
+    @GET("api/media/{id}/frames")
+    suspend fun posterFrames(@Path("id") id: Long, @Query("count") count: Int = 20): PosterFramesResponse
+
+    @PUT("api/media/{id}/thumb")
+    suspend fun setPoster(@Path("id") id: Long, @Body body: SetPosterRequest)
+
+    /** Performs one action the user has approved. The only call in the app that acts
+        on something Libby said, and it exists solely to be made by an Allow button. */
+    @POST("api/libby/act")
+    suspend fun libbyAct(@Body body: LibbyActRequest)
+
     // ── Libby outfits ────────────────────────────────────────────────────
 
     @GET("api/libby/outfits")
@@ -253,6 +266,14 @@ interface ApiService {
         @Body body: LibbyEmotionRequest,
         @Query("level") level: Int = 0,
     )
+
+    /** An outfit's card art. Optional — without one the server falls back to the
+        outfit's own slot art, so this is an override rather than a required step. */
+    @PUT("api/libby/outfits/{id}/thumb")
+    suspend fun setLibbyOutfitThumb(@Path("id") id: String, @Body body: LibbyEmotionRequest)
+
+    @DELETE("api/libby/outfits/{id}/thumb")
+    suspend fun clearLibbyOutfitThumb(@Path("id") id: String)
 
     @POST("api/scrape")
     suspend fun scrape(@Body body: UrlRequest): ScrapeResult

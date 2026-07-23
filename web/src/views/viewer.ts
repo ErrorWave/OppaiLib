@@ -47,6 +47,17 @@ export class OppaiViewer extends LitElement {
   @state() private userGallery: Media[] = [];
   @state() private galleryUploading = false;
 
+  // Poster picker (videos only). `posterFrames` is empty until the strip is asked
+  // for — reading it costs a full decrypt of the video server-side, so it is never
+  // fetched just because the edit form was opened.
+  @state() private posterFrames: { at: number; image: string }[] = [];
+  @state() private posterLoading = false;
+  @state() private posterSaving = -1;
+  @state() private posterChosen = -1;
+  @state() private posterError = "";
+  /** Cache-buster for the thumbnail URL, bumped once a new poster is stored. */
+  @state() private posterVersion = 0;
+
   // Comic reader: null while the archive is being probed, then either a page
   // count to read or readable=false (a .cbr/.pdf we can't open in-app).
   @state() private comic: ComicInfo | null = null;
@@ -479,6 +490,78 @@ export class OppaiViewer extends LitElement {
         display: flex;
         gap: 10px;
         margin-top: 4px;
+      }
+      /* Poster picker: the current thumbnail, and a horizontal strip of candidate
+         frames laid out in time order so it reads as a timeline you scrub. */
+      .poster-picker {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .poster-head {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+      }
+      .poster-current {
+        width: 108px;
+        aspect-ratio: 16 / 9;
+        object-fit: cover;
+        border-radius: 8px;
+        background: var(--oppai-surface-2, rgba(255, 255, 255, 0.05));
+      }
+      .poster-copy {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        align-items: flex-start;
+        font-size: 13px;
+        color: var(--oppai-text-muted);
+      }
+      .poster-error {
+        font-size: 12px;
+        color: var(--oppai-danger, #ff6b6b);
+      }
+      .poster-strip {
+        display: flex;
+        gap: 8px;
+        overflow-x: auto;
+        padding-bottom: 6px;
+        scroll-snap-type: x proximity;
+      }
+      .poster-frame {
+        flex: 0 0 auto;
+        position: relative;
+        width: 132px;
+        padding: 0;
+        border: 2px solid transparent;
+        border-radius: 10px;
+        overflow: hidden;
+        background: none;
+        cursor: pointer;
+        scroll-snap-align: start;
+        transition: border-color 0.12s;
+      }
+      .poster-frame:hover:not(:disabled) { border-color: var(--oppai-border-strong); }
+      .poster-frame.on { border-color: var(--oppai-accent); }
+      .poster-frame:disabled { cursor: default; opacity: 0.6; }
+      .poster-frame img {
+        display: block;
+        width: 100%;
+        aspect-ratio: 16 / 9;
+        object-fit: cover;
+      }
+      /* The timestamp sits on the frame: it is what tells you where in the video you
+         are looking, and a strip of unlabelled stills is a guessing game. */
+      .poster-time {
+        position: absolute;
+        right: 4px;
+        bottom: 4px;
+        background: rgba(0, 0, 0, 0.66);
+        color: #fff;
+        font-size: 11px;
+        padding: 1px 5px;
+        border-radius: 5px;
       }
       /* "Up next" — the rest of the queue as a scrubbable strip under the player.
          The gap is deliberately larger than it looks like it needs to be: the
@@ -1022,6 +1105,7 @@ export class OppaiViewer extends LitElement {
             />
           </div>
         </div>
+        ${(this.full ?? this.media).kind === "video" ? this.renderPosterPicker() : nothing}
         <div class="edit-actions">
           <button class="btn-primary" @click=${this.saveEdit} ?disabled=${this.saving}>
             <span class="material-symbols-rounded" style="font-size:20px;">save</span>
@@ -1031,6 +1115,98 @@ export class OppaiViewer extends LitElement {
         </div>
       </div>
     `;
+  }
+
+  // --- Poster frame -------------------------------------------------------
+
+  /**
+   * Choosing which frame represents a video.
+   *
+   * The automatic poster is a frame 10% in, which is a decent guess and regularly the
+   * wrong one — a title card, a fade, the back of somebody's head. This is a strip of
+   * frames spread across the running time that you scroll through and click.
+   *
+   * It is behind a button rather than loading with the form because the server has to
+   * decrypt the whole video to read any frame from it. That is a real cost on a
+   * feature-length file, and most edits are a title or a tag.
+   */
+  private async loadPosterFrames() {
+    const m = this.full ?? this.media;
+    if (this.posterLoading) return;
+    this.posterLoading = true;
+    this.posterError = "";
+    try {
+      const res = await api.posterFrames(m.id);
+      // The viewer pages with the arrow keys, so the user may well have moved on
+      // during a decrypt. Dropping a late response beats showing one video's frames
+      // under another's title.
+      if ((this.full ?? this.media).id !== m.id) return;
+      this.posterFrames = res.frames;
+    } catch (e) {
+      this.posterError = (e as Error).message || "Couldn't read frames from this video.";
+    } finally {
+      this.posterLoading = false;
+    }
+  }
+
+  private async choosePoster(index: number) {
+    const m = this.full ?? this.media;
+    const frame = this.posterFrames[index];
+    if (!frame || this.posterSaving >= 0) return;
+    this.posterSaving = index;
+    this.posterError = "";
+    try {
+      await api.setPoster(m.id, frame.at);
+      this.posterChosen = index;
+      // The thumbnail URL is stable, so the grid and this form would both keep the
+      // picture the browser already has. The bump is what makes the change visible.
+      this.posterVersion = Date.now();
+      const line = libbyReact("save");
+      mascotSay("New thumbnail set.", "success", { emotion: line.emotion, intensity: line.intensity });
+    } catch (e) {
+      this.posterError = (e as Error).message || "Couldn't set that frame as the thumbnail.";
+    } finally {
+      this.posterSaving = -1;
+    }
+  }
+
+  private renderPosterPicker() {
+    const m = this.full ?? this.media;
+    return html`<div class="poster-picker">
+      <label>Thumbnail</label>
+      <div class="poster-head">
+        <img
+          class="poster-current"
+          src=${`${api.thumbURL(m.id)}${this.posterVersion ? `?v=${this.posterVersion}` : ""}`}
+          alt="Current thumbnail"
+          @error=${(e: Event) => ((e.target as HTMLImageElement).style.visibility = "hidden")}
+        />
+        <div class="poster-copy">
+          <span>Pick the frame this video shows in the library.</span>
+          ${this.posterFrames.length
+            ? nothing
+            : html`<button class="btn-outline" ?disabled=${this.posterLoading} @click=${() => this.loadPosterFrames()}>
+                ${this.posterLoading ? "Reading frames…" : "Choose a frame"}
+              </button>`}
+        </div>
+      </div>
+      ${this.posterError ? html`<div class="poster-error" role="alert">${this.posterError}</div>` : nothing}
+      ${this.posterFrames.length
+        ? html`<div class="poster-strip">
+            ${this.posterFrames.map((frame, i) => html`<button
+              class="poster-frame ${this.posterChosen === i ? "on" : ""}"
+              title=${`Use the frame at ${formatTimecode(frame.at)}`}
+              ?disabled=${this.posterSaving >= 0}
+              @click=${() => this.choosePoster(i)}
+            >
+              <img src=${frame.image} alt="" loading="lazy" />
+              <span class="poster-time">
+                ${this.posterSaving === i ? "Saving…" : formatTimecode(frame.at)}
+              </span>
+            </button>`)}
+          </div>`
+        : nothing}
+    </div>`;
   }
 
   private favIcon() {

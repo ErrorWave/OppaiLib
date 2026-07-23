@@ -112,6 +112,17 @@ export interface Settings {
   chatApiKey: string;
   chatApiKeySet: boolean;
   chatEnabled: boolean;
+
+  /** How Libby generates a picture when you approve one of her offers. Separate from
+      the studio's own controls: this is the fixed setup that makes what she produces
+      look like her, without the user leaving the conversation to configure a run. */
+  libbyGenModel: string;
+  libbyGenLora: string;
+  libbyGenLoraWeight: number;
+  libbyGenBoard: string;
+  /** Who she is in generator words, prefixed to whatever she describes. */
+  libbyGenPrompt: string;
+  libbyGenNegativePrompt: string;
 }
 
 export interface ChatMessage {
@@ -199,6 +210,9 @@ export interface ChatResponse {
   imageId?: string;
   /** Library items this reply points at. Absent from older servers. */
   links?: LibbyLink[];
+  /** Things Libby has asked to do. Proposals only — the server performs none of
+      them; a card with an Allow button is what turns one into an action. */
+  actions?: LibbyAction[];
   /** True when the character stated its own mood rather than one being inferred.
       A stated mood is applied as-is; an inferred one drifts by the session
       multiplier. Absent from older servers, which is treated as inferred. */
@@ -240,6 +254,9 @@ export interface StoredChatMessage extends ChatMessage {
   /** Library items this message pointed at, kept so an old reply still opens what
       it named rather than the chips vanishing on reload. */
   links?: LibbyLink[];
+  /** Things Libby offered to do in this message. Kept so the card survives a
+      re-render; whether one was approved is session state, not part of the log. */
+  actions?: LibbyAction[];
 }
 
 export interface ChatConversation {
@@ -641,6 +658,27 @@ export interface LibbyRecentItem {
 }
 
 /** A Libby outfit: a name plus which emotions/tiers have art uploaded. */
+/**
+ * Something Libby has offered to do.
+ *
+ * Nothing here has happened. The server parses these out of her reply and hands them
+ * over as proposals; only `api.libbyAct` performs one, and only a client draws that —
+ * which means the user pressing Allow is the sole path by which anything she says
+ * changes the library. `label` and `detail` are written server-side so a card renders
+ * without the client holding a table of action kinds.
+ */
+export interface LibbyAction {
+  id: string;
+  kind: "generate" | "import" | "tag" | "favorite" | string;
+  label: string;
+  detail: string;
+  prompt?: string;
+  url?: string;
+  mediaId?: number;
+  mediaTitle?: string;
+  tags?: string[];
+}
+
 export interface LibbyOutfit {
   id: string;
   name: string;
@@ -648,6 +686,11 @@ export interface LibbyOutfit {
   emotions: string[];
   /** For each emotion, which horniness tiers (0..4) have art. */
   emotionLevels?: Record<string, number[]>;
+  /** Whether the cover endpoint will return a picture — an explicit cover, or any
+      slot art to fall back on. Absent from older servers, which is treated as false. */
+  hasThumb?: boolean;
+  /** How many (emotion, tier) squares have art. What a card can honestly show. */
+  slots?: number;
 }
 
 const TOKEN_KEY = "oppai_token";
@@ -1068,6 +1111,29 @@ export const api = {
 
   libbyContext: () => request<LibbyContext>("/api/libby/context", {}, 15_000),
 
+  /** Candidate poster frames for a video, evenly spaced across its running time.
+      One request, because every frame read costs a decrypt of the whole blob. */
+  posterFrames: (id: number, count = 20) =>
+    request<{ duration: number; frames: { at: number; image: string }[] }>(
+      `/api/media/${id}/frames?count=${count}`,
+    ),
+  /** Re-renders the poster from a chosen offset, in seconds. */
+  setPoster: (id: number, at: number) =>
+    request<{ status: string; at: number }>(`/api/media/${id}/thumb`, {
+      method: "PUT", body: JSON.stringify({ at }),
+    }),
+
+  /** Performs one action the user has approved. The only call in the app that acts
+      on something Libby said, and it exists solely to be made by an Allow button. */
+  libbyAct: (action: LibbyAction) =>
+    request<Record<string, unknown>>("/api/libby/act", {
+      method: "POST",
+      body: JSON.stringify({
+        kind: action.kind, prompt: action.prompt, url: action.url,
+        mediaId: action.mediaId, tags: action.tags,
+      }),
+    }),
+
   libbyOutfits: () => request<{ outfits: LibbyOutfit[] }>("/api/libby/outfits"),
   saveLibbyOutfit: (body: { id?: string; name: string }) =>
     request<LibbyOutfit>("/api/libby/outfits", { method: "POST", body: JSON.stringify(body) }),
@@ -1085,4 +1151,15 @@ export const api = {
     ),
   libbyEmotionURL: (id: string, emotion: string, level = 0) =>
     `/api/libby/outfits/${encodeURIComponent(id)}/emotions/${encodeURIComponent(emotion)}${level ? `?level=${level}` : ""}`,
+  /** An outfit's cover art. `v` busts the browser cache after a cover is changed —
+      the URL is otherwise stable, and a card that keeps showing the old picture is
+      indistinguishable from a save that did not work. */
+  libbyOutfitThumbURL: (id: string, v?: number) =>
+    `/api/libby/outfits/${encodeURIComponent(id)}/thumb${v ? `?v=${v}` : ""}`,
+  setLibbyOutfitThumb: (id: string, imageData: string) =>
+    request<{ status: string }>(`/api/libby/outfits/${encodeURIComponent(id)}/thumb`, {
+      method: "PUT", body: JSON.stringify({ imageData }),
+    }),
+  clearLibbyOutfitThumb: (id: string) =>
+    request<{ status: string }>(`/api/libby/outfits/${encodeURIComponent(id)}/thumb`, { method: "DELETE" }),
 };

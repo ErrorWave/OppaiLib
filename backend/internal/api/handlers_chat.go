@@ -61,9 +61,16 @@ type chatRequest struct {
 	Options map[string]any `json:"options,omitempty"`
 }
 
-var supportedLibbyEmotions = map[string]bool{
-	"neutral": true, "happy": true, "surprised": true, "thinking": true, "mischievous": true,
-}
+// supportedLibbyEmotions is what a reply may declare and a client may ask for. It is
+// exactly the outfit vocabulary — every emotion an outfit can be drawn for is one the
+// character can express, and vice versa. See libbyEmotions.
+var supportedLibbyEmotions = func() map[string]bool {
+	m := make(map[string]bool, len(libbyEmotions))
+	for _, e := range libbyEmotions {
+		m[e] = true
+	}
+	return m
+}()
 
 var libbyModes = map[string]string{
 	"sweet":    "You are Libby, OppaiLib's warm, affectionate mascot. Be conversational, supportive, playful, and concise. You are an adult speaking with an adult.",
@@ -91,11 +98,26 @@ var modeStyles = map[string]string{
 // guessed from keywords after the fact. The tag is stripped before the reply is
 // stored, so it never reaches the log; a model that ignores the instruction simply
 // falls back to inferChatEmotion, which is why this is additive rather than relied on.
-const moodDirective = "End every reply with a mood tag on its own final line, in exactly this form: [mood: <feeling> <1-5>]. " +
-	"<feeling> is one of neutral, happy, surprised, thinking, mischievous, and 1-5 is how strongly you feel it. " +
+var moodDirective = "End every reply with a mood tag on its own final line, in exactly this form: [mood: <feeling> <1-5>]. " +
+	"<feeling> is one of " + strings.Join(libbyEmotions, ", ") + ", and 1-5 is how strongly you feel it. " +
 	"Choose the mood that genuinely fits what you just said. Let it move as far as the moment deserves — " +
 	"jump straight to a 5, or drop back to a 1, whenever the conversation earns it rather than easing there over several replies. " +
 	"Write nothing after the tag and never refer to it in your prose."
+
+// silenceDirective forbids narrating the plumbing.
+//
+// scrubDirectives deletes this class of thing after the fact and is the guarantee;
+// this is the cheaper half, asking the model not to write it in the first place. The
+// two are not redundant — a deletion leaves a seam in the sentence, so a reply that
+// never contained the stage direction reads better than one repaired.
+//
+// Stated as "these are not things you do" rather than "do not mention X": told to
+// avoid a word, models write around it and still announce the act.
+const silenceDirective = "Everything in square brackets above is machinery between you and the app, not part of the conversation. " +
+	"Never narrate it. Do not write stage directions about sending, attaching, or showing a picture — " +
+	"the tag attaches it and the user simply sees it. Do not write stage directions about your mood, " +
+	"emotion, intensity, or heat changing, progressing, or being set — the tag moves your face and the user simply sees it. " +
+	"Stage directions about what you are physically doing in the scene are welcome; stage directions about the app are not."
 
 // moodTag captures the trailing directive above. Anchored to the end so a character
 // writing "[mood: ...]" mid-scene as dialogue is left alone.
@@ -107,32 +129,60 @@ const moodDirective = "End every reply with a mood tag on its own final line, in
 // So: any label text, any digits, optional markdown emphasis around the whole thing.
 var moodTag = regexp.MustCompile(`(?is)\n*[ \t]*[*_~>\x60]*\[\s*mood\s*[:=-]?\s*([^\]\d]{0,60}?)\s*[,;:/|-]?\s*(\d{1,2})?\s*\]\s*[*_~\x60.!]*\s*$`)
 
-// moodSynonyms maps the vocabulary models reach for onto the five poses that have
-// artwork. Matching is per word against the whole label, so "happy & excited" and
+// moodSynonyms maps the vocabulary models reach for onto the emotions that can be
+// drawn. Matching is per word against the whole label, so "happy & excited" and
 // "playfully smug" both land somewhere sensible instead of being discarded.
+//
+// The targets are the full vocabulary, not just the five bundled poses: a label that
+// means "shy" now resolves to shy, and it is the *client* that decides shy has no art
+// of its own and borrows the surprised pose (libbyDrawnPose). Resolving it to
+// "surprised" here instead would throw the distinction away before an outfit that does
+// draw shyness ever got the chance to use it.
 var moodSynonyms = map[string]string{
 	"neutral": "neutral", "calm": "neutral", "relaxed": "neutral", "content": "neutral",
 	"composed": "neutral", "steady": "neutral", "quiet": "neutral", "casual": "neutral",
 
-	"happy": "happy", "joy": "happy", "joyful": "happy", "excited": "happy", "excitement": "happy",
+	"happy": "happy", "joy": "happy", "joyful": "happy",
 	"cheerful": "happy", "delighted": "happy", "glad": "happy", "pleased": "happy", "warm": "happy",
-	"affectionate": "happy", "loving": "happy", "love": "happy", "elated": "happy", "giddy": "happy",
-	"eager": "happy", "grateful": "happy", "proud": "happy",
+	"elated": "happy", "grateful": "happy",
 
 	"surprised": "surprised", "surprise": "surprised", "shocked": "surprised", "startled": "surprised",
-	"amazed": "surprised", "astonished": "surprised", "stunned": "surprised", "flustered": "surprised",
-	"embarrassed": "surprised", "shy": "surprised", "bashful": "surprised",
+	"amazed": "surprised", "astonished": "surprised", "stunned": "surprised",
 
 	"thinking": "thinking", "thoughtful": "thinking", "pensive": "thinking", "curious": "thinking",
 	"wondering": "thinking", "considering": "thinking", "confused": "thinking", "puzzled": "thinking",
-	"sad": "thinking", "worried": "thinking", "concerned": "thinking", "nervous": "thinking",
-	"anxious": "thinking", "melancholy": "thinking", "wistful": "thinking", "serious": "thinking",
+	"serious": "thinking", "focused": "thinking",
+	// Apprehension stays pensive rather than becoming irritation: "worried" and
+	// "annoyed" are both drawn with the thinking pose, so nothing is lost visually,
+	// and calling a nervous character annoyed would be wrong in her wording.
+	"worried": "thinking", "concerned": "thinking", "nervous": "thinking", "anxious": "thinking",
 
 	"mischievous": "mischievous", "mischief": "mischievous", "playful": "mischievous", "teasing": "mischievous",
 	"tease": "mischievous", "flirty": "mischievous", "flirtatious": "mischievous", "flirting": "mischievous",
 	"sultry": "mischievous", "seductive": "mischievous", "naughty": "mischievous", "devious": "mischievous",
-	"sly": "mischievous", "smug": "mischievous", "coy": "mischievous", "horny": "mischievous",
+	"sly": "mischievous", "coy": "mischievous", "horny": "mischievous",
 	"aroused": "mischievous", "needy": "mischievous", "hungry": "mischievous", "wicked": "mischievous",
+
+	"shy": "shy", "bashful": "shy", "embarrassed": "shy", "flustered": "shy",
+	"timid": "shy", "sheepish": "shy", "modest": "shy",
+
+	"smug": "smug", "proud": "smug", "pleased with herself": "smug", "satisfied": "smug",
+	"triumphant": "smug", "cocky": "smug", "vindicated": "smug",
+
+	"sad": "sad", "unhappy": "sad", "melancholy": "sad", "wistful": "sad", "hurt": "sad",
+	"disappointed": "sad", "lonely": "sad", "sorry": "sad",
+
+	"annoyed": "annoyed", "irritated": "annoyed", "grumpy": "annoyed", "exasperated": "annoyed",
+	"pouty": "annoyed", "sulky": "annoyed", "frustrated": "annoyed", "impatient": "annoyed",
+
+	"sleepy": "sleepy", "tired": "sleepy", "drowsy": "sleepy", "sluggish": "sleepy",
+	"yawning": "sleepy", "dozy": "sleepy", "lazy": "sleepy",
+
+	"loving": "loving", "affectionate": "loving", "love": "loving", "adoring": "loving",
+	"tender": "loving", "fond": "loving", "smitten": "loving", "doting": "loving",
+
+	"excited": "excited", "excitement": "excited", "eager": "excited", "giddy": "excited",
+	"thrilled": "excited", "enthusiastic": "excited", "hyped": "excited", "buzzing": "excited",
 }
 
 // canonicalMood resolves a free-form label to a pose. The first recognised word wins
@@ -565,10 +615,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	emotion := strings.ToLower(strings.TrimSpace(in.Emotion))
-	switch emotion { // accept old clients, but always return a pose with artwork
+	switch emotion { // accept old clients, but always land on a known emotion
 	case "", "default":
 		emotion = "neutral"
-	case "sad", "worried":
+	case "worried":
 		emotion = "thinking"
 	case "horniness":
 		emotion = "mischievous"
@@ -679,7 +729,19 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if linkable {
 		modePrompt += "\n\n" + linkDirective
 	}
+	// Acting on the library is Libby's alone, for the same reason the library snapshot
+	// is: she is this server's librarian, and an imported character is somebody else's
+	// character with no business offering to write to the user's collection.
+	caps := libbyCapabilities(cur)
+	actionable := character.ID == "libby"
+	if actionable {
+		if directive := actionDirective(caps); directive != "" {
+			modePrompt += "\n\n" + directive
+		}
+	}
 	modePrompt += "\n\n" + moodDirective
+	// Last, so it is the final word on every tag described above it.
+	modePrompt += "\n\n" + silenceDirective
 	if len(in.PhotoTags) > 0 {
 		modePrompt += "\n\n" + photoDirective(in.PhotoTags, character)
 	}
@@ -772,6 +834,30 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if !photoAsked {
 		reply, photoRequest, photoAsked = splitPhotoRequest(reply)
 	}
+	// Anything the anchored parsers missed is read where it actually landed, then
+	// deleted along with every other piece of protocol narration. A tag in the middle
+	// of a paragraph still means what it says; it just must not be legible.
+	//
+	// A loose tag is trusted less than a trailing one — it may be the model talking
+	// *about* the protocol rather than using it — so it sets the face but is reported
+	// as inferred. That keeps the meter drifting by the session multiplier instead of
+	// snapping on a tag that was never meant as a decision.
+	moodFromLooseTag := false
+	if !selfDeclared {
+		if declared, declaredLevel, moodFromLooseTag = findLooseMood(reply); moodFromLooseTag {
+			selfDeclared = true
+		}
+	}
+	if !photoAsked {
+		photoRequest, photoAsked = findLoosePhotoRequest(reply)
+	}
+	// Scrubbing runs last of the three so the readers above still see the tags, and
+	// before link resolution so a substituted title cannot be mistaken for one.
+	reply = scrubDirectives(reply)
+	if strings.TrimSpace(reply) == "" {
+		writeErr(w, http.StatusBadGateway, "local LLM returned no message")
+		return
+	}
 	if selfDeclared {
 		emotion = declared
 		if declaredLevel > 0 {
@@ -796,6 +882,17 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		reply, resolved = s.resolveLibraryLinks(r.Context(), reply)
 		if resolved != nil {
 			links = resolved
+		}
+	}
+	// Actions are proposals only — nothing here writes anything. See
+	// handlers_libby_actions.go. Never nil, for the same reason as links: a nil slice
+	// marshals to JSON `null` and the Android client cannot parse that into a list.
+	actions := []libbyAction{}
+	if actionable {
+		var proposed []libbyAction
+		reply, proposed = s.parseLibbyActions(r.Context(), reply, caps)
+		if proposed != nil {
+			actions = proposed
 		}
 	}
 	// A picture the character actually asked for outranks one we inferred she might
@@ -826,11 +923,16 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		"intensity": in.Intensity,
 		"imageId":   imageID,
 		"links":     links,
+		// Things she has asked to do. Proposals: the client draws them as cards with an
+		// Allow button, and only that press performs anything.
+		"actions": actions,
 		// Whether the character *chose* this mood or we guessed it. Clients apply the
 		// session's progression multiplier to drift, which is what keeps the meter from
 		// lurching on keyword matches — but a mood the character stated outright is a
 		// decision, not drift, and damping it is why big swings never landed.
-		"declared": selfDeclared,
+		//
+		// A tag found loose in the prose does not count as stated: see moodFromLooseTag.
+		"declared": selfDeclared && !moodFromLooseTag,
 	})
 }
 

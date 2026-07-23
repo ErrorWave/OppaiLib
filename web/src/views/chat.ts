@@ -16,7 +16,10 @@ import { libbyHeatDelta, libbyLibraryAnswer, libbyOpener, libbyReact, libbyReply
 import { menuDivider, nativeMenuWanted, openMenu, type MenuItem } from "../context-menu.js";
 import { SHARE_EVENT, takePendingShare } from "../chat-share.js";
 import { libbyMotion } from "../libby-motion.js";
-import { linkChipStyles, recentlySent, renderLinkChips, requestOpenMedia } from "../chat-links.js";
+import {
+  ActionApprovals, actionCardStyles, linkChipStyles, recentlySent, renderActionCards, renderLinkChips,
+  requestOpenMedia,
+} from "../chat-links.js";
 
 const MODES = [
   { id: "sweet", label: "sweet", emotion: "happy", topic: "Soft, warm, and unhurried." },
@@ -232,7 +235,10 @@ export class OppaiChat extends LitElement {
   private noticeTimer = 0;
   private resize?: ResizeObserver;
 
-  static styles = [iconStyles, motionStyles, linkChipStyles, libbyMotion, css`
+  /** Which of her offers have been decided this session; see ActionApprovals. */
+  private approvals = new ActionApprovals(() => this.requestUpdate());
+
+  static styles = [iconStyles, motionStyles, linkChipStyles, actionCardStyles, libbyMotion, css`
     :host { display:block; height:100%; color:var(--md-sys-color-on-surface); font:400 15px/1.375 "gg sans","Noto Sans",Roboto,system-ui,sans-serif;
       --rail:var(--md-sys-color-surface-container-lowest); --side:var(--md-sys-color-surface-container-low);
       --main:var(--md-sys-color-surface); --hover:var(--md-sys-color-surface-container-high);
@@ -1006,7 +1012,7 @@ export class OppaiChat extends LitElement {
         const progression = applyProgression(live.progress ?? live.intensity, requested - live.intensity);
         live.progress = progression.progress; live.intensity = setIntensity(progression.intensity);
       }
-      live.messages.push({ id:newID(), role:"assistant", content:result.message, at:Date.now(), imageId:result.imageId || undefined, links:result.links?.length ? result.links : undefined });
+      live.messages.push({ id:newID(), role:"assistant", content:result.message, at:Date.now(), imageId:result.imageId || undefined, links:result.links?.length ? result.links : undefined, actions:result.actions?.length ? result.actions : undefined });
       live.updatedAt = Date.now(); this.touchWorkspace(); void this.scrollToEnd();
       return true;
     } catch (error) {
@@ -1692,7 +1698,7 @@ export class OppaiChat extends LitElement {
     const grouped = previous?.role === message.role && message.at - previous.at < 5*60_000;
     const friend = message.role === "assistant", name = friend ? character.name : (this.workspace.profile.displayName || this.user?.username || "You");
     return html`<article class="row ${grouped ? "" : "first"} ${friend ? "from-friend" : "from-user"}" @contextmenu=${(event:MouseEvent) => this.messageMenu(message, event)}>${grouped ? html`<span class="stamp">${timeOf(message.at)}</span>` : (friend ? this.avatar(character,"avatar") : html`<span class="avatar initial">${name.slice(0,2).toUpperCase()}</span>`)}
-      <div class="message">${grouped ? nothing : html`<div class="who"><span class="author ${friend ? "friend" : ""}">${name}</span><span class="when">Today at ${timeOf(message.at)}</span></div>`}<div class="text">${formatted(message.content)}</div>${message.imageId ? html`<img class="sent-image" src=${api.chatImageURL(message.imageId)} alt="Image sent by ${name}"/>` : nothing}${renderLinkChips(message.links, (id) => requestOpenMedia(this, id))}</div>
+      <div class="message">${grouped ? nothing : html`<div class="who"><span class="author ${friend ? "friend" : ""}">${name}</span><span class="when">Today at ${timeOf(message.at)}</span></div>`}<div class="text">${formatted(message.content)}</div>${message.imageId ? html`<img class="sent-image" src=${api.chatImageURL(message.imageId)} alt="Image sent by ${name}"/>` : nothing}${renderLinkChips(message.links, (id) => requestOpenMedia(this, id))}${renderActionCards(message.actions, this.approvals.stateOf, this.approvals.decide)}</div>
       <span class="message-actions">${this.canRedo(message) ? html`<button title="Re-respond" aria-label="Ask for a different reply" ?disabled=${this.busy} @click=${() => void this.regenerate()}><span class="material-symbols-rounded" style="font-size:16px">refresh</span></button>` : nothing}<button title="Copy" @click=${() => void navigator.clipboard.writeText(message.content)}><span class="material-symbols-rounded" style="font-size:16px">content_copy</span></button><button title="Edit" @click=${() => this.editMessage(message)}><span class="material-symbols-rounded" style="font-size:16px">edit</span></button><button title="Delete" @click=${() => this.deleteMessage(message.id)}><span class="material-symbols-rounded" style="font-size:16px">delete</span></button></span>
     </article>`;
   }

@@ -49,13 +49,27 @@ import net.fourbakers.oppailib.data.LibbyOutfit
 import net.fourbakers.oppailib.data.LibbyOutfitSaveRequest
 import net.fourbakers.oppailib.data.Repository
 
-/** The emotion slots an outfit can dress, with where each one shows up. */
+/**
+ * The emotion slots an outfit can dress, with where each one shows up.
+ *
+ * The first five are drawn by the bundled wardrobe and are what every outfit should
+ * cover. The rest are finer moods with no bundled art of their own: each borrows a
+ * drawn pose until this outfit gives it a picture, so they are optional and come last.
+ * Kept in step with libbyEmotions (LibbyPortrait.kt) and the server.
+ */
 private val emotionSlots = listOf(
     "neutral" to "Popups",
     "happy" to "Sweet",
     "mischievous" to "Playful",
     "surprised" to "Bold",
     "thinking" to "Roleplay",
+    "shy" to "Borrows Surprised",
+    "smug" to "Borrows Mischievous",
+    "sad" to "Borrows Thinking",
+    "annoyed" to "Borrows Thinking",
+    "sleepy" to "Borrows Neutral",
+    "loving" to "Borrows Happy",
+    "excited" to "Borrows Happy",
 )
 
 /** Horniness art tiers 0..4, calmest first — the level Libby wears rises with the
@@ -77,6 +91,9 @@ fun LibbyOutfitsSection(repo: Repository) {
     var worn by remember { mutableStateOf(repo.prefs.libbyOutfit) }
     var editing by remember { mutableStateOf<LibbyOutfit?>(null) }
     var creating by remember { mutableStateOf(false) }
+    // Cover URLs are otherwise stable, so a card would keep showing whatever Coil
+    // already has. Bumping this is what makes a newly set cover visible.
+    var coverVersion by remember { mutableStateOf(0) }
     val scope = rememberCoroutineScope()
 
     suspend fun reload() {
@@ -103,33 +120,50 @@ fun LibbyOutfitsSection(repo: Repository) {
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Row(
+        // Cards rather than rows: the only question a wardrobe is asked is "which one
+        // is this?", and outfits are pictures. A horizontal strip keeps it inside the
+        // settings list without a nested vertical scroll fighting the page.
+        LazyRow(
             Modifier.fillMaxWidth().padding(top = 2.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            FilterChip(selected = worn.isEmpty(), onClick = { wear("") }, label = { Text("Default") })
-        }
-        outfits.forEach { o ->
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Text(o.name, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-                Text(
-                    "${o.emotions.size}/5",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+            item {
+                // The bundled wardrobe is a card like any other, in its own art rather
+                // than as a "none" chip: it is a look you choose, not the absence of one.
+                OutfitCard(
+                    name = "Default Libby",
+                    meta = "Bundled artwork",
+                    worn = worn.isEmpty(),
+                    model = "file:///android_asset/${mascotAsset("happy", 1)}",
+                    repo = repo,
+                    onClick = { wear("") },
+                    onEdit = null,
                 )
-                FilterChip(
-                    selected = worn == o.id,
+            }
+            items(outfits, key = { it.id }) { o ->
+                OutfitCard(
+                    name = o.name,
+                    meta = "${o.emotions.size}/${emotionSlots.size} emotions",
+                    worn = worn == o.id,
+                    model = if (o.hasThumb) repo.libbyOutfitThumbUrl(o.id, coverVersion) else null,
+                    repo = repo,
                     onClick = { wear(if (worn == o.id) "" else o.id) },
-                    label = { Text(if (worn == o.id) "Wearing" else "Wear") },
+                    onEdit = { editing = o },
                 )
-                TextButton(onClick = { editing = o }) { Text("Edit") }
+            }
+            item {
+                OutfitCard(
+                    name = "New outfit",
+                    meta = "Add your own art",
+                    worn = false,
+                    model = null,
+                    repo = repo,
+                    onClick = { creating = true },
+                    onEdit = null,
+                    placeholder = "＋",
+                )
             }
         }
-        TextButton(onClick = { creating = true }) { Text("＋ New outfit") }
     }
 
     if (creating) {
@@ -164,7 +198,7 @@ fun LibbyOutfitsSection(repo: Repository) {
         OutfitEditorDialog(
             repo = repo,
             outfit = outfit,
-            onChanged = { scope.launch { reload() } },
+            onChanged = { coverVersion++; scope.launch { reload() } },
             onDeleted = {
                 if (worn == outfit.id) wear("")
                 editing = null
@@ -172,6 +206,81 @@ fun LibbyOutfitsSection(repo: Repository) {
             },
             onDismiss = { editing = null },
         )
+    }
+}
+
+/**
+ * One outfit as a card: its art, its name, and whether it is on.
+ *
+ * Tapping the card wears it, which is what a wardrobe is for; Edit is a small corner
+ * affordance so the common action stays a single tap on a picture. `onEdit` is null
+ * for the two cards that are not editable outfits (the bundled default, and the
+ * new-outfit tile).
+ */
+@Composable
+private fun OutfitCard(
+    name: String,
+    meta: String,
+    worn: Boolean,
+    model: String?,
+    repo: Repository,
+    onClick: () -> Unit,
+    onEdit: (() -> Unit)?,
+    placeholder: String = "No art yet",
+) {
+    Column(
+        Modifier
+            .width(124.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .clickable(onClick = onClick),
+    ) {
+        Box(Modifier.fillMaxWidth().aspectRatio(3f / 4f), contentAlignment = Alignment.Center) {
+            if (model != null) AsyncImage(
+                model = model,
+                imageLoader = repo.imageLoader,
+                contentDescription = name,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxWidth().aspectRatio(3f / 4f),
+            ) else Text(
+                placeholder,
+                style = if (placeholder == "＋") MaterialTheme.typography.headlineMedium
+                else MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (worn) Text(
+                "WEARING",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onPrimary,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(6.dp)
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(MaterialTheme.colorScheme.primary)
+                    .padding(horizontal = 7.dp, vertical = 2.dp),
+            )
+            if (onEdit != null) Text(
+                "Edit",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(6.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.surface)
+                    .clickable(onClick = onEdit)
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
+            )
+        }
+        Column(Modifier.padding(horizontal = 9.dp, vertical = 8.dp)) {
+            Text(name, style = MaterialTheme.typography.labelLarge, maxLines = 1)
+            Text(
+                meta,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+            )
+        }
     }
 }
 
@@ -222,6 +331,23 @@ private fun OutfitEditorDialog(
         }
     }
 
+    // The card's art. Separate from the emotion slots because they want different
+    // pictures: a slot is a portrait cropped to stand beside a conversation, and a
+    // good cover is often a wider, posed shot that would look wrong there.
+    var hasCover by remember { mutableStateOf(outfit.hasThumb) }
+    val coverPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            runCatching {
+                repo.api.setLibbyOutfitThumb(outfit.id, LibbyEmotionRequest(uriToDataUrl(context, uri)))
+            }.onSuccess {
+                hasCover = true
+                version++
+                onChanged()
+            }.onFailure { repo.report(it.message ?: "Couldn't set the cover") }
+        }
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(outfit.name) },
@@ -236,6 +362,43 @@ private fun OutfitEditorDialog(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Box(
+                        Modifier.width(64.dp).aspectRatio(3f / 4f)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (hasCover) AsyncImage(
+                            model = repo.libbyOutfitThumbUrl(outfit.id, version),
+                            imageLoader = repo.imageLoader,
+                            contentDescription = "Outfit cover",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.width(64.dp).aspectRatio(3f / 4f),
+                        ) else Text(
+                            "No cover",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "Card art for the wardrobe. Without one, the card uses this outfit's own artwork.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Row {
+                            TextButton(onClick = { coverPicker.launch("image/*") }) { Text("Choose cover") }
+                            if (hasCover) TextButton(onClick = {
+                                scope.launch {
+                                    runCatching { repo.api.clearLibbyOutfitThumb(outfit.id) }
+                                        .onSuccess { hasCover = false; version++; onChanged() }
+                                        .onFailure { repo.report(it.message ?: "Couldn't clear the cover") }
+                                }
+                            }) { Text("Use outfit art") }
+                        }
+                    }
+                }
                 Row(
                     Modifier.horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
