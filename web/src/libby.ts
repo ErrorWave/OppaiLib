@@ -69,6 +69,25 @@ export function defaultLibbyArt(emotion: string, intensity = 1): string {
   return DEFAULT_ART[normalizeIntensity(intensity)][mood] ?? DEFAULT_ART[1].neutral;
 }
 
+/**
+ * The hottest tier Libby is drawn at outside a conversation.
+ *
+ * The heat meter is a *chat* thing — it belongs to a conversation you chose to
+ * have. The sign-in page and the pop-up she speaks through are ambient: they
+ * appear over whatever you were doing, unasked, on a screen that may well have
+ * someone else in the room. So the heated (4) and peak (5) artwork never shows
+ * there, whatever the meter says in Chat.
+ *
+ * It also happens to be what keeps her portrait framed. The clothed tiers are all
+ * tall, narrow, standing poses; the top two include wide seated ones drawn to a
+ * different crop, and a portrait window sized for one is wrong for the other.
+ */
+export const AMBIENT_MAX_INTENSITY = 3;
+
+export function ambientIntensity(value?: number): number {
+  return Math.min(AMBIENT_MAX_INTENSITY, normalizeIntensity(value));
+}
+
 export const LIBBY_EMOTIONS = [
   "neutral", "happy", "mischievous", "surprised", "thinking",
 ] as const;
@@ -114,7 +133,11 @@ export function libbyAssetCandidates(emotion?: string, intensity?: number, outfi
     for (let tier = level - 1; tier >= 1; tier--) paths.push(`${outfitBase}?level=${tier}`);
     paths.push(outfitBase); // level 0, the suffix-free baseline
   }
-  paths.push(defaultLibbyArt(mood, level), defaultLibbyArt("neutral", level), "/mascot.png");
+  // The bundled wardrobe is complete — every emotion at every tier — so the last
+  // two entries are the end of the chain. There is deliberately no third fallback:
+  // the pre-pixel mascot art it used to land on is gone, and a chain that ends on a
+  // file which is not in the build is a broken image, not a safety net.
+  paths.push(defaultLibbyArt(mood, level), defaultLibbyArt("neutral", level));
   return [...new Set(paths)];
 }
 

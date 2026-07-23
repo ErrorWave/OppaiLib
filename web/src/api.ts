@@ -139,11 +139,66 @@ export interface ChatModels {
 /** Any text-generation-webui ChatCompletionRequest field not owned by OppaiLib. */
 export type ChatOptions = Record<string, unknown>;
 
+/** A library item a reply points at, resolved server-side from what she named. */
+export interface LibbyLink {
+  id: number;
+  title: string;
+  kind: string;
+  hasThumb?: boolean;
+}
+
+/**
+ * What the two of them are looking at while browsing together.
+ *
+ * Ids only: the server reads the titles and tags out of the database itself, so
+ * what a character is told about the collection is what the collection says.
+ */
+export interface ChatViewing {
+  /** The item that is actually open, if any. */
+  focusId?: number;
+  /** The rest of what is on screen, in the order it is laid out. */
+  ids?: number[];
+  /** Where in the library they are — a section name or a search term. */
+  section?: string;
+}
+
+/**
+ * One turn asked of a character.
+ *
+ * An object rather than a positional argument list: this grew a photo, then the
+ * photo's tags, then what has already been sent, then what is on screen, and every
+ * caller passing `"", [], ""` to reach the parameter it cared about was a bug
+ * waiting to happen.
+ */
+export interface ChatTurn {
+  mode: string;
+  messages: ChatMessage[];
+  emotion?: string;
+  intensity?: number;
+  options?: ChatOptions;
+  characterId?: string;
+  /** Content tags of a photo the user attached, from the local scanner. */
+  photoTags?: string[];
+  /** That photo's id, so it is never handed straight back as the reply's picture. */
+  photoImageId?: string;
+  /** The name of the outfit Libby is wearing on this device, "" for her default
+      artwork. Which outfit is worn is a per-device choice the server never sees,
+      so it has to be told, or she describes clothes the user is not looking at. */
+  outfit?: string;
+  /** Pictures this character has already sent in this conversation, oldest first.
+      The server holds them back so the same one does not come round again. */
+  recentImageIds?: string[];
+  /** What the two of them are looking at, in a browse-together session. */
+  viewing?: ChatViewing;
+}
+
 export interface ChatResponse {
   message: string;
   emotion?: string;
   intensity?: number;
   imageId?: string;
+  /** Library items this reply points at. Absent from older servers. */
+  links?: LibbyLink[];
   /** True when the character stated its own mood rather than one being inferred.
       A stated mood is applied as-is; an inferred one drifts by the session
       multiplier. Absent from older servers, which is treated as inferred. */
@@ -160,7 +215,13 @@ export interface ChatCharacter {
   id: string;
   name: string;
   description?: string;
+  /** What they look like, written as picture tags. Doubles as the likeness a
+      shared photo is matched against, which is how a character recognises a
+      picture of herself — see the server's selfPortraitMatch. */
+  appearance?: string;
   personality?: string;
+  /** What they are into. Colours how they flirt; never recited as a list. */
+  kinks?: string;
   scenario?: string;
   firstMessage?: string;
   exampleDialogue?: string;
@@ -176,6 +237,9 @@ export interface StoredChatMessage extends ChatMessage {
   id: string;
   at: number;
   imageId?: string;
+  /** Library items this message pointed at, kept so an old reply still opens what
+      it named rather than the chips vanishing on reload. */
+  links?: LibbyLink[];
 }
 
 export interface ChatConversation {
@@ -861,11 +925,10 @@ export const api = {
     }),
 
   chatStatus: () => request<ChatStatus>("/api/chat/status", {}, 12_000),
-  chat: (mode: string, messages: ChatMessage[], emotion = "neutral", intensity = 1,
-    options: ChatOptions = {}, characterId = "libby", photoTags: string[] = [], photoImageId = "") =>
+  chat: (body: ChatTurn) =>
     request<ChatResponse>("/api/chat", {
       method: "POST",
-      body: JSON.stringify({ mode, messages, emotion, intensity, options, characterId, photoTags, photoImageId }),
+      body: JSON.stringify({ emotion: "neutral", intensity: 1, characterId: "libby", ...body }),
     }, 125_000),
   // Bounded, like every other chat call. This one is what the Chat screen blocks its
   // spinner on, so an unbounded fetch here is the difference between "an error you can

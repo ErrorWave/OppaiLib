@@ -1,24 +1,22 @@
 import { LitElement, html, css } from "lit";
 import { customElement, state, query } from "lit/decorators.js";
+import { keyed } from "lit/directives/keyed.js";
 import { api, mascotSay, setToken, type User } from "../api.js";
 import { motionStyles } from "../theme.js";
 import { logoSVG } from "../logo.js";
-import { applyImageFallback, inferErrorEmotion, libbyAssetCandidates,
-  loadHideLibby, normalizeEmotion, normalizeIntensity, type LibbyEmotion } from "../libby.js";
+import { ambientIntensity, applyImageFallback, inferErrorEmotion, libbyAssetCandidates,
+  loadHideLibby, normalizeEmotion, type LibbyEmotion } from "../libby.js";
 import { libbyReact } from "../libby-voice.js";
+import { libbyMotion } from "../libby-motion.js";
 import { getIntensity } from "../libby-meter.js";
 
 /**
- * The hottest tier Libby is drawn at on the login screen.
- *
- * The heat meter is a *chat* thing — it belongs to a conversation you chose to have.
- * The sign-in page is the one screen shown before anyone has consented to anything,
- * and it is the one most likely to be seen over a shoulder or on a shared display,
- * so the heated (4) and peak (5) artwork never appears here. She is calm, warm, or
- * flirty at most, whatever the meter says elsewhere.
+ * The sign-in page is the one screen shown before anyone has consented to
+ * anything, and the one most likely to be seen over a shoulder — so it takes the
+ * shared ambient cap rather than the meter. See AMBIENT_MAX_INTENSITY, which the
+ * pop-up she speaks through applies for the same reason.
  */
-const LOGIN_MAX_INTENSITY = 3;
-const loginIntensity = (value?: number) => Math.min(LOGIN_MAX_INTENSITY, normalizeIntensity(value));
+const loginIntensity = ambientIntensity;
 
 const loginGreeting = libbyReact("greeting", { intensity: loginIntensity(getIntensity()) });
 const loginEmotions: LibbyEmotion[] = ["happy", "neutral", "thinking", "mischievous", "surprised"];
@@ -35,6 +33,7 @@ export class OppaiLogin extends LitElement {
 
   static styles = [
     motionStyles,
+    libbyMotion,
     css`
       :host {
         display: grid;
@@ -60,18 +59,38 @@ export class OppaiLogin extends LitElement {
         pointer-events: none;
         user-select: none;
       }
+      /* Three layers, and they have to stay three. The outer .libby owns the
+         positioning — including the translateX that centres her on narrow screens —
+         so no animation may touch its transform. The figure breathes, the image
+         inside it reacts to a line; splitting them is also what keeps a reaction
+         from cancelling the idle loop, since one element runs one animation. */
+      .libby-figure {
+        display: block;
+        height: 100%;
+        width: 100%;
+        transform-origin: 50% 100%;
+      }
       .libby img {
         display: block;
         height: 100%;
         width: 100%;
         object-fit: contain;
         object-position: right bottom;
+        /* Motion pivots at her feet: she is anchored to the bottom edge, so scaling
+           or rocking about the centre would lift her off it. */
+        transform-origin: 50% 100%;
       }
       .libby.error img { filter: saturate(.82); }
+      /* Clear of the sign-in card, not behind it. At 72%/12% the bubble's left half
+         sat under the card — the card is position:relative and therefore paints
+         over her — so most of what she said was invisible. Above and to the right
+         of the card is empty space at every width this breakpoint covers, and the
+         z-index makes the overlap harmless if a longer line does reach the card. */
       .libby-speech {
         position: absolute;
-        right: 72%;
-        top: 12%;
+        right: 30%;
+        top: -2%;
+        z-index: 2;
         width: min(260px, 42vw);
         padding: 11px 14px;
         border-radius: 18px 18px 4px 18px;
@@ -220,11 +239,16 @@ export class OppaiLogin extends LitElement {
     const libby = loadHideLibby()
       ? null
       : html`<div class="libby ${this.libbyMessage ? "talking" : ""} ${this.libbyTone}">
-          ${this.libbyMessage ? html`<div class="libby-speech" role=${this.libbyTone === "error" ? "alert" : "status"}>
+          ${this.libbyMessage ? html`<div class="libby-speech libby-enter" role=${this.libbyTone === "error" ? "alert" : "status"}>
             <span class="libby-name">LIBBY</span>${this.libbyMessage}
           </div>` : null}
-          <img src=${assets[0]} data-fallback-index="0" alt=${`Libby feeling ${this.libbyEmotion}`}
-            @error=${(e: Event) => applyImageFallback(e.target as HTMLImageElement, assets)} />
+          <!-- Keyed on the pose and on the line she is saying, so she rocks into a
+               new one and a mood change replaces the element — which is what
+               restarts the artwork fallback chain for the new pose. -->
+          <span class="libby-figure libby-breathe">${keyed(`${this.libbyEmotion}-${this.libbyIntensity}-${this.libbyMessage}`, html`<img
+            class=${this.libbyTone === "error" ? "libby-startle" : "libby-speak"}
+            src=${assets[0]} data-fallback-index="0" alt=${`Libby feeling ${this.libbyEmotion}`}
+            @error=${(e: Event) => applyImageFallback(e.target as HTMLImageElement, assets)} />`)}</span>
         </div>`;
     return html`
       ${libby}

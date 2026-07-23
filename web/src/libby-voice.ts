@@ -234,6 +234,61 @@ export function libbyOnUpload(facts: LibbyItemFacts, opts: { intensity?: number 
   return { message, intensity, emotion: moods ? moods[intensity - 1] : moodFor(intensity) };
 }
 
+// ── browsing together ────────────────────────────────────────────────────────
+//
+// The no-model voice for the browse-together screen. Same shape as the upload
+// reaction and for the same reason — she is looking at one thing and saying one
+// thing about it — but phrased as a person leaning over your shoulder rather than
+// a librarian filing something away.
+
+const BROWSE_LINES: Tiered = [
+  ["That {thing}? Decent pick.", "Mm. I know that {thing}.", "Oh, that {thing}. Go on then."],
+  ["Ooh, that {thing}. Good eye.", "That {thing}'s a keeper.", "Yeah — that {thing}. I like that one."],
+  ["Mmh. That {thing} is a *good* one.", "Oh, we're looking at that {thing}, are we.", "That {thing}. Yes. Stay there."],
+  ["Ohh, *that* {thing}. Bold of you, with me sitting right here.", "That {thing}? You're showing me that on purpose.", "Mm — that {thing}. Slower."],
+  ["Nngh. That {thing}. Don't scroll past it.", "That {thing}. Open it. Now.", "You picked that {thing} to see what I'd do, didn't you."],
+];
+
+const BROWSE_TAG_CLAUSES: Tiered = [
+  [" The {tag} bit, mostly.", " {tag}, isn't it."],
+  [" {tag} — that's the part.", " I'm looking at the {tag}."],
+  [" Mmh, {tag}.", " {tag}. That's what got me."],
+  [" {tag}? Of course that's what you stopped on.", " {tag}. You have a type and it's this."],
+  [" {tag}. You're doing this to me deliberately.", " {tag} — I can't look away from that."],
+];
+
+/** The one she'd rather be looking at, when nothing is open. */
+const BROWSE_IDLE: Tiered = [
+  ["Show me something. I'll tell you what I think.", "Well? Pick one."],
+  ["Go on, open something. I want to see your taste.", "Anything catching your eye, or am I?"],
+  ["Pick one and I'll tell you if you have taste.", "Come on. Show me the good shelf."],
+  ["You're browsing awfully slowly for someone with a library like this.", "Open one. I dare you."],
+  ["Stop scrolling and open something before I pick for you.", "You're stalling. Open one."],
+];
+
+/**
+ * Her line about the thing you have just opened while browsing together.
+ *
+ * Falls back to a nudge when there is nothing open, which is the honest thing for
+ * a screen whose whole point is reacting to what is in front of you — a comment on
+ * nothing would read as her talking to herself.
+ */
+export function libbyOnBrowse(facts: LibbyItemFacts, opts: { intensity?: number } = {}): LibbyLine {
+  const intensity = normalizeIntensity(opts.intensity ?? getIntensity());
+  const thing = KIND_NOUNS[(facts.kind ?? "").toLowerCase()];
+  if (!thing) {
+    return { message: pick(`browse:idle:${intensity}`, tier(BROWSE_IDLE, intensity)), intensity, emotion: moodFor(intensity) };
+  }
+  let message = pick(`browse:${intensity}`, tier(BROWSE_LINES, intensity)).replaceAll("{thing}", thing);
+  const notable = (facts.tags ?? [])
+    .map((tag) => tag.trim().toLowerCase())
+    .find((tag) => tag.length >= 3 && tag.length <= 28 && !DULL_TAGS.has(tag));
+  if (notable) {
+    message += pick(`browse:tag:${intensity}`, tier(BROWSE_TAG_CLAUSES, intensity)).replaceAll("{tag}", notable);
+  }
+  return { message, intensity, emotion: intensity >= 3 ? "mischievous" : "happy" };
+}
+
 // ── answering about the library and the server ───────────────────────────────
 //
 // With a model loaded, the same facts are folded into its system prompt and it

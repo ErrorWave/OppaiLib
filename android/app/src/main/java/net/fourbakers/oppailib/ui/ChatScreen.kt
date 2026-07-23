@@ -347,7 +347,21 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit) {
             val history = pending.messages.map { ChatMessage(it.role, it.content) }
             val startedAt = System.currentTimeMillis()
             typingPhase = TypingPhase.TYPING
-            val generation = runCatching { repo.api.chat(ChatRequest(pending.mode, history, pending.emotion, pending.intensity, pending.options, char.id)) }
+            // Pictures already seen in this conversation ride along so the server can
+            // hold them back: without this the best-scoring image in a gallery is the
+            // only one that ever gets sent.
+            val seenPictures = pending.messages.mapNotNull { it.imageId.ifBlank { null } }.distinct().takeLast(12)
+            val generation = runCatching {
+                repo.api.chat(
+                    ChatRequest(
+                        pending.mode, history, pending.emotion, pending.intensity, pending.options, char.id,
+                        seenPictures,
+                        // What she has on: the worn outfit is a per-device pref, so the
+                        // server cannot know it unless this says so.
+                        outfit = if (char.id == "libby") repo.prefs.libbyOutfit else "",
+                    ),
+                )
+            }
             generation
                 .onSuccess { reply ->
                     // Whatever the model already spent counts as time she was "writing", so
@@ -536,7 +550,10 @@ private fun ChatSettings(
             "character" -> Column(Modifier.fillMaxWidth().padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 TextField(char.name, { onCharacter(char.copy(name = it)) }, label = { Text("Name") }, modifier = Modifier.fillMaxWidth())
                 TextField(char.description, { onCharacter(char.copy(description = it)) }, label = { Text("Description") }, maxLines = 2, modifier = Modifier.fillMaxWidth())
+                TextField(char.appearance, { onCharacter(char.copy(appearance = it)) }, label = { Text("Appearance") }, maxLines = 2, modifier = Modifier.fillMaxWidth())
+                Text("Written as picture tags (\"long orange hair, red eyes\"). Also how they recognise a photo of themselves when you share one.", color = ChatColors.muted, fontSize = 11.sp)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { TextField(char.personality, { onCharacter(char.copy(personality = it)) }, label = { Text("Personality") }, maxLines = 3, modifier = Modifier.weight(1f)); TextField(char.scenario, { onCharacter(char.copy(scenario = it)) }, label = { Text("Scenario") }, maxLines = 3, modifier = Modifier.weight(1f)) }
+                TextField(char.kinks, { onCharacter(char.copy(kinks = it)) }, label = { Text("Kinks and turn-ons") }, maxLines = 3, modifier = Modifier.fillMaxWidth())
                 TextField(char.systemPrompt, { onCharacter(char.copy(systemPrompt = it)) }, label = { Text("System prompt") }, maxLines = 3, modifier = Modifier.fillMaxWidth())
                 TextField(char.firstMessage, { onCharacter(char.copy(firstMessage = it)) }, label = { Text("First message") }, maxLines = 2, modifier = Modifier.fillMaxWidth())
                 TextField(char.exampleDialogue, { onCharacter(char.copy(exampleDialogue = it)) }, label = { Text("Example dialogue") }, maxLines = 4, modifier = Modifier.fillMaxWidth())

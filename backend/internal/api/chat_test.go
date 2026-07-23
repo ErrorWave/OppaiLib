@@ -285,16 +285,16 @@ func TestSplitPhotoRequestAndResolution(t *testing.T) {
 		if text != "Here, look." {
 			t.Fatalf("directive left in prose: %q", text)
 		}
-		if got := requestedChatImage(ws, "libby", request, ""); got != "b" {
+		if got := requestedChatImage(ws, "libby", request, "", nil); got != "b" {
 			t.Fatalf("resolved to %q, want b", got)
 		}
 	}
 
 	// Another character's gallery is not hers to send from.
-	if got := requestedChatImage(ws, "libby", "nothing like this at all", ""); got != "" {
+	if got := requestedChatImage(ws, "libby", "nothing like this at all", "", nil); got != "" {
 		t.Fatalf("unmatched request resolved to %q", got)
 	}
-	if got := requestedChatImage(ws, "libby", "beach bikini", "a"); got != "" {
+	if got := requestedChatImage(ws, "libby", "beach bikini", "a", nil); got != "" {
 		t.Fatalf("excluded image was returned: %q", got)
 	}
 }
@@ -308,7 +308,7 @@ func TestPhotoCatalogueListsOnlyCallablePictures(t *testing.T) {
 		{ID: "b", CharacterID: "libby", Tags: nil},
 		{ID: "c", CharacterID: "other", Tags: []string{"kitchen"}},
 	}}
-	catalogue := photoCatalogue(ws, "libby")
+	catalogue := photoCatalogue(ws, "libby", nil)
 	if !strings.Contains(catalogue, "beach, bikini") {
 		t.Fatalf("tagged picture missing from catalogue: %q", catalogue)
 	}
@@ -318,7 +318,7 @@ func TestPhotoCatalogueListsOnlyCallablePictures(t *testing.T) {
 	if !strings.Contains(catalogue, "[send:") {
 		t.Fatalf("catalogue never says how to send: %q", catalogue)
 	}
-	if photoCatalogue(chatWorkspace{}, "libby") != "" {
+	if photoCatalogue(chatWorkspace{}, "libby", nil) != "" {
 		t.Fatal("a character with no pictures should contribute no catalogue")
 	}
 }

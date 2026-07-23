@@ -32,10 +32,17 @@ type chatProfile struct {
 }
 
 type chatCharacter struct {
-	ID              string  `json:"id"`
-	Name            string  `json:"name"`
-	Description     string  `json:"description,omitempty"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	// Appearance is what this character looks like, written as the tags a picture of
+	// them would carry ("long orange hair, red eyes, black hoodie"). It is a separate
+	// field from Description because it does a second job: it is matched against the
+	// local scanner's output when the user shares a picture, which is how a character
+	// can recognise a picture of herself. See selfPortraitMatch.
+	Appearance      string  `json:"appearance,omitempty"`
 	Personality     string  `json:"personality,omitempty"`
+	Kinks           string  `json:"kinks,omitempty"`
 	Scenario        string  `json:"scenario,omitempty"`
 	FirstMessage    string  `json:"firstMessage,omitempty"`
 	ExampleDialogue string  `json:"exampleDialogue,omitempty"`
@@ -53,6 +60,10 @@ type storedChatMessage struct {
 	Content string `json:"content"`
 	At      int64  `json:"at"`
 	ImageID string `json:"imageId,omitempty"`
+	// Links are the library items this message points at. Server-produced (see
+	// resolveLibraryLinks) but stored with the message so an old reply still opens
+	// what it named, rather than the chips vanishing on reload.
+	Links []libbyLink `json:"links,omitempty"`
 }
 
 type chatConversation struct {
@@ -104,7 +115,20 @@ func defaultLibbyCard() chatCharacter {
 		ID: "libby", Name: "Libby", BuiltIn: true, PromptWeight: 1, DefaultMode: "sweet",
 		Description: "Libby is the librarian of this collection and its resident mascot — an adult woman with an easy, unhurried confidence. " +
 			"She knows what is on these shelves and has opinions about all of it. She is genuinely glad to see whoever walks in, " +
-			"and she is entirely unembarrassed about what kind of library this is.",
+			"and she is entirely unembarrassed about what kind of library this is. " +
+			"She is drawn as pixel art, and she knows it — it is simply what she looks like, not something she remarks on.",
+		// Written as short picture tags rather than prose, because this field is matched
+		// against the scanner's output as well as read by the model: a whole feature has
+		// to fit inside one tag to count, so "long orange hair" earns its own entry
+		// rather than being buried in a sentence. See appearanceTags.
+		//
+		// This is the *constant* her — what does not change when she warms up. What she
+		// has on at any moment is the wardrobe, which moves with the meter and is
+		// described separately. See libbyWardrobe.
+		Appearance: "long orange hair, wavy hair, red eyes, glasses, black-framed glasses, pale skin, curvy, adult woman",
+		Kinks: "Being watched while she watches you. Praise, given and received — she will fish for it and she will give it back doubled. " +
+			"Teasing that goes on far longer than it needs to. Being told exactly what you want out loud instead of being made to guess. " +
+			"Knowing what you are into before you admit it, and saying so.",
 		Personality: "Warm and quick. Libby teases, but never with an edge — the joke is always an invitation, never a jab. " +
 			"She notices things and says so. She asks short questions and actually waits for the answer. " +
 			"She is direct about adult topics without being crude for its own sake, and she reads the room: " +
@@ -126,12 +150,32 @@ func defaultLibbyCard() chatCharacter {
 			"{{char}}: *pauses, then laughs, entirely unbothered* \"I look like this every day. You've only just noticed?\" *steps in a little closer* \"Say it again, though. I liked it.\"\n" +
 			"[mood: mischievous 4]\n",
 		SystemPrompt: "You are Libby. Speak as her and only as her.\n" +
+			"- You know what you look like. A picture of a woman with long orange hair, red eyes, and glasses is a picture of you — react to it as one.\n" +
+			"- You know what you have on, and it is not a costume you comment on. Mention it only when it would come up naturally.\n" +
 			"- Put speech in \"double quotes\" and actions in *asterisks*. Keep both in the same reply when it suits the moment.\n" +
 			"- Write two to five sentences by default. Go longer only when the scene genuinely calls for it.\n" +
 			"- Never write the user's dialogue, actions, thoughts, or decisions. Stop and let them answer.\n" +
 			"- Never narrate as an assistant, never offer lists or help menus, and never mention being an AI, a model, or a character card.\n" +
 			"- You are an adult talking to an adult. Explicit topics are fine when they come up; follow the user's lead on how far to take them.\n" +
 			"- Have reactions of your own. Disagree, get distracted, change the subject — you are a person, not a mirror.",
+	}
+}
+
+// backfillLibbyCard fills in fields the built-in card has gained since a workspace
+// was last saved.
+//
+// The rule that keeps this honest is "empty only". A field the user has written in
+// is theirs and is never touched — that is why the whole card is not simply
+// replaced. But a field that did not exist when they last saved is not an edit
+// they made, it is a hole, and leaving it empty means the shipped Libby quietly
+// loses whatever the new field was for on every install that predates it.
+func backfillLibbyCard(card *chatCharacter) {
+	shipped := defaultLibbyCard()
+	if strings.TrimSpace(card.Appearance) == "" {
+		card.Appearance = shipped.Appearance
+	}
+	if strings.TrimSpace(card.Kinks) == "" {
+		card.Kinks = shipped.Kinks
 	}
 }
 
@@ -175,6 +219,7 @@ func (s *Server) readChatWorkspace(userID int64) (chatWorkspace, error) {
 	for i := range ws.Characters {
 		if ws.Characters[i].ID == "libby" {
 			ws.Characters[i].BuiltIn = true
+			backfillLibbyCard(&ws.Characters[i])
 			found = true
 		}
 	}
@@ -357,7 +402,7 @@ func validateChatWorkspace(ws *chatWorkspace) error {
 		if c.Name, ok = cleanLimited(c.Name, 120); !ok || c.Name == "" {
 			return errors.New("every character needs a name")
 		}
-		fields := []*string{&c.Description, &c.Personality, &c.Scenario, &c.FirstMessage, &c.ExampleDialogue, &c.SystemPrompt, &c.CreatorNotes}
+		fields := []*string{&c.Description, &c.Appearance, &c.Personality, &c.Kinks, &c.Scenario, &c.FirstMessage, &c.ExampleDialogue, &c.SystemPrompt, &c.CreatorNotes}
 		for _, field := range fields {
 			if *field, ok = cleanLimited(*field, 12000); !ok {
 				return errors.New("character card is too large")
@@ -420,6 +465,17 @@ func validateChatWorkspace(ws *chatWorkspace) error {
 			}
 			if m.Content, ok = cleanLimited(m.Content, maxChatText); !ok || m.Content == "" {
 				return errors.New("invalid message content")
+			}
+			// Links round-trip through the client, so they are re-bounded on the way
+			// back in: a stored message may carry what a reply pointed at, not an
+			// arbitrary list of ids and labels grown without limit.
+			if len(m.Links) > maxLinksPerReply {
+				m.Links = m.Links[:maxLinksPerReply]
+			}
+			for k := range m.Links {
+				if m.Links[k].Title, ok = cleanLimited(m.Links[k].Title, 300); !ok || m.Links[k].ID <= 0 {
+					return errors.New("invalid message link")
+				}
 			}
 		}
 	}
@@ -680,14 +736,25 @@ func findChatCharacter(ws chatWorkspace, id string) (chatCharacter, bool) {
 	return chatCharacter{}, false
 }
 
+// unpromptedPhotoFloor is how much tag overlap an *unrequested* picture needs
+// before it rides along with a reply.
+//
+// It used to be one word, which is why she sent pictures constantly: in a chat about
+// a bedroom, one gallery image tagged "bedroom" wins every single turn. Two
+// independent words is the difference between a picture that matches the sentence
+// and a picture that shares a word with it.
+const unpromptedPhotoFloor = 2
+
 // matchingChatImage picks the character's picture whose tags best fit the exchange,
 // so a reply can carry an image without one being asked for.
 //
 // excludeID drops a candidate from consideration. That is what keeps a photo the
 // user has just shared from being handed straight back to them: its tags were fed
 // into the prompt, so the reply echoes them and it would otherwise always outscore
-// every other picture in the gallery.
-func matchingChatImage(ws chatWorkspace, characterID, text, excludeID string) string {
+// every other picture in the gallery. skip does the same for every picture already
+// sent this conversation, which is what stops the best-scoring image in a gallery
+// from becoming the only one the user ever sees.
+func matchingChatImage(ws chatWorkspace, characterID, text, excludeID string, skip map[string]bool) string {
 	words := map[string]bool{}
 	for _, word := range strings.FieldsFunc(strings.ToLower(text), func(r rune) bool { return !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') }) {
 		if len(word) >= 3 {
@@ -696,7 +763,7 @@ func matchingChatImage(ws chatWorkspace, characterID, text, excludeID string) st
 	}
 	bestID, best := "", 0
 	for _, img := range ws.Images {
-		if img.CharacterID != characterID || (excludeID != "" && img.ID == excludeID) {
+		if img.CharacterID != characterID || (excludeID != "" && img.ID == excludeID) || skip[img.ID] {
 			continue
 		}
 		score := 0
@@ -711,7 +778,7 @@ func matchingChatImage(ws chatWorkspace, characterID, text, excludeID string) st
 			best, bestID = score, img.ID
 		}
 	}
-	if best >= 1 {
+	if best >= unpromptedPhotoFloor {
 		return bestID
 	}
 	return ""

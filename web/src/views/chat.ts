@@ -15,6 +15,8 @@ import { applyProgression, getIntensity, setIntensity } from "../libby-meter.js"
 import { libbyHeatDelta, libbyLibraryAnswer, libbyOpener, libbyReact, libbyReply, type LibbyLine } from "../libby-voice.js";
 import { menuDivider, nativeMenuWanted, openMenu, type MenuItem } from "../context-menu.js";
 import { SHARE_EVENT, takePendingShare } from "../chat-share.js";
+import { libbyMotion } from "../libby-motion.js";
+import { linkChipStyles, recentlySent, renderLinkChips, requestOpenMedia } from "../chat-links.js";
 
 const MODES = [
   { id: "sweet", label: "sweet", emotion: "happy", topic: "Soft, warm, and unhurried." },
@@ -230,7 +232,7 @@ export class OppaiChat extends LitElement {
   private noticeTimer = 0;
   private resize?: ResizeObserver;
 
-  static styles = [iconStyles, motionStyles, css`
+  static styles = [iconStyles, motionStyles, linkChipStyles, libbyMotion, css`
     :host { display:block; height:100%; color:var(--md-sys-color-on-surface); font:400 15px/1.375 "gg sans","Noto Sans",Roboto,system-ui,sans-serif;
       --rail:var(--md-sys-color-surface-container-lowest); --side:var(--md-sys-color-surface-container-low);
       --main:var(--md-sys-color-surface); --hover:var(--md-sys-color-surface-container-high);
@@ -363,9 +365,12 @@ export class OppaiChat extends LitElement {
     .stage-head { display:grid; gap:1px; padding:0 4px; }
     .stage-name { font-weight:700; font-size:14px; color:var(--accent); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .stage-status { color:var(--muted); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    /* The sprite wrapper carries the idle breathing and the sprite itself carries the
+       per-line reaction, so a rock into a new message does not cancel the idle loop. */
     .stage-art { flex:1; min-height:0; display:grid; place-items:end center; }
+    .stage-art .sprite-hold { display:grid; place-items:end center; width:100%; height:100%; transform-origin:50% 100%; }
     .stage-art .sprite { max-width:100%; max-height:100%; object-fit:contain; object-position:bottom;
-      filter:drop-shadow(0 10px 26px rgba(0,0,0,.42)); animation:chat-sprite-in .34s var(--oppai-ease-standard,cubic-bezier(.2,0,0,1)) both; }
+      transform-origin:50% 100%; filter:drop-shadow(0 10px 26px rgba(0,0,0,.42)); }
     .stage-art.empty-art { place-items:center; gap:8px; align-content:center; padding:16px; text-align:center;
       color:var(--muted); font-size:12px; }
     .stage-art.empty-art .material-symbols-rounded { font-size:44px; opacity:.5; }
@@ -476,7 +481,10 @@ export class OppaiChat extends LitElement {
       animation:chat-rise .18s var(--oppai-ease-standard,cubic-bezier(.2,0,0,1)) both; }
     .call-stage { position:relative; flex:1 1 0; min-height:0; display:grid; place-items:end center; overflow:hidden;
       background:radial-gradient(120% 90% at 50% 12%,color-mix(in srgb,var(--accent) 26%,transparent),transparent 68%),var(--rail); }
+    /* Same two-layer arrangement as the stage: the hold breathes, the sprite reacts. */
+    .call-hold { grid-area:1/1; display:grid; place-items:end center; width:100%; height:100%; transform-origin:50% 100%; }
     .call-sprite { max-height:100%; max-width:100%; object-fit:contain; object-position:bottom center;
+      transform-origin:50% 100%;
       animation:call-pose .32s var(--oppai-ease-standard,cubic-bezier(.2,0,0,1)) both; }
     @keyframes call-pose { from { opacity:0; transform:translateY(10px) scale(.99); } }
     .call-top { position:absolute; top:0; left:0; right:0; display:flex; align-items:center; gap:12px; padding:14px 18px;
@@ -600,6 +608,17 @@ export class OppaiChat extends LitElement {
 
   private get activeCharacter(): ChatCharacter | undefined {
     return this.workspace.characters.find((character) => character.id === this.characterID) ?? this.workspace.characters[0];
+  }
+
+  /**
+   * How many times the character has spoken in this conversation.
+   *
+   * Used purely as an animation key: it changes at exactly the moment a new reply
+   * lands, which is what makes the portrait rock into each line rather than only
+   * when her mood happens to change.
+   */
+  private get spoken(): number {
+    return this.activeConversation?.messages.reduce((n, m) => n + (m.role === "assistant" ? 1 : 0), 0) ?? 0;
   }
 
   private get activeConversation(): ChatConversation | undefined {
@@ -962,7 +981,12 @@ export class OppaiChat extends LitElement {
       if (continuation) history.push({ role:"user", content:"(Continue the scene on your own. Speak or act again without waiting for a reply, and do not answer for me.)" });
       const startedAt = Date.now();
       this.typingPhase = "typing";
-      const result = await api.chat(conversation.mode, history, conversation.emotion, conversation.intensity, conversation.options, character.id, photoTags, photoImageID);
+      const result = await api.chat({
+        mode: conversation.mode, messages: history, emotion: conversation.emotion,
+        intensity: conversation.intensity, options: conversation.options, characterId: character.id,
+        photoTags, photoImageId: photoImageID, recentImageIds: recentlySent(conversation.messages),
+        outfit: character.id === "libby" ? loadLibbyOutfit() : "",
+      });
       // Whatever the model already spent counts as time she was "writing", so this
       // only ever tops the wait up to something human — never adds a full delay on
       // top of a slow generation.
@@ -982,7 +1006,7 @@ export class OppaiChat extends LitElement {
         const progression = applyProgression(live.progress ?? live.intensity, requested - live.intensity);
         live.progress = progression.progress; live.intensity = setIntensity(progression.intensity);
       }
-      live.messages.push({ id:newID(), role:"assistant", content:result.message, at:Date.now(), imageId:result.imageId || undefined });
+      live.messages.push({ id:newID(), role:"assistant", content:result.message, at:Date.now(), imageId:result.imageId || undefined, links:result.links?.length ? result.links : undefined });
       live.updatedAt = Date.now(); this.touchWorkspace(); void this.scrollToEnd();
       return true;
     } catch (error) {
@@ -1288,9 +1312,10 @@ export class OppaiChat extends LitElement {
         <!-- Keyed on the pose: a mood change replaces the element instead of
              mutating src, so the fade-in replays and the fallback chain restarts
              from the top for the new emotion's art. -->
-        ${keyed(`${emotion}-${intensity}`, html`<img class="call-sprite" src=${assets[0]} data-fallback-index="0"
+        <span class="call-hold libby-breathe">${keyed(`${emotion}-${intensity}-${this.spoken}`, html`<img
+          class="call-sprite" src=${assets[0]} data-fallback-index="0"
           alt=${`${character.name} looking ${emotion}`}
-          @error=${(event:Event) => applyImageFallback(event.target as HTMLImageElement, assets)} />`)}
+          @error=${(event:Event) => applyImageFallback(event.target as HTMLImageElement, assets)} />`)}</span>
         <div class="call-top">
           <span class="call-who"><strong>${character.name}</strong><span>${this.busy ? "Speaking…" : clock}</span></span>
           <span class="call-mood" title=${`Feeling ${emotion}, intensity ${intensity} of 5`}>
@@ -1322,8 +1347,14 @@ export class OppaiChat extends LitElement {
     return html`<aside class="stage" aria-label="${character.name} portrait">
       <div class="stage-head"><span class="stage-name">${character.name}</span><span class="stage-status">${status}</span></div>
       <div class="stage-art">
-        <img class="sprite" src=${assets[0]} data-fallback-index="0" alt=${`${character.name} looking ${emotion}`}
-          @error=${(event:Event) => applyImageFallback(event.target as HTMLImageElement, assets)} />
+        <!-- Keyed on the pose *and* on how many things have been said, so the sprite
+             rocks into every new line rather than only when her mood changes — and
+             so a mood change still replaces the element, restarting the artwork
+             fallback chain for the new pose. -->
+        <span class="sprite-hold libby-breathe">${keyed(`${emotion}-${intensity}-${this.spoken}`, html`<img
+          class="sprite ${this.busy ? "" : "libby-speak"}" src=${assets[0]} data-fallback-index="0"
+          alt=${`${character.name} looking ${emotion}`}
+          @error=${(event:Event) => applyImageFallback(event.target as HTMLImageElement, assets)} />`)}</span>
       </div>
       ${character.id === "libby" ? html`<div class="stage-meter" title=${`Intensity ${intensity} of 5`} aria-label=${`Intensity ${intensity} of 5`}>
         ${[1,2,3,4,5].map((step) => html`<span class="pip ${step <= intensity ? "on" : ""}"></span>`)}
@@ -1442,7 +1473,9 @@ export class OppaiChat extends LitElement {
       </section>
       <div class="grid">${this.field("Name", "name", character.name)}<label>Default mode<select .value=${character.defaultMode} @change=${(event:Event) => this.updateCharacter("defaultMode", (event.target as HTMLSelectElement).value)}>${MODES.map((mode) => html`<option value=${mode.id}>${mode.label}</option>`)}</select></label></div>
       ${this.field("Description", "description", character.description ?? "", 2)}
+      ${this.field("Appearance — written as picture tags. Also how they recognise a photo of themselves.", "appearance", character.appearance ?? "", 2)}
       <div class="grid">${this.field("Personality", "personality", character.personality ?? "", 3)}${this.field("Scenario", "scenario", character.scenario ?? "", 3)}</div>
+      ${this.field("Kinks and turn-ons — colours how they flirt; never recited as a list.", "kinks", character.kinks ?? "", 3)}
       ${this.field("First message", "firstMessage", character.firstMessage ?? "", 2)}
       ${this.field("System prompt / card instructions", "systemPrompt", character.systemPrompt ?? "", 3)}
       ${this.field("Example dialogue", "exampleDialogue", character.exampleDialogue ?? "", 3)}
@@ -1659,7 +1692,7 @@ export class OppaiChat extends LitElement {
     const grouped = previous?.role === message.role && message.at - previous.at < 5*60_000;
     const friend = message.role === "assistant", name = friend ? character.name : (this.workspace.profile.displayName || this.user?.username || "You");
     return html`<article class="row ${grouped ? "" : "first"} ${friend ? "from-friend" : "from-user"}" @contextmenu=${(event:MouseEvent) => this.messageMenu(message, event)}>${grouped ? html`<span class="stamp">${timeOf(message.at)}</span>` : (friend ? this.avatar(character,"avatar") : html`<span class="avatar initial">${name.slice(0,2).toUpperCase()}</span>`)}
-      <div class="message">${grouped ? nothing : html`<div class="who"><span class="author ${friend ? "friend" : ""}">${name}</span><span class="when">Today at ${timeOf(message.at)}</span></div>`}<div class="text">${formatted(message.content)}</div>${message.imageId ? html`<img class="sent-image" src=${api.chatImageURL(message.imageId)} alt="Image sent by ${name}"/>` : nothing}</div>
+      <div class="message">${grouped ? nothing : html`<div class="who"><span class="author ${friend ? "friend" : ""}">${name}</span><span class="when">Today at ${timeOf(message.at)}</span></div>`}<div class="text">${formatted(message.content)}</div>${message.imageId ? html`<img class="sent-image" src=${api.chatImageURL(message.imageId)} alt="Image sent by ${name}"/>` : nothing}${renderLinkChips(message.links, (id) => requestOpenMedia(this, id))}</div>
       <span class="message-actions">${this.canRedo(message) ? html`<button title="Re-respond" aria-label="Ask for a different reply" ?disabled=${this.busy} @click=${() => void this.regenerate()}><span class="material-symbols-rounded" style="font-size:16px">refresh</span></button>` : nothing}<button title="Copy" @click=${() => void navigator.clipboard.writeText(message.content)}><span class="material-symbols-rounded" style="font-size:16px">content_copy</span></button><button title="Edit" @click=${() => this.editMessage(message)}><span class="material-symbols-rounded" style="font-size:16px">edit</span></button><button title="Delete" @click=${() => this.deleteMessage(message.id)}><span class="material-symbols-rounded" style="font-size:16px">delete</span></button></span>
     </article>`;
   }

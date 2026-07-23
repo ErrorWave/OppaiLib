@@ -28,6 +28,101 @@ the Android app has the same switch in its settings) removes the artwork from th
 login screen, error popups, and Chat. The features stay — errors show as plain
 messages and chat keeps working.
 
+### How she looks and moves
+
+Libby is pixel art, in five intensity tiers × five moods. The pre-pixel artwork
+has been removed — the bundled wardrobe covers every mood at every tier, so there
+is nothing left to fall back to and nothing that could fall back to a file the
+build no longer ships.
+
+She speaks through a retro dialogue box: her sprite in a framed portrait window,
+a nameplate, a stepped pixel frame, and the line typed out with a blinking marker
+when it finishes. The box is sized by the whole line from the first frame, so it
+does not crawl across the screen while typing.
+
+Her motion is one shared vocabulary (`web/src/libby-motion.ts`) rather than four
+per-screen imitations of it: she steps in, breathes while idle, rocks into each
+line, and jolts on an error. Everything is stepped rather than eased — smooth
+interpolation on a pixel sprite reads as a smooth image being nudged around — and
+all of it is off under `prefers-reduced-motion`.
+
+Outside a conversation she is capped at the flirty tier. The sign-in page and the
+pop-up appear unasked, over whatever you were doing, on a screen that may have
+someone else in the room; the heated and peak artwork stays in Chat, where you
+chose to be.
+
+### The character card
+
+**Chat → settings → Character card** edits whoever you are talking to, Libby
+included — her built-in card is editable and a workspace saved before a field
+existed picks up the shipped default for that field only, never overwriting
+something you have written.
+
+Two fields do more than describe:
+
+- **Appearance** is written as short picture tags (`long orange hair, red eyes,
+  glasses`) rather than prose, because it is also matched against the local
+  scanner's output when you share a photo — and a whole feature has to fit inside
+  one tag to count. Two of the character's own features in one picture and she is
+  told it is a picture of *her*, so she reacts to seeing herself rather than
+  describing a stranger. Libby ships knowing she has long orange hair, red eyes,
+  and black-framed glasses.
+
+  This field is the **constant** likeness only. What she has on is separate,
+  because it moves — see below.
+- **Kinks and turn-ons** colours what she notices and steers towards. It is
+  explicitly not a list to recite, and it is dropped the moment you take the
+  conversation elsewhere.
+
+### What she is wearing
+
+Libby's sprite undresses as the session meter climbs, so she is told what she has
+on at the tier that is currently drawn — Calm and Warm in a black tank top and
+orange sweatpants, Flirty down to the bra, Heated and Peak past that. The
+description tracks the bundled artwork exactly: a character talking about her
+hoodie beside a picture of her in something else breaks the illusion harder than
+saying nothing.
+
+Wearing one of your own **outfits** replaces that. The sprite is yours, so the
+tier table no longer describes it and she is simply told the outfit's name. Which
+outfit is worn is a per-device choice the server never stores, so the client sends
+its id with each turn and the server resolves the name; an outfit deleted since it
+was selected falls back to the bundled wardrobe rather than naming something that
+no longer exists.
+
+### Pictures she sends
+
+A character can attach one of her own pictures to a reply, chosen by tag from the
+gallery under **Chat → settings → Images**. Pictures already seen in a
+conversation are held back: she is told which ones she has already sent and asked
+not to repeat them, and the server will not attach one regardless of what she
+asks for. Asking her for a picture lifts that — "send me that one again" works,
+though never with the file already on screen. An *unrequested* picture needs two
+matching tag words before it rides along, so a chat that happens to mention a
+bedroom no longer produces the same bedroom photo every turn.
+
+### Linking things from the library
+
+Libby can point at anything in your collection: she writes the title, and the
+client draws it as a chip that opens the item. Resolution happens on the server
+against your own database — by title over the recent rows, and by tag across the
+whole library, since tags are the only searchable text a title's encryption
+leaves in the clear. A title she has invented resolves to nothing and is left as
+her own words rather than a broken link.
+
+### Browsing together
+
+The **Together** tab is the library with her sitting next to you. Click a tile and
+she reacts to it; the shelf you are looking at travels with the request as ids
+only, and the server reads the titles and tags out of the database, so what she is
+told about your collection is what your collection actually says. "Pick something
+for me" asks her to choose, and she answers with a link you can open.
+
+Nothing said in a browse-together session is filed in your chat history — it is a
+running commentary, not correspondence — but the mood meter is shared with Chat,
+so where you leave her is where you find her. Web only for now; the Android app
+gets the card fields and the no-repeat picture fix, not this screen.
+
 ### Outfits
 
 **Settings → Libby → Outfits** is the outfit creator: an outfit is a named set of

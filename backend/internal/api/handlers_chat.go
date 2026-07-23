@@ -38,6 +38,23 @@ type chatRequest struct {
 	PhotoTags []string `json:"photoTags,omitempty"`
 	// PhotoImageID is that picture's id, so the reply-attachment picker can skip it.
 	PhotoImageID string `json:"photoImageId,omitempty"`
+	// Outfit is the id of the user-made wardrobe Libby is wearing on this device,
+	// empty for her bundled artwork. Which outfit is worn is a per-device choice the
+	// server does not store, so the client has to say — otherwise she describes the
+	// default sprite while the user is looking at something else entirely.
+	//
+	// The id rather than the name, because the id is what both clients already hold
+	// in local preferences; the server owns the outfit record and looks the name up
+	// itself. See wardrobeDirective.
+	Outfit string `json:"outfit,omitempty"`
+	// RecentImageIDs are the pictures this character has already sent in this
+	// conversation, oldest first. The server has no memory of a conversation between
+	// requests — the client owns the log — so what has already been shown has to
+	// arrive with the request. See recentlySentPhotos.
+	RecentImageIDs []string `json:"recentImageIds,omitempty"`
+	// Viewing is what the two of them are looking at, when this message comes from a
+	// browse-together session rather than the chat screen.
+	Viewing *chatViewing `json:"viewing,omitempty"`
 	// Options is a future-proof pass-through for text-generation-webui's full
 	// ChatCompletionRequest surface (samplers, presets, character fields,
 	// templates, grammar, thinking controls, stop strings, and new additions).
@@ -165,6 +182,40 @@ func splitMood(reply string) (text, emotion string, intensity int, ok bool) {
 // hundred images would otherwise crowd out the card itself.
 const maxCataloguePhotos = 24
 
+// maxRecentPhotoMemory bounds how far back "you have already sent this" reaches.
+// Far enough that a picture does not come round again within one sitting, short
+// enough that a long conversation does not eventually rule out the whole gallery.
+const maxRecentPhotoMemory = 12
+
+// recentlySentPhotos is the set of pictures already shown in this conversation, and
+// the single most recent one on its own.
+//
+// The two are used differently. Everything in the set is off the table for a picture
+// she reaches for unprompted, because sending the same one again unasked is the
+// behaviour this exists to stop. When the user has actually asked for a picture only
+// the last one is withheld — "send me that one again" should work, but answering it
+// with the identical file that is already on screen a message ago should not.
+func recentlySentPhotos(ids []string) (sent map[string]bool, last string) {
+	sent = make(map[string]bool, len(ids))
+	if len(ids) > maxRecentPhotoMemory {
+		ids = ids[len(ids)-maxRecentPhotoMemory:]
+	}
+	for _, id := range ids {
+		if id = strings.TrimSpace(id); id != "" {
+			sent[id] = true
+			last = id
+		}
+	}
+	return sent, last
+}
+
+// photoRequestWords recognises the user asking to be shown something. Deliberately
+// broad: the cost of a false positive is that a repeat picture becomes eligible,
+// which is exactly what a real request wanted anyway.
+var photoRequestWords = regexp.MustCompile(`(?i)\b(pic|pics|picture|pictures|photo|photos|selfie|selfies|nude|nudes|send me|show me|let me see|see you|see it again|another one)\b`)
+
+func userAskedForPhoto(text string) bool { return photoRequestWords.MatchString(text) }
+
 // photoCatalogue tells the character which pictures of herself she can send, and how
 // to ask for one.
 //
@@ -173,9 +224,14 @@ const maxCataloguePhotos = 24
 // asked to pick "the one tagged lingerie, bed" chooses far more sensibly than one
 // picking a hex string. Nothing here needs a multimodal backend — the model is
 // choosing from descriptions, not looking at pictures.
-func photoCatalogue(ws chatWorkspace, characterID string) string {
+//
+// Pictures already sent this conversation are listed but marked. Hiding them would
+// be simpler and is wrong: asked for "that one from earlier" she needs to still know
+// it exists, and a model that cannot see a picture it remembers sending will happily
+// invent one instead.
+func photoCatalogue(ws chatWorkspace, characterID string, sent map[string]bool) string {
 	lines := make([]string, 0, maxCataloguePhotos)
-	example := ""
+	example, repeats := "", false
 	for _, img := range ws.Images {
 		// Untagged pictures are unreachable by tag, so listing them would only invite
 		// requests that can never resolve.
@@ -186,10 +242,14 @@ func photoCatalogue(ws chatWorkspace, characterID string) string {
 		if len(tags) > 8 {
 			tags = tags[:8]
 		}
-		if example == "" {
+		line := "- " + strings.Join(tags, ", ")
+		if sent[img.ID] {
+			line += "  [already sent]"
+			repeats = true
+		} else if example == "" {
 			example = strings.Join(tags[:min(2, len(tags))], ", ")
 		}
-		lines = append(lines, "- "+strings.Join(tags, ", "))
+		lines = append(lines, line)
 		if len(lines) >= maxCataloguePhotos {
 			break
 		}
@@ -197,11 +257,19 @@ func photoCatalogue(ws chatWorkspace, characterID string) string {
 	if len(lines) == 0 {
 		return ""
 	}
-	return "Pictures of yourself you can send in this chat. Each line is one picture, described by its tags:\n" +
+	if example == "" {
+		example = "lingerie, bed"
+	}
+	out := "Pictures of yourself you can send in this chat. Each line is one picture, described by its tags:\n" +
 		strings.Join(lines, "\n") +
 		"\nTo send one, end your reply with [send: <tags>], naming tags from the picture you want — for example [send: " + example + "]. " +
 		"Send a picture only when it genuinely fits what you are saying, never more than one per reply, and not in every reply. " +
 		"Never describe, promise, or refer to a picture you have not actually sent."
+	if repeats {
+		out += "\nPictures marked [already sent] are ones you have shown in this conversation. " +
+			"Do not send those again unless the user asks you for that picture specifically — pick a different one, or send nothing."
+	}
+	return out
 }
 
 // sendTag captures the picture request described above. Same shape and the same
@@ -225,7 +293,12 @@ func splitPhotoRequest(reply string) (text, request string, ok bool) {
 // requestedChatImage resolves what the character asked for to one of her pictures,
 // scoring the requested words against each picture's tags. It returns "" when nothing
 // overlaps, which leaves the caller free to fall back to its own guess.
-func requestedChatImage(ws chatWorkspace, characterID, request, excludeID string) string {
+//
+// skip holds pictures that must not be chosen however well they score — the ones
+// already sent in this conversation. A model that has just described a picture will
+// describe it again, so its request scores highest against the very picture the user
+// has already seen; without this the same file comes back every turn.
+func requestedChatImage(ws chatWorkspace, characterID, request, excludeID string, skip map[string]bool) string {
 	words := map[string]bool{}
 	for _, word := range strings.FieldsFunc(strings.ToLower(request), func(r rune) bool {
 		return !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9')
@@ -239,7 +312,7 @@ func requestedChatImage(ws chatWorkspace, characterID, request, excludeID string
 	}
 	bestID, best := "", 0
 	for _, img := range ws.Images {
-		if img.CharacterID != characterID || (excludeID != "" && img.ID == excludeID) {
+		if img.CharacterID != characterID || (excludeID != "" && img.ID == excludeID) || skip[img.ID] {
 			continue
 		}
 		score := 0
@@ -307,10 +380,125 @@ func exampleDialogueDirective(dialogue string) string {
 		"<<<EXAMPLES\n" + dialogue + "\nEXAMPLES"
 }
 
+// appearanceTags splits a character's Appearance field into the individual features
+// a scanner would report. Commas, semicolons and newlines all separate; the field is
+// written as picture tags precisely so this works.
+func appearanceTags(appearance string) []string {
+	var out []string
+	for _, part := range strings.FieldsFunc(appearance, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '.'
+	}) {
+		if part = normalizeChatTag(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+// selfPortraitMatch reports the features a shared picture has in common with what
+// the character looks like.
+//
+// This is the whole mechanism behind "she knows a picture of herself when she sees
+// one": no multimodal model is involved, just the local scanner's tags meeting the
+// card's Appearance field. Matching is by feature word, so the scanner's "long hair,
+// orange hair, red eyes" lands on a card that says "long orange hair, red eyes".
+func selfPortraitMatch(photoTags []string, appearance string) []string {
+	features := appearanceTags(appearance)
+	if len(features) == 0 {
+		return nil
+	}
+	var hits []string
+	for _, feature := range features {
+		words := strings.Fields(feature)
+		for _, tag := range photoTags {
+			tag = normalizeChatTag(tag)
+			if tag == "" {
+				continue
+			}
+			// Every word of the feature has to be in the tag, so "orange hair" is not
+			// satisfied by "long hair" — the colour is the identifying half.
+			all := true
+			for _, word := range words {
+				if !strings.Contains(tag, word) {
+					all = false
+					break
+				}
+			}
+			if all {
+				hits = append(hits, feature)
+				break
+			}
+		}
+	}
+	return hits
+}
+
+// libbyWardrobe is what she has on at each intensity tier, 1 to 5.
+//
+// This mirrors the bundled artwork exactly — Calm, Warm, flirty, heated, Peak in
+// web/public/Libby_New — and that is the whole point of it existing. The sprite
+// beside the conversation undresses as the meter climbs, and a character who talks
+// about her hoodie while the picture of her shows otherwise breaks the illusion
+// harder than having no description at all. If the art is redrawn, this changes
+// with it.
+//
+// Kept out of the Appearance card field deliberately: appearance is the constant
+// likeness and is matched against shared photos, whereas this moves every few
+// messages.
+var libbyWardrobe = map[int]string{
+	1: "a black tank top and loose orange sweatpants with a white drawstring, and your glasses",
+	2: "the same black tank top and orange sweatpants, sitting a little closer than you were, warm in the face",
+	3: "just your black bra above the orange sweatpants — the tank top came off a while ago — and your glasses",
+	4: "nothing above the waist, with the orange underwear pushed down off your hips, and your glasses still on",
+	5: "nothing at all but your glasses",
+}
+
+// wardrobeDirective tells the character what she currently has on.
+//
+// Only Libby gets this: it describes her bundled sprite sheet, and asserting it of
+// an imported character would be inventing clothes for somebody else's art. When
+// the user is running one of their own outfits the sprite is theirs too, so the
+// tier table no longer applies — the outfit's name is all anyone here knows, and
+// saying so honestly beats describing a costume she is not wearing.
+func (s *Server) wardrobeDirective(character chatCharacter, intensity int, outfitID string) string {
+	if character.ID != "libby" {
+		return ""
+	}
+	if outfitID = strings.TrimSpace(outfitID); outfitID != "" && validChatID(outfitID, false) {
+		// A worn outfit that cannot be read is treated as no outfit at all: falling
+		// back to the bundled wardrobe is at worst out of date, whereas naming an
+		// outfit that has since been deleted is simply false.
+		if outfit, err := s.readLibbyOutfit(outfitID); err == nil && strings.TrimSpace(outfit.Name) != "" {
+			name := outfit.Name
+			if len(name) > 60 {
+				name = name[:60]
+			}
+			return fmt.Sprintf("\nRight now you are wearing your %q outfit, not your usual clothes. "+
+				"You know how you look in it; do not describe yourself in anything else.", name)
+		}
+	}
+	worn, known := libbyWardrobe[intensity]
+	if !known {
+		return ""
+	}
+	return "\nRight now you are wearing " + worn + ". " +
+		"This is what you actually have on, and it is what the user can see. " +
+		"Do not describe yourself in anything else, and do not announce it — let it show only when it would come up."
+}
+
+// selfPortraitFloor is how many of her own features a picture needs before she is
+// told it is her. One is a coincidence — plenty of pictures have red eyes. Two
+// distinct features that both belong to her is a likeness.
+const selfPortraitFloor = 2
+
 // photoDirective describes a picture the user attached, using the local tagger's
 // output. Tags are the vocabulary of the rest of the app, but they read as metadata
 // rather than as something seen, so the model is told to answer as a viewer.
-func photoDirective(tags []string) string {
+//
+// The character's own appearance is checked against those tags first, because the
+// most jarring thing she can do with a picture of herself is describe the woman in
+// it as a stranger.
+func photoDirective(tags []string, character chatCharacter) string {
 	cleaned := make([]string, 0, len(tags))
 	seen := map[string]bool{}
 	for _, tag := range tags {
@@ -324,9 +512,15 @@ func photoDirective(tags []string) string {
 	if len(cleaned) == 0 {
 		return "The user just shared a photo with you. Respond to it warmly even though you cannot make out its details."
 	}
-	return "The user just shared a photo with you. It was scanned locally and contains: " + strings.Join(cleaned, ", ") + ". " +
+	out := "The user just shared a photo with you. It was scanned locally and contains: " + strings.Join(cleaned, ", ") + ". " +
 		"React as though you are looking at the picture — describe what stands out and respond in character. " +
 		"Never mention tags, scanning, or that you were given a list."
+	if hits := selfPortraitMatch(cleaned, character.Appearance); len(hits) >= selfPortraitFloor {
+		out += " This is a picture of you: " + strings.Join(hits, " and ") + " are yours. " +
+			"React to seeing yourself — flattered, embarrassed, smug, critical of the likeness, whatever fits you — " +
+			"and never talk about the woman in it as though she were someone else."
+	}
+	return out
 }
 
 func (s *Server) handleChatStatus(w http.ResponseWriter, r *http.Request) {
@@ -417,7 +611,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	expand := func(v string) string { return expandCardMacros(v, character.Name, userName) }
 	cardFields := []struct{ label, value string }{
 		{"Description", expand(character.Description)},
+		// Appearance is labelled as what she *knows* she looks like rather than as a
+		// description handed to her, because the job it does in conversation is
+		// self-recognition: it is what makes "is that me?" answerable.
+		{"What you look like (you know this about yourself)", expand(character.Appearance)},
 		{"Personality", expand(character.Personality)},
+		{"Kinks and turn-ons", expand(character.Kinks)},
 		{"Scenario", expand(character.Scenario)},
 		{"Character instructions", expand(character.SystemPrompt)},
 	}
@@ -444,19 +643,44 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		weight = 1
 	}
 	modePrompt += fmt.Sprintf("\nTreat the character-card prompt strength as %.2f. Your current displayed emotion is %s at intensity %d of 5; let that subtly color your wording without announcing the setting.", weight, emotion, in.Intensity)
-	if catalogue := photoCatalogue(ws, character.ID); catalogue != "" {
+	modePrompt += s.wardrobeDirective(character, in.Intensity, in.Outfit)
+	// Kinks are the field most likely to be recited. Left unqualified a model reads a
+	// list of turn-ons as a topic list and works through it; what is wanted is a
+	// preference that shows in what she notices and steers towards.
+	if strings.TrimSpace(character.Kinks) != "" {
+		modePrompt += "\nYour kinks are what you actually want, not a list to recite or announce. " +
+			"Let them show in what you notice, what you steer towards, and what you ask for. " +
+			"Follow the user's lead on how explicit to be, and drop any of it the moment they take the conversation elsewhere."
+	}
+	sentPhotos, lastPhoto := recentlySentPhotos(in.RecentImageIDs)
+	if catalogue := photoCatalogue(ws, character.ID, sentPhotos); catalogue != "" {
 		modePrompt += "\n\n" + catalogue
 	}
 	// Libby alone gets the library snapshot. She is this server's librarian, so
 	// knowing what is on the shelves and how the box is doing is in character; an
 	// imported card is somebody else's character and has no business being handed
-	// the user's collection.
+	// the user's collection unasked.
 	if character.ID == "libby" {
 		modePrompt += s.buildLibbyContext(r.Context()).promptBlock()
 	}
+	// What is on screen is a different matter: browsing together is the user holding
+	// something up and saying "look at this", so any character they chose to do it
+	// with gets to see it. It is scoped to that screen, not to the whole collection.
+	viewing := s.viewingDirective(r.Context(), in.Viewing)
+	if viewing != "" {
+		modePrompt += viewing
+	}
+	// Linking is offered only where there is something to link *to*. A character told
+	// nothing about the collection would write tags for titles that do not exist, and
+	// they would be silently stripped back out — which reads as her losing her train
+	// of thought mid-sentence.
+	linkable := character.ID == "libby" || viewing != ""
+	if linkable {
+		modePrompt += "\n\n" + linkDirective
+	}
 	modePrompt += "\n\n" + moodDirective
 	if len(in.PhotoTags) > 0 {
-		modePrompt += "\n\n" + photoDirective(in.PhotoTags)
+		modePrompt += "\n\n" + photoDirective(in.PhotoTags, character)
 	}
 	if len(in.Messages) == 0 || len(in.Messages) > maxChatMessages {
 		writeErr(w, http.StatusBadRequest, "chat history must contain 1 to 80 messages")
@@ -559,21 +783,42 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			in.Intensity++
 		}
 	}
+	// Links are resolved last, and only where they were offered: a character that was
+	// never told it could link things has no business having "[link: …]" read out of
+	// its prose, and the substitution rewrites the sentence, so it must happen after
+	// the trailing directives have been taken off the end.
+	var links []libbyLink
+	if linkable {
+		reply, links = s.resolveLibraryLinks(r.Context(), reply)
+	}
 	// A picture the character actually asked for outranks one we inferred she might
 	// want. The inference stays as the fallback, so a request naming tags that match
 	// nothing still lands on something relevant rather than nothing at all.
+	//
+	// Both draw from a gallery with the already-sent pictures held back. When the user
+	// has asked to see something, only the very last picture is withheld: "send that
+	// one again" is a request this should honour, but answering it with the file
+	// already on screen is not an answer.
+	skip := sentPhotos
+	if userAskedForPhoto(in.Messages[len(in.Messages)-1].Content) {
+		skip = map[string]bool{}
+		if lastPhoto != "" {
+			skip[lastPhoto] = true
+		}
+	}
 	imageID := ""
 	if photoAsked {
-		imageID = requestedChatImage(ws, character.ID, photoRequest, in.PhotoImageID)
+		imageID = requestedChatImage(ws, character.ID, photoRequest, in.PhotoImageID, skip)
 	}
 	if imageID == "" {
-		imageID = matchingChatImage(ws, character.ID, in.Messages[len(in.Messages)-1].Content+" "+reply, in.PhotoImageID)
+		imageID = matchingChatImage(ws, character.ID, in.Messages[len(in.Messages)-1].Content+" "+reply, in.PhotoImageID, skip)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"message":   reply,
 		"emotion":   emotion,
 		"intensity": in.Intensity,
 		"imageId":   imageID,
+		"links":     links,
 		// Whether the character *chose* this mood or we guessed it. Clients apply the
 		// session's progression multiplier to drift, which is what keeps the meter from
 		// lurching on keyword matches — but a mood the character stated outright is a

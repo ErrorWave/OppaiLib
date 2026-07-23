@@ -2,6 +2,7 @@ import { LitElement, html, css, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { api, mascotSay, type ChatCharacter, type Media, type User } from "../api.js";
 import { canShare, shareWithCharacter } from "../chat-share.js";
+import { OPEN_MEDIA_EVENT } from "../chat-links.js";
 import { libbyReact, type LibbyItemFacts } from "../libby-voice.js";
 import { iconStyles, motionStyles, loadTheme, saveTheme, applyTheme } from "../theme.js";
 import { logoSVG } from "../logo.js";
@@ -26,8 +27,9 @@ import "./settings.js";
 import "./browse.js";
 import "./imagegen.js";
 import "./chat.js";
+import "./together.js";
 
-type Section = "home" | "favorites" | "browse" | "imagegen" | "chat" | "settings" | Kind;
+type Section = "home" | "favorites" | "browse" | "imagegen" | "chat" | "together" | "settings" | Kind;
 
 interface NavSection {
   id: Section;
@@ -46,6 +48,9 @@ const NAV_SECTIONS: NavSection[] = [
   // way things get *into* it, so it sits alongside.
   { id: "imagegen", label: "Create", icon: "auto_awesome" },
   { id: "chat", label: "Chat", icon: "chat_bubble" },
+  // The library with her sitting next to you. It belongs after Chat because it is
+  // the same conversation from the other direction: here the browsing leads.
+  { id: "together", label: "Together", icon: "interests" },
 ];
 
 // Everything about an item a search query can match: its title, its notes, and
@@ -680,6 +685,10 @@ export class OppaiLibrary extends LitElement {
     // that built its own menu has already called preventDefault, which is how the
     // two stay out of each other's way (see onContextMenu).
     this.addEventListener("contextmenu", this.onContextMenu);
+    // Anything nested can ask for a library item to be opened — a link Libby put in
+    // a reply, a tile in the browse-together shelf. The shell owns the viewer, so
+    // the request rises to here rather than each view learning how to route.
+    this.addEventListener(OPEN_MEDIA_EVENT, this.onOpenMedia);
     window.addEventListener("keydown", this.onKey);
     window.addEventListener("oppai-downloads", this.onDownloads as EventListener);
     window.addEventListener("oppai-download-complete", this.onDownloadComplete);
@@ -687,6 +696,7 @@ export class OppaiLibrary extends LitElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     this.removeEventListener("contextmenu", this.onContextMenu);
+    this.removeEventListener(OPEN_MEDIA_EVENT, this.onOpenMedia);
     window.removeEventListener("keydown", this.onKey);
     window.removeEventListener("oppai-downloads", this.onDownloads as EventListener);
     window.removeEventListener("oppai-download-complete", this.onDownloadComplete);
@@ -879,6 +889,25 @@ export class OppaiLibrary extends LitElement {
     this.selectedId = null;
     this.search = "";
   }
+  /**
+   * Opens an item something else asked for.
+   *
+   * The queue is the whole library rather than whatever grid happens to be on
+   * screen: what she linked need not be in the current section at all, and arrow
+   * keys paging into a list the item is not part of would be worse than a broad
+   * one. Refreshes first if it is unknown here — a link can name something added
+   * since this view last loaded.
+   */
+  private onOpenMedia = async (event: Event) => {
+    const { id } = (event as CustomEvent<{ id: number }>).detail;
+    if (!this.items.some((item) => item.id === id)) await this.refresh();
+    if (!this.items.some((item) => item.id === id)) {
+      mascotSay("That one isn't in the library any more.", "error");
+      return;
+    }
+    this.openItem(id, this.items);
+  };
+
   private openItem(id: number, list?: Media[]) {
     if (list && list.length) this.viewerList = list.map((m) => m.id);
     else if (!this.viewerList.includes(id)) this.viewerList = [id];
@@ -1079,11 +1108,12 @@ export class OppaiLibrary extends LitElement {
     const isBrowse = !isViewer && this.section === "browse" && !hasSearch;
     const isImageGen = !isViewer && this.section === "imagegen" && !hasSearch;
     const isChat = !isViewer && this.section === "chat" && !hasSearch;
+    const isTogether = !isViewer && this.section === "together" && !hasSearch;
     const isFavorites = !isViewer && this.section === "favorites" && !hasSearch;
     const isHome = !isViewer && this.section === "home" && !hasSearch && !isFavorites;
     const isSearch = !isViewer && hasSearch;
     const isGrid =
-      !isViewer && !isHome && !isFavorites && !isSearch && !isSettings && !isBrowse && !isImageGen && !isChat;
+      !isViewer && !isHome && !isFavorites && !isSearch && !isSettings && !isBrowse && !isImageGen && !isChat && !isTogether;
 
     const activeItem = isViewer ? this.items.find((m) => m.id === this.selectedId) ?? null : null;
 
@@ -1094,6 +1124,7 @@ export class OppaiLibrary extends LitElement {
     else if (isBrowse) headerTitle = "Browse sources";
     else if (isImageGen) headerTitle = "Create";
     else if (isChat) headerTitle = "Chat with Libby";
+    else if (isTogether) headerTitle = "Browsing together";
     else if (isFavorites) headerTitle = "Favorites";
     else if (isHome) headerTitle = "Library";
     else headerTitle = KIND_META[this.section as Kind]?.label ?? "Library";
@@ -1113,6 +1144,7 @@ export class OppaiLibrary extends LitElement {
                 @open-chat=${() => this.selectSection("chat")}></oppai-imagegen>`
             : nothing}
           ${isChat ? html`<oppai-chat .user=${this.user}></oppai-chat>` : nothing}
+          ${isTogether ? html`<oppai-together .items=${this.items}></oppai-together>` : nothing}
           ${isGrid || isFavorites || isSearch
             ? this.renderGrid(isGrid, isFavorites, isSearch)
             : nothing}

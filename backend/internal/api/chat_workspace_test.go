@@ -96,7 +96,7 @@ func TestChatReservedImageOwnersAreAcceptedAndKeptOutOfGalleries(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read workspace: %v", err)
 		}
-		if got := matchingChatImage(ws, "libby", "face", ""); got == image.ID {
+		if got := matchingChatImage(ws, "libby", "face", "", nil); got == image.ID {
 			t.Fatalf("image under %q was offered as a reply attachment", owner)
 		}
 	}

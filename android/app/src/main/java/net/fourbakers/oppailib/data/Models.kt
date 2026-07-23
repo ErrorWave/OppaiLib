@@ -185,6 +185,28 @@ data class ChatRequest(
     val intensity: Int = 1,
     val options: JsonObject = JsonObject(emptyMap()),
     val characterId: String = "libby",
+    /**
+     * Pictures already seen in this conversation, oldest first. The server keeps no
+     * memory between requests, so what has already been shown has to travel with the
+     * turn — it is what stops the same photo coming back every reply.
+     */
+    val recentImageIds: List<String> = emptyList(),
+    /**
+     * The id of the outfit Libby is wearing on this device, empty for her bundled
+     * artwork. Which outfit is worn is a per-device choice the server does not
+     * store, so it has to be told — otherwise she describes the default sprite
+     * while you are looking at something else. The server resolves the id to the
+     * outfit's name itself.
+     */
+    val outfit: String = "",
+)
+
+@Serializable
+data class LibbyLink(
+    val id: Long,
+    val title: String = "",
+    val kind: String = "",
+    val hasThumb: Boolean = false,
 )
 
 @Serializable
@@ -193,6 +215,9 @@ data class ChatResponse(
     val emotion: String = "neutral",
     val intensity: Int = 1,
     val imageId: String = "",
+    /** Library items this reply points at. The titles are already substituted into
+        the prose server-side, so a client that does not draw chips still reads right. */
+    val links: List<LibbyLink> = emptyList(),
     /**
      * True when the character stated its own mood rather than one being inferred.
      * A stated mood is applied as-is; an inferred one drifts by the session
@@ -241,7 +266,12 @@ data class ChatCharacter(
     val id: String,
     val name: String,
     val description: String = "",
+    /** What they look like, written as picture tags. Also the likeness a shared
+        photo is matched against, which is how they recognise a picture of themselves. */
+    val appearance: String = "",
     val personality: String = "",
+    /** What they are into. Colours how they flirt; never recited as a list. */
+    val kinks: String = "",
     val scenario: String = "",
     val firstMessage: String = "",
     val exampleDialogue: String = "",
@@ -260,6 +290,9 @@ data class StoredChatMessage(
     val content: String,
     val at: Long,
     val imageId: String = "",
+    /** Library items this message pointed at. Carried so a workspace round-trip
+        through this client does not strip what the web UI draws as chips. */
+    val links: List<LibbyLink> = emptyList(),
 )
 
 @Serializable
