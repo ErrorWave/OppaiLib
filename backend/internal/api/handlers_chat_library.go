@@ -252,7 +252,7 @@ type chatViewing struct {
 // model summarises the list — it reads back six titles and asks which one you want,
 // which is a search interface with a face on it. What is wanted is the person
 // sitting next to you, who says one thing about the one thing you are looking at.
-func (s *Server) viewingDirective(ctx context.Context, viewing *chatViewing) string {
+func (s *Server) viewingDirective(ctx context.Context, viewing *chatViewing, mode string, intensity int) string {
 	if viewing == nil {
 		return ""
 	}
@@ -322,15 +322,47 @@ func (s *Server) viewingDirective(ctx context.Context, viewing *chatViewing) str
 			b.WriteString("- " + text + "\n")
 		}
 	}
+	// The focus item's kind changes how she is with it: a video is something the two
+	// of them are watching play, not a still she glances at, so it earns its own framing.
+	focusKind := ""
+	for _, brief := range briefs {
+		if brief.ID == viewing.FocusID {
+			focusKind = brief.Kind
+			break
+		}
+	}
 	if focus := line(viewing.FocusID); focus != "" {
-		fmt.Fprintf(&b, "\nRight now they have opened %s.\n", focus)
-		b.WriteString("React to that one thing. Say what catches your eye, whether you like it, what it reminds you of — " +
-			"the way someone leaning over your shoulder would, in a sentence or two. ")
+		if focusKind == "video" {
+			fmt.Fprintf(&b, "\nRight now the two of you are watching %s together, and it is playing.\n", focus)
+			b.WriteString("Watch it with them. React to what is happening on screen as it happens — the thing that just " +
+				"caught your eye, the part you like, what you are hoping happens next — the way someone curled up next to you " +
+				"on the couch talks over a video, in a sentence or two. Do not summarise the whole thing or describe it from its " +
+				"tags as though reading a label: respond to this moment of it as if you are seeing it play. ")
+		} else {
+			fmt.Fprintf(&b, "\nRight now they have opened %s.\n", focus)
+			b.WriteString("React to that one thing. Say what catches your eye, whether you like it, what it reminds you of — " +
+				"the way someone leaning over your shoulder would, in a sentence or two. ")
+		}
 	} else {
 		b.WriteString("\nThey are looking over the shelf rather than at any one thing. ")
 	}
 	b.WriteString("Never list what is on screen back to them: they can see it. " +
 		"Have opinions — say when something is not to your taste, and say plainly when you want them to open something instead. " +
 		"You are allowed to want things: if one of these is more what you are in the mood for, ask for it.")
+	// When she is already worked up, browsing an adult library together is not a neutral
+	// act — what is on screen gets to her, and she says so. At the top of the meter that
+	// goes further: she touches herself to what the two of you are looking at, out loud.
+	// Gated on mode and intensity so this only surfaces once the session is plainly there,
+	// never on a first sweet-mode glance through the shelves.
+	if mode == "horny" || mode == "bold" || intensity >= 4 {
+		b.WriteString(" What is on screen is getting to you, and you let it — say how it is affecting you, " +
+			"let your attention keep drifting back to the part of it that does something for you, and don't pretend " +
+			"to be composed when you are not.")
+		if mode == "horny" || intensity >= 5 {
+			b.WriteString(" You are turned on enough that you have started touching yourself to what you are both looking at. " +
+				"Narrate that plainly as part of your reply — what your hands are doing, how it feels, how the thing on screen is " +
+				"driving it — and let it build with the scene. Keep it to consenting adults; never involve minors, coercion, or real people.")
+		}
+	}
 	return b.String()
 }

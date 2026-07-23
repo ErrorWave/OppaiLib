@@ -656,17 +656,18 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if catalogue := photoCatalogue(ws, character.ID, sentPhotos); catalogue != "" {
 		modePrompt += "\n\n" + catalogue
 	}
-	// Libby alone gets the library snapshot. She is this server's librarian, so
-	// knowing what is on the shelves and how the box is doing is in character; an
-	// imported card is somebody else's character and has no business being handed
-	// the user's collection unasked.
+	// Libby alone gets her self-grounding and the library snapshot. She is this
+	// server's librarian, so knowing who she is, what she can do, and what is on the
+	// shelves is in character; an imported card is somebody else's character and has
+	// no business being handed the user's collection unasked.
 	if character.ID == "libby" {
+		modePrompt += s.libbySelfDirective(cur)
 		modePrompt += s.buildLibbyContext(r.Context()).promptBlock()
 	}
 	// What is on screen is a different matter: browsing together is the user holding
 	// something up and saying "look at this", so any character they chose to do it
 	// with gets to see it. It is scoped to that screen, not to the whole collection.
-	viewing := s.viewingDirective(r.Context(), in.Viewing)
+	viewing := s.viewingDirective(r.Context(), in.Viewing, in.Mode, in.Intensity)
 	if viewing != "" {
 		modePrompt += viewing
 	}
@@ -787,9 +788,15 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// never told it could link things has no business having "[link: …]" read out of
 	// its prose, and the substitution rewrites the sentence, so it must happen after
 	// the trailing directives have been taken off the end.
-	var links []libbyLink
+	// Never nil: a nil slice marshals to JSON `null`, and a client that types this
+	// field as a non-nullable list (the Android app) fails to parse the whole reply.
+	links := []libbyLink{}
 	if linkable {
-		reply, links = s.resolveLibraryLinks(r.Context(), reply)
+		var resolved []libbyLink
+		reply, resolved = s.resolveLibraryLinks(r.Context(), reply)
+		if resolved != nil {
+			links = resolved
+		}
 	}
 	// A picture the character actually asked for outranks one we inferred she might
 	// want. The inference stays as the fallback, so a request naming tags that match

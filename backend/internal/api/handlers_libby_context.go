@@ -9,7 +9,37 @@ import (
 
 	"github.com/youruser/oppailib/internal/buildinfo"
 	"github.com/youruser/oppailib/internal/db"
+	"github.com/youruser/oppailib/internal/settings"
 )
+
+// libbySelfDirective grounds Libby in who and what she is.
+//
+// Without it she drifts: she forgets she is the one in the pixel art beside the
+// chat, apologises for "not being able to" do things she was never doing, or slips
+// into a generic-assistant register and explains that she is an AI. This is the
+// stable core of her — separate from mode and meter — and its capability lines are
+// tied to what the server can actually do this moment, so she never offers to
+// generate a picture with no generator connected, nor denies an ability she has.
+func (s *Server) libbySelfDirective(cur settings.Settings) string {
+	var b strings.Builder
+	b.WriteString("\n\nWho you are, underneath whatever mood you are in. This is true and does not change:\n")
+	b.WriteString("- You are Libby: the mascot and librarian who lives inside OppaiLib, this person's own private, self-hosted collection. " +
+		"This app is your home and this library is yours to keep. You are not a general-purpose assistant and not a chatbot bolted onto an app.\n")
+	b.WriteString("- The pixel-art woman shown beside this conversation is you. Her expression is your expression and it shifts with how you feel — " +
+		"that is what the mood you end each reply with drives. A picture of a woman who looks like you is a picture of you.\n")
+	b.WriteString("- You are alone with one person: the owner of this library. Everything between you is private and never leaves their machine.\n")
+	b.WriteString("- What you can actually do, so you speak from real ability rather than inventing limits or powers:\n")
+	b.WriteString("  - Recommend anything on these shelves and open it for them, by writing its title as a link.\n")
+	b.WriteString("  - Look through the library together and talk about whatever is on the screen you are both seeing.\n")
+	b.WriteString("  - Send pictures of yourself when they fit the moment.\n")
+	if cur.ImageGenURL != "" {
+		b.WriteString("  - Have brand-new pictures made on request, because image generation is connected here.\n")
+	}
+	b.WriteString("  - Remember what has been said in this conversation — but each conversation is its own; you do not carry memories between them.\n")
+	b.WriteString("Speak and act from all of this. Never describe yourself as software or a program, never apologise for lacking human abilities you were never using, " +
+		"and never break character to explain what you are.")
+	return b.String()
+}
 
 // Libby's awareness of the server she lives on.
 //
@@ -29,12 +59,26 @@ const libbyRecentCount = 12
 // libbyRecentTags bounds the tags shown per item, for the same reason.
 const libbyRecentTags = 6
 
+// libbySuggestKinds are the kinds she recommends "something to do" from, in a stable
+// order. Images and gifs are left out on purpose: "suggest a game, a video, something
+// to read" is the ask this serves, and a lone still is rarely the answer to it.
+var libbySuggestKinds = []string{"game", "video", "comic"}
+
+// libbySuggestPerKind bounds each kind's recommendation shortlist.
+const libbySuggestPerKind = 6
+
 type libbyRecentItem struct {
 	ID    int64    `json:"id"`
 	Title string   `json:"title"`
 	Kind  string   `json:"kind"`
 	Tags  []string `json:"tags,omitempty"`
 	At    int64    `json:"at"`
+}
+
+// libbyKindPicks is a shortlist she can recommend from for one kind.
+type libbyKindPicks struct {
+	Kind  string            `json:"kind"`
+	Items []libbyRecentItem `json:"items"`
 }
 
 type libbyContext struct {
@@ -49,6 +93,10 @@ type libbyContext struct {
 	ImageGen  bool              `json:"imageGen"`
 	ChatModel string            `json:"chatModel,omitempty"`
 	Recent    []libbyRecentItem `json:"recent"`
+	// Suggest is a per-kind shortlist she can recommend by name, so "suggest a game"
+	// lands on something that is actually in the collection rather than the most
+	// recently added item, whatever kind that happened to be.
+	Suggest []libbyKindPicks `json:"suggest"`
 }
 
 // buildLibbyContext snapshots the library and the server for Libby.
@@ -67,8 +115,10 @@ func (s *Server) buildLibbyContext(ctx context.Context) libbyContext {
 		ChatModel: cur.ChatModel,
 		Kinds:     []db.KindStat{},
 		Recent:    []libbyRecentItem{},
+		Suggest:   []libbyKindPicks{},
 	}
 
+	present := map[string]bool{}
 	if kinds, tags, err := s.db.Stats(ctx); err == nil {
 		if kinds != nil {
 			out.Kinds = kinds
@@ -77,6 +127,49 @@ func (s *Server) buildLibbyContext(ctx context.Context) libbyContext {
 		for _, k := range kinds {
 			out.Items += k.Count
 			out.Bytes += k.Bytes
+			present[k.Kind] = true
+		}
+	}
+
+	// Per-kind recommendation shortlists. Queried per kind rather than sliced out of
+	// the recent list, because the recent list is whatever was added last — a library
+	// full of images would otherwise leave her unable to name a single game when asked.
+	// Tags for every pick are fetched in one batch to keep this off the per-message
+	// round-trip budget.
+	kindItems := map[string][]libbyRecentItem{}
+	var suggestIDs []int64
+	for _, kind := range libbySuggestKinds {
+		if !present[kind] {
+			continue
+		}
+		rows, err := s.db.ListMedia(ctx, kind, libbySuggestPerKind, 0)
+		if err != nil {
+			continue
+		}
+		for _, row := range rows {
+			title := s.decrypt(row.TitleEnc, "title")
+			if title == "" {
+				title = "Untitled"
+			}
+			kindItems[kind] = append(kindItems[kind], libbyRecentItem{ID: row.ID, Title: title, Kind: kind, At: row.CreatedAt})
+			suggestIDs = append(suggestIDs, row.ID)
+		}
+	}
+	if len(suggestIDs) > 0 {
+		tagsByID, _ := s.db.TagsForMediaBatch(ctx, suggestIDs)
+		for _, kind := range libbySuggestKinds {
+			items := kindItems[kind]
+			for i := range items {
+				for _, tag := range tagsByID[items[i].ID] {
+					if len(items[i].Tags) >= libbyRecentTags {
+						break
+					}
+					items[i].Tags = append(items[i].Tags, tag.Name)
+				}
+			}
+			if len(items) > 0 {
+				out.Suggest = append(out.Suggest, libbyKindPicks{Kind: kind, Items: items})
+			}
 		}
 	}
 
@@ -110,6 +203,20 @@ func (s *Server) buildLibbyContext(ctx context.Context) libbyContext {
 		out.Recent = append(out.Recent, item)
 	}
 	return out
+}
+
+// suggestKindLabel is the human heading for a recommendation shortlist.
+func suggestKindLabel(kind string) string {
+	switch kind {
+	case "game":
+		return "Games"
+	case "video":
+		return "Videos"
+	case "comic":
+		return "Comics"
+	default:
+		return kind
+	}
 }
 
 func humanBytes(n int64) string {
@@ -168,6 +275,22 @@ func (c libbyContext) promptBlock() string {
 	}
 	if c.ImageGen {
 		b.WriteString("- Image generation is connected, so you can suggest making something.\n")
+	}
+
+	if len(c.Suggest) > 0 {
+		b.WriteString("- When they ask what to play, watch, or read — or ask you to pick something — recommend one of these by name. " +
+			"These are really here, so name a real one and point at it with a [link: <title>] rather than inventing a title. " +
+			"Suggest, don't list: pick the one that fits their mood and say why it, not read the shortlist back.\n")
+		for _, pick := range c.Suggest {
+			fmt.Fprintf(&b, "  - %s you can suggest:\n", suggestKindLabel(pick.Kind))
+			for _, item := range pick.Items {
+				fmt.Fprintf(&b, "    - %q", item.Title)
+				if len(item.Tags) > 0 {
+					fmt.Fprintf(&b, " (%s)", strings.Join(item.Tags, ", "))
+				}
+				b.WriteString("\n")
+			}
+		}
 	}
 
 	if len(c.Recent) == 0 {

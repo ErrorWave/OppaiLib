@@ -31,8 +31,20 @@ container on Unraid, with a companion Android app.
   site parsers; ships a generic OpenGraph parser. Rate-limited, honors robots.txt.
 - **Local AI auto-tagging:** heuristic tagger out of the box (CPU, zero setup);
   opt-in ONNX classifier for real content tags. Images, GIFs, and videos are all
-  tagged — clips are sampled across several frames. No external calls. See
+  tagged. Video sampling is **scene-aware and length-adaptive** — frames are taken
+  from a clip's detected scenes (not a fixed clock), and a longer clip earns more of
+  them, so the tags describe what actually happens. No external calls. See
   [docs/AI.md](docs/AI.md).
+- **Libby, your library's companion:** a built-in adult AI chat character who knows
+  your collection — she can recommend and open items, react to what's on your screen
+  while you **browse together**, comment on a video as you watch it, send pictures of
+  herself, and shift expression and mood as you talk. Custom character cards
+  (SillyTavern V2 / PNG) and per-device outfits are supported. Talks to any local
+  OpenAI-compatible LLM you point it at; nothing leaves the box. Works on web and
+  Android.
+- **Local image generation:** optional bridge to a self-hosted image generator
+  (auto-detects InvokeAI), with a Civitai model browser, character prompts, and a
+  one-tap path from a generated image into the library.
 - **Material 3 everywhere:** responsive web UI (dark by default) + native Android app.
 
 Verified working end-to-end: login, encrypted upload/stream round-trip, dedup,
@@ -56,6 +68,31 @@ Web UI ──────┼──▶ Go API ──▶ crypto (envelope AES-256-
              │              ├─▶ scraper  (YAML parsers)
              │              └─▶ ai tagger (heuristic | ONNX)
 ```
+
+---
+
+## Meet Libby
+
+<p align="center">
+  <img src="web/public/Libby_New/Calm/neutral.png" alt="Libby, the OppaiLib mascot" width="200" />
+</p>
+
+Libby is OppaiLib's mascot and resident librarian — an adult chat companion who
+actually knows your library. She lives beside the collection, not bolted on to it:
+
+- **Library-aware:** ask her what to watch, play, or read and she recommends real
+  items from your shelves and links them so you can open them in one tap.
+- **Browse together:** open the shared-viewing screen and she reacts to whatever is
+  on-screen — has opinions, points you at things, and **comments on a video as it
+  plays** rather than reading its tags back at you.
+- **Expressive:** she picks her own mood each reply, and the artwork beside the chat
+  changes with it. The pose shown above is her *Calm* look.
+- **Sends pictures of herself** when they fit, recognises a picture of herself when
+  you share one, and can wear per-device **outfits** you drop in.
+- **Yours to shape:** import SillyTavern V2 / PNG character cards to chat with anyone
+  you like, tune modes and advanced sampler options, and set a persona for yourself.
+- **Fully local:** point it at any OpenAI-compatible LLM on your network. No cloud,
+  no telemetry — the same promise as the rest of the app.
 
 ---
 
@@ -169,6 +206,13 @@ tagger baked in, so images, GIFs and videos are content-tagged out of the box �
 a `rating` tag (`general`/`sensitive`/`questionable`/`explicit`) plus hundreds of
 possible `general` and `character` tags. Everything runs locally; nothing is sent
 anywhere.
+
+Videos are sampled **by scene**: OppaiLib asks ffmpeg where the picture changes
+enough to read as a cut and tags a frame from each scene, so every scene is
+represented instead of whatever happened to line up with a fixed timestamp. The
+frame count also **scales with length** (a floor for short clips, more for long
+ones), and one-frame noise is pruned from densely sampled clips. Per-tag timestamps
+are recorded so the viewer can mark them on the video's timeline.
 
 This makes the image ~540MB. If you would rather not carry the model, pull
 `ghcr.io/errorwave/oppailib:lean` (or build `--target runtime`) for a lean,

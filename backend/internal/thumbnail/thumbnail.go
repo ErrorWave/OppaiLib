@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"time"
 )
@@ -141,3 +142,69 @@ func FrameAt(ctx context.Context, path string, at float64, maxWidth int) ([]byte
 // DefaultTimeout bounds a single probe+frame job so a pathological file can't
 // wedge a worker forever.
 const DefaultTimeout = 90 * time.Second
+
+// scenePTS pulls the timestamp off each showinfo line. ffmpeg prints one such line
+// per frame the scene filter let through, e.g.
+//
+//	[Parsed_showinfo_1 @ 0x…] n:0 pts:123 pts_time:4.104 duration:…
+var scenePTS = regexp.MustCompile(`pts_time:([0-9]+\.?[0-9]*)`)
+
+// parseScenePTS extracts the scene-change timestamps (seconds) from ffmpeg's
+// showinfo output. Kept separate from the exec call so it can be tested against
+// captured ffmpeg logs without a binary or a real video.
+//
+// Non-monotonic or duplicate values are dropped: the scene filter runs after a
+// downscale and its timestamps are already ascending, but a defensive filter keeps
+// a malformed log from producing offsets that run backwards.
+func parseScenePTS(log string) []float64 {
+	var out []float64
+	last := -1.0
+	for _, m := range scenePTS.FindAllStringSubmatch(log, -1) {
+		t, err := strconv.ParseFloat(m[1], 64)
+		if err != nil || t <= last {
+			continue
+		}
+		out = append(out, t)
+		last = t
+	}
+	return out
+}
+
+// Scenes returns the timestamps (seconds) where the picture changes enough to read
+// as a cut — one per scene boundary — so a tagger can sample a frame from each scene
+// instead of blindly on a clock. threshold is the scene-change score in [0,1] a
+// frame must clear (ffmpeg's `scene` metric; ~0.4 is a whole-frame cut rather than
+// motion). scaleWidth downscales the stream before the metric is computed so the
+// per-frame comparison stays cheap; <=0 leaves native resolution.
+//
+// The whole stream is decoded, so this is the expensive part of tagging a video and
+// callers give it its own bounded timeout. On any failure it returns the error and
+// no timestamps, so the caller can fall back to clock sampling rather than trust a
+// partial scan biased toward the start.
+func Scenes(ctx context.Context, path string, threshold float64, scaleWidth int) ([]float64, error) {
+	// The comma inside gt(scene,X) is protected by single-quoting the expression, the
+	// same way the scale filter quotes min(W,iw) — quoting is what stops ffmpeg reading
+	// that comma as the separator between two filters. -an drops audio; showinfo prints
+	// each surviving frame's timestamp to stderr, which is why the log stays at info.
+	vf := fmt.Sprintf("select='gt(scene,%.3f)',showinfo", threshold)
+	if scaleWidth > 0 {
+		vf = fmt.Sprintf("scale='min(%d,iw)':-2,%s", scaleWidth, vf)
+	}
+	cmd := exec.CommandContext(ctx, "ffmpeg",
+		"-nostdin", "-i", path, "-an", "-vf", vf, "-f", "null", "-")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("ffmpeg scenes: %w: %s", err, tailString(stderr.String(), 200))
+	}
+	return parseScenePTS(stderr.String()), nil
+}
+
+// tailString returns the last n characters of s, for putting the useful end of an
+// ffmpeg error (where the real message is) into a wrapped error without the banner.
+func tailString(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[len(s)-n:]
+}

@@ -26,7 +26,12 @@ import java.net.URLEncoder
  */
 class Repository(private val appContext: Context, val prefs: Prefs) {
 
-    private val json = Json { ignoreUnknownKeys = true }
+    // coerceInputValues: a `null` sent for a field whose Kotlin type is non-nullable
+    // but has a default falls back to that default instead of throwing. The server
+    // marshals a Go nil slice as JSON `null` (e.g. an empty `links` on a chat reply),
+    // and without this the whole response fails to parse with an "unexpected JSON"
+    // error — the recurring class of bug behind chat breaking on Android.
+    private val json = Json { ignoreUnknownKeys = true; coerceInputValues = true }
     // Things for Libby to say around the app, each with a pose so she reacts in
     // character — a worried "surprised" for failures, a bright "happy" for wins.
     private val _errors = MutableSharedFlow<MascotSay>(extraBufferCapacity = 8)

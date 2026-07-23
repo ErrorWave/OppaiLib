@@ -89,16 +89,21 @@ func TestViewingDirectiveDescribesWhatIsOnScreen(t *testing.T) {
 
 	block := s.viewingDirective(context.Background(), &chatViewing{
 		FocusID: focus, IDs: []int64{other}, Section: "their videos",
-	})
-	for _, want := range []string{"Summer at the Coast", "Kitchen Timer", "their videos", "beach", "opened"} {
+	}, "sweet", 1)
+	// The focus is a video, so it reads as something the two of them are watching play.
+	for _, want := range []string{"Summer at the Coast", "Kitchen Timer", "their videos", "beach", "watching"} {
 		if !strings.Contains(block, want) {
 			t.Fatalf("viewing block missing %q: %s", want, block)
 		}
 	}
-	if s.viewingDirective(context.Background(), nil) != "" {
+	// A calm sweet-mode glance stays a glance: the arousal framing must not surface.
+	if strings.Contains(strings.ToLower(block), "touching yourself") {
+		t.Fatalf("sweet, low-intensity viewing should not be sexual: %s", block)
+	}
+	if s.viewingDirective(context.Background(), nil, "sweet", 1) != "" {
 		t.Fatal("no viewing context should contribute no block")
 	}
-	if s.viewingDirective(context.Background(), &chatViewing{IDs: []int64{99999}}) != "" {
+	if s.viewingDirective(context.Background(), &chatViewing{IDs: []int64{99999}}, "sweet", 1) != "" {
 		t.Fatal("ids that resolve to nothing should contribute no block")
 	}
 }

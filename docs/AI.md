@@ -166,14 +166,33 @@ With an InvokeAI backend the studio also offers:
 |------|---------------|--------------|
 | image | the image | no |
 | gif | up to N frames, evenly sampled across the animation | no |
-| video | up to N frames, evenly sampled across the middle 90% of the clip | **yes** |
+| video | N or more frames, taken from the clip's scenes | **yes** |
 | comic, game | not yet — see Roadmap | — |
 
-`N` defaults to 5 and is set by `OPPAI_AI_VIDEO_FRAMES`.
+`N` defaults to 5 and is set by `OPPAI_AI_VIDEO_FRAMES`. For video it is a
+**floor**, not a fixed budget: five frames cover a thirty-second clip well and
+leave a thirty-minute one nearly blind, so a longer clip is sampled at more than
+`N` — roughly one extra frame per 20 seconds of runtime, capped at 32. A GIF still
+uses exactly `N`.
+
+**Scene-aware sampling.** Rather than sampling on a fixed clock, the tagger first
+asks ffmpeg where the picture changes enough to read as a cut (the `scene` metric,
+computed on a 320px-downscaled copy so it stays cheap) and samples from the scenes
+between those cuts. Every scene contributes at least one frame; when the frame
+budget exceeds the scene count the leftover frames deepen the longest scenes, and
+when there are more scenes than budget the frames are spread evenly across them.
+This is what lets the tags describe *what happens* in a clip rather than whatever
+happened to line up with a timestamp. Scene detection decodes the whole stream, so
+it runs under its own 4-minute timeout; if it fails or times out — or the clip has
+no detectable cuts — the tagger falls back to even sampling across the middle 90%
+of the clip. Without ffmpeg, video tagging is skipped entirely (below).
 
 Each sampled frame is tagged independently and the results are merged, keeping
 the **highest** confidence seen for each tag. A tag that is only true of one
-scene is still true of the clip, so max wins over mean.
+scene is still true of the clip, so max wins over mean. In a densely sampled clip
+(8+ frames), a general tag seen in a single frame at middling confidence is dropped
+as a likely decode/seek artefact — strong single-frame tags, characters, and the
+rating are always kept.
 
 Video frames are extracted at the source's native resolution, so
 resolution-sensitive tags describe the video rather than a downscaled poster.
@@ -344,10 +363,11 @@ Without `OPPAI_TEST_MODEL_DIR` those tests skip.
 | `OPPAI_AI_ENABLED` | `true` | master switch for auto-tagging |
 | `OPPAI_AI_MODEL_DIR` | `/config/models` | where `model.onnx` + `labels.txt` live |
 | `OPPAI_AI_DEVICE` | `cpu` | `cpu` or `cuda` |
-| `OPPAI_AI_VIDEO_FRAMES` | `5` | frames sampled per video/GIF (capped at 32) |
+| `OPPAI_AI_VIDEO_FRAMES` | `5` | baseline frames per video (GIF: exact); scales up with video length, capped at 32 |
 
 Each frame costs one ffmpeg seek-and-decode plus one model inference, so raising
-`OPPAI_AI_VIDEO_FRAMES` trades import throughput for tag coverage. Background tag
+`OPPAI_AI_VIDEO_FRAMES` trades import throughput for tag coverage; a long video
+already earns extra frames above this baseline on its own. Background tag
 jobs are bounded by a worker pool (half the core count, max 4), shared shape with
 the thumbnail pool, so a bulk import queues instead of spawning one ffmpeg per
 video at once. Every new-media path uses the same post-ingest hook, and a bounded

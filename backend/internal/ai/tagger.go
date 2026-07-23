@@ -91,14 +91,51 @@ func isAppearanceSuggestion(s Suggestion) bool {
 	return false
 }
 
-// DefaultVideoFrames is how many frames a video is sampled at when the config
-// leaves it unset. Five spans a clip well without making a bulk import crawl.
+// DefaultVideoFrames is the baseline number of frames a short video is sampled at
+// when the config leaves it unset. It is a floor: longer clips are sampled at more
+// than this, scaled to their runtime by framesForDuration. Five spans a short clip
+// well without making a bulk import of them crawl.
 const DefaultVideoFrames = 5
 
-// maxVideoFrames caps the configured frame count. Each frame is a full ffmpeg
-// seek+decode plus one model inference, so an unbounded value would let a single
-// video monopolise a worker for minutes.
+// maxVideoFrames caps the frame count however long the clip is. Each frame is a
+// full ffmpeg seek+decode plus one model inference, so an unbounded value would let
+// a feature-length video monopolise a worker for minutes.
 const maxVideoFrames = 32
+
+// videoSecondsPerFrame is the coverage target above the baseline: past the floor,
+// one extra frame is sampled for roughly every this-many seconds of runtime, so a
+// long clip is not left as blind as a short one. See framesForDuration.
+const videoSecondsPerFrame = 20.0
+
+// densePruneFrames is the sample count at or above which prevalence becomes
+// meaningful enough to prune one-frame noise. Below it, a single sighting is most
+// of the coverage a clip got, so nothing is dropped. See pruneTransient.
+const densePruneFrames = 8
+
+// transientKeepScore is the confidence a lone single-frame general tag must clear
+// to survive pruning in a densely sampled clip. Below it, one sighting reads as a
+// decode/seek artefact rather than something that was really in the video.
+const transientKeepScore = 0.5
+
+// Scene-aware sampling. Frames are taken from where the picture actually changes
+// rather than on a fixed clock, so each scene of a clip contributes at least one
+// frame and the tagger sees what happens rather than what happened to line up with
+// a timestamp.
+const (
+	// sceneThreshold is ffmpeg's scene-change score a frame must clear to count as a
+	// cut. ~0.4 catches a whole-frame change (a real cut) while ignoring the constant
+	// low scores that camera motion and panning produce.
+	sceneThreshold = 0.4
+	// sceneDetectWidth downscales the stream before the scene metric is computed.
+	// The cut points are the same at 320px, and the per-frame comparison is far
+	// cheaper — this is the whole reason detection is affordable on a lean box.
+	sceneDetectWidth = 320
+	// sceneDetectTimeout bounds detection alone. It decodes the entire stream, so on
+	// a long or slow file it can run long; past this we abandon it and fall back to
+	// clock sampling rather than spend the whole video budget here. Sits inside
+	// videoTagTimeout, leaving room for the frame extraction and inference after it.
+	sceneDetectTimeout = 4 * time.Minute
+)
 
 // videoTagTimeout bounds a whole video job: decrypt to temp + probe + N
 // seek/decode/infer passes. Generous relative to the single-frame poster job.
@@ -434,7 +471,24 @@ func (m *Manager) tagVideo(ctx context.Context, id int64, blobPath string) ([]Su
 		m.log.Debug("ai: probe failed, sampling single frame", "media", id, "err", err)
 	}
 
-	offsets := sampleOffsets(dur, m.frames)
+	// The configured frame count is a floor; a long clip earns more frames so it is
+	// not left as blind as a short one. See framesForDuration.
+	want := framesForDuration(m.frames, dur)
+	// Prefer sampling by scene. Detection decodes the whole stream, so it runs under
+	// its own timeout and any failure (including that deadline) drops us back to clock
+	// sampling — never to a partial scan, which would bias every frame toward the
+	// start. Without a probed duration there are no scenes to find, so skip it.
+	offsets := sampleOffsets(dur, want)
+	if dur > 0 {
+		sceneCtx, sceneCancel := context.WithTimeout(ctx, sceneDetectTimeout)
+		cuts, serr := thumbnail.Scenes(sceneCtx, tmpPath, sceneThreshold, sceneDetectWidth)
+		sceneCancel()
+		if serr != nil {
+			m.log.Debug("ai: scene detection failed, sampling on the clock", "media", id, "err", serr)
+		} else if len(cuts) > 0 {
+			offsets = sceneAwareOffsets(cuts, dur, want)
+		}
+	}
 	frames := make([]framed, 0, len(offsets))
 	for _, at := range offsets {
 		if err := ctx.Err(); err != nil {
@@ -461,12 +515,16 @@ func (m *Manager) tagVideo(ctx context.Context, id int64, blobPath string) ([]Su
 	if len(frames) == 0 {
 		return nil, nil, errors.New("ai: no frame could be extracted")
 	}
+	// Merge across frames, then drop one-frame flukes now that a long clip is sampled
+	// densely enough for a lone sighting to be suspect. Moments for any pruned tag are
+	// simply never applied — persist only sets moments for tags it is writing.
+	tags := pruneTransient(aggregate(suggestions(frames)), tagCounts(frames), len(frames))
 	// A probe-less clip is sampled at offset 0 only (see sampleOffsets); one
 	// marker pinned to the start says nothing useful, so skip the timeline.
 	if dur <= 0 {
-		return aggregate(suggestions(frames)), nil, nil
+		return tags, nil, nil
 	}
-	return aggregate(suggestions(frames)), momentsByTag(frames), nil
+	return tags, momentsByTag(frames), nil
 }
 
 // decryptToTemp streams a blob out of the encrypted store into a plaintext temp

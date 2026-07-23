@@ -26,8 +26,9 @@ type Config struct {
 	AIEnabled  bool
 	AIModelDir string
 	AIDevice   string // cpu|cuda
-	// AIVideoFrames is how many frames to sample per video. 0 means "let the ai
-	// package pick" (ai.DefaultVideoFrames) — config stays free of an ai import.
+	// AIVideoFrames is the baseline frame count sampled per video; a longer clip is
+	// sampled at more (see ai.framesForDuration). 0 means "let the ai package pick"
+	// (ai.DefaultVideoFrames) — config stays free of an ai import.
 	AIVideoFrames int
 
 	ScrapeDelay         time.Duration
