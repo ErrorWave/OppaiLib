@@ -42,15 +42,20 @@ func TestSentPicturesAreNotOfferedAgain(t *testing.T) {
 	}
 }
 
-// An unrequested picture needs real overlap. One shared word is the whole reason a
-// gallery's best-scoring image used to ride along with every reply.
-func TestUnpromptedPictureNeedsMoreThanOneWord(t *testing.T) {
+// An unrequested picture needs real overlap — three independent words, not one or two.
+// One or two shared words is the whole reason a gallery's best-scoring image used to
+// ride along with nearly every reply.
+func TestUnpromptedPictureNeedsRealOverlap(t *testing.T) {
 	ws := libbyGallery()
 	if got := matchingChatImage(ws, "libby", "the bedroom was cold", "", nil); got != "" {
 		t.Fatalf("one incidental word attached %q", got)
 	}
-	if got := matchingChatImage(ws, "libby", "you in that lingerie, in the bedroom", "", nil); got == "" {
-		t.Fatal("two matching words should still attach a picture")
+	// Two words used to be enough, and fired far too often; now it is not.
+	if got := matchingChatImage(ws, "libby", "you in that lingerie, in the bedroom", "", nil); got != "" {
+		t.Fatalf("two incidental words attached %q", got)
+	}
+	if got := matchingChatImage(ws, "libby", "you in that lingerie in the bedroom, lying down", "", nil); got == "" {
+		t.Fatal("three matching words should still attach a picture")
 	}
 }
 

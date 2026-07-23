@@ -126,6 +126,7 @@ import net.fourbakers.oppailib.data.ChatWorkspace
 import net.fourbakers.oppailib.data.LibbyAction
 import net.fourbakers.oppailib.data.LibbyActRequest
 import net.fourbakers.oppailib.data.LibbyLink
+import net.fourbakers.oppailib.data.LibbyMemory
 import net.fourbakers.oppailib.data.LibbyMeter
 import net.fourbakers.oppailib.data.LibbyVoice
 import net.fourbakers.oppailib.data.Repository
@@ -238,6 +239,8 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit, onOpenMedia: OpenMedia = {}
     var imageTags by remember { mutableStateOf("") }
     var uploading by remember { mutableStateOf(false) }
     var overflowOpen by remember { mutableStateOf(false) }
+    // A conversation pending a delete confirmation, so a mis-tap doesn't wipe history.
+    var confirmDelete by remember { mutableStateOf<ChatConversation?>(null) }
     var saveJob by remember { mutableStateOf<Job?>(null) }
     val intensity by LibbyMeter.value.collectAsState()
     val scope = rememberCoroutineScope()
@@ -280,6 +283,23 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit, onOpenMedia: OpenMedia = {}
     fun updateCharacter(transform: (ChatCharacter) -> ChatCharacter) {
         val ws = workspace ?: return
         save(ws.copy(characters = ws.characters.map { if (it.id == characterId) transform(it) else it }))
+    }
+
+    // Removes a conversation, mirroring the web drawer's delete. Only re-points the open
+    // conversation when it was the one deleted — dropping a background chat should not
+    // yank the user out of the one they are reading. When the last chat for a friend
+    // goes, a fresh empty one takes its place so the screen is never left with nothing.
+    fun deleteConversation(id: String) {
+        val ws = workspace ?: return
+        val target = ws.conversations.firstOrNull { it.id == id } ?: return
+        val remaining = ws.conversations.filterNot { it.id == id }
+        if (conversationId != id) { save(ws.copy(conversations = remaining)); return }
+        val nextSame = remaining.filter { it.characterId == target.characterId }.maxByOrNull { it.updatedAt }
+        if (nextSame != null) { conversationId = nextSame.id; save(ws.copy(conversations = remaining)) }
+        else {
+            val char = ws.characters.firstOrNull { it.id == target.characterId }
+            if (char != null) save(newConversation(ws.copy(conversations = remaining), char)) else save(ws.copy(conversations = remaining))
+        }
     }
 
     // Reading the file, base64-encoding it, and letting the converter serialize the
@@ -413,6 +433,15 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit, onOpenMedia: OpenMedia = {}
     }
 
     BackHandler(onBack = onBack)
+    confirmDelete?.let { pending ->
+        AlertDialog(
+            onDismissRequest = { confirmDelete = null },
+            title = { Text("Delete conversation") },
+            text = { Text("Delete \"${pending.title}\"? This can't be undone.") },
+            confirmButton = { Button(onClick = { deleteConversation(pending.id); confirmDelete = null }) { Text("Delete") } },
+            dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancel") } },
+        )
+    }
     if (addFriend) AlertDialog(
         onDismissRequest = { addFriend = false }, title = { Text("Add a friend") },
         text = { TextField(friendName, { friendName = it }, label = { Text("Name") }) },
@@ -427,7 +456,7 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit, onOpenMedia: OpenMedia = {}
         drawerContent = { workspace?.let { ws -> ChatDrawer(repo, ws, characterId, conversationId, status?.enabled == true,
             onCharacter = { id -> characterId = id; val c = conversations(ws, id).firstOrNull(); if (c == null) save(newConversation(ws, ws.characters.first { it.id == id })) else conversationId = c.id; scope.launch { drawer.close() } },
             onConversation = { conversationId = it; characterId = ws.conversations.first { c -> c.id == it }.characterId; scope.launch { drawer.close() } },
-            onNewConversation = { val char = currentCharacter(ws) ?: return@ChatDrawer; save(newConversation(ws, char)); scope.launch { drawer.close() } }, onAddFriend = { addFriend = true }) } },
+            onNewConversation = { val char = currentCharacter(ws) ?: return@ChatDrawer; save(newConversation(ws, char)); scope.launch { drawer.close() } }, onAddFriend = { addFriend = true }, onDeleteConversation = { confirmDelete = it }) } },
     ) {
         val ws = workspace; val char = currentCharacter(ws); val convo = currentConversation(ws)
         if (ws == null || char == null || convo == null) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
@@ -451,6 +480,7 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit, onOpenMedia: OpenMedia = {}
                     DropdownMenu(expanded = overflowOpen, onDismissRequest = { overflowOpen = false }) {
                         DropdownMenuItem(text = { Text("New conversation") }, leadingIcon = { Icon(Icons.Filled.AddComment, null) }, onClick = { overflowOpen = false; save(newConversation(ws, char)) })
                         DropdownMenuItem(text = { Text("Clear messages") }, leadingIcon = { Icon(Icons.Filled.DeleteSweep, null) }, enabled = convo.messages.isNotEmpty(), onClick = { overflowOpen = false; updateConversation { it.copy(messages = emptyList(), title = "New conversation") } })
+                        DropdownMenuItem(text = { Text("Delete conversation", color = ChatColors.danger) }, leadingIcon = { Icon(Icons.Filled.Delete, null, tint = ChatColors.danger) }, onClick = { overflowOpen = false; confirmDelete = convo })
                     }
                 }
             }
@@ -510,6 +540,7 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit, onOpenMedia: OpenMedia = {}
 private fun ChatDrawer(
     repo: Repository, ws: ChatWorkspace, characterId: String, conversationId: String, online: Boolean,
     onCharacter: (String) -> Unit, onConversation: (String) -> Unit, onNewConversation: () -> Unit, onAddFriend: () -> Unit,
+    onDeleteConversation: (ChatConversation) -> Unit,
 ) {
     ModalDrawerSheet(Modifier.fillMaxHeight().width(340.dp)) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 20.dp)) {
@@ -543,6 +574,7 @@ private fun ChatDrawer(
                     onClick = { onConversation(convo.id) },
                     icon = { Icon(Icons.Filled.AddComment, null) },
                     label = { Column { Text(convo.title, maxLines = 1); Text("${convo.messages.size} messages · ${timeOf(convo.updatedAt)}", color = ChatColors.muted, fontSize = 10.sp) } },
+                    badge = { IconButton(onClick = { onDeleteConversation(convo) }) { Icon(Icons.Filled.Delete, "Delete conversation", tint = ChatColors.muted) } },
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 1.dp),
                 )
             }
@@ -613,9 +645,52 @@ private fun ChatSettings(
             "profile" -> Column(Modifier.fillMaxWidth().padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 TextField(ws.profile.displayName, { onProfile(ws.profile.copy(displayName = it)) }, label = { Text("Display name") }, modifier = Modifier.fillMaxWidth())
                 TextField(ws.profile.persona, { onProfile(ws.profile.copy(persona = it)) }, label = { Text("Your persona") }, maxLines = 4, modifier = Modifier.fillMaxWidth())
+                LibbyMemorySection(repo)
             }
         }
     }
+}
+
+/**
+ * What Libby has learned about you across conversations, with the controls to prune or
+ * wipe it. Loaded once when the profile tab first composes. Only Libby keeps a memory,
+ * so this lives in the shared profile she reads; the phone-side mirror of the web
+ * client's renderMemoryPanel.
+ */
+@Composable
+private fun LibbyMemorySection(repo: Repository) {
+    var memories by remember { mutableStateOf<List<LibbyMemory>?>(null) }
+    var confirmClear by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(Unit) { memories = runCatching { repo.api.libbyMemory().memories }.getOrDefault(emptyList()) }
+    Column(Modifier.fillMaxWidth().padding(top = 14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        HorizontalDivider()
+        Text("What Libby remembers", fontWeight = FontWeight.SemiBold, color = ChatColors.text)
+        Text("Libby quietly keeps things you tell her and carries them into later chats. Remove any of it, or clear it all.", color = ChatColors.muted, fontSize = 11.sp)
+        val current = memories
+        when {
+            current == null -> Text("Loading…", color = ChatColors.muted, fontSize = 12.sp)
+            current.isEmpty() -> Text("Nothing yet. She'll start remembering as you talk.", color = ChatColors.muted, fontSize = 12.sp)
+            else -> {
+                current.forEach { memory ->
+                    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(ChatColors.input).padding(start = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(memory.text, color = ChatColors.text, fontSize = 13.sp, modifier = Modifier.weight(1f).padding(vertical = 8.dp))
+                        IconButton(onClick = { scope.launch { runCatching { repo.api.forgetLibbyMemory(memory.id) }.onSuccess { memories = memories?.filterNot { it.id == memory.id } } } }) {
+                            Icon(Icons.Filled.Delete, "Forget this", tint = ChatColors.muted, modifier = Modifier.size(18.dp))
+                        }
+                    }
+                }
+                OutlinedButton(onClick = { confirmClear = true }) { Text("Clear all memories", color = ChatColors.danger) }
+            }
+        }
+    }
+    if (confirmClear) AlertDialog(
+        onDismissRequest = { confirmClear = false },
+        title = { Text("Clear memories") },
+        text = { Text("Clear everything Libby remembers about you? This can't be undone.") },
+        confirmButton = { Button(onClick = { scope.launch { runCatching { repo.api.clearLibbyMemory() }.onSuccess { memories = emptyList() } }; confirmClear = false }) { Text("Clear") } },
+        dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Cancel") } },
+    )
 }
 
 private fun JsonObject.withNumber(key: String, value: Float) = buildJsonObject { this@withNumber.forEach { (k, v) -> put(k, v) }; put(key, value.toDouble()) }

@@ -248,6 +248,19 @@ interface ApiService {
     @POST("api/libby/act")
     suspend fun libbyAct(@Body body: LibbyActRequest)
 
+    // ── Libby memory ─────────────────────────────────────────────────────
+    // The durable facts Libby keeps about you between conversations. Written from her
+    // own replies server-side; these only read and clear it, for chat settings.
+
+    @GET("api/libby/memory")
+    suspend fun libbyMemory(): LibbyMemoryResponse
+
+    @DELETE("api/libby/memory")
+    suspend fun clearLibbyMemory()
+
+    @DELETE("api/libby/memory/{id}")
+    suspend fun forgetLibbyMemory(@Path("id") id: String)
+
     // ── Libby outfits ────────────────────────────────────────────────────
 
     @GET("api/libby/outfits")

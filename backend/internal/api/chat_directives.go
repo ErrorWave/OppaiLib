@@ -29,13 +29,15 @@ import (
 // verbs the protocol actually defines plus the words models substitute for them, so
 // bracketed prose ("[laughs]", "[1]") survives untouched.
 //
-// Bounded to one line and 120 characters: a tag is short by construction, and an
-// unbounded match across a paragraph would swallow real writing between two brackets.
+// Bounded to one line and 300 characters: most tags are short, but a [remember: …] note
+// can run to a full sentence, and the bound has to clear the longest of them. Still
+// short enough that an unbounded match cannot swallow real writing between two brackets.
 var strayTag = regexp.MustCompile(`(?i)[*_~` + "`" + `]{0,2}\[\s*(?:` +
 	`mood|emotion|feeling|expression|face|pose|intensity|horniness|heat|meter` +
 	`|send|sends|sending|show|shows|showing|attach|attaches|attaching` +
 	`|photo|photos|pic|pics|picture|pictures|image|images|selfie|selfies` +
-	`)\b[^\]\n]{0,120}\]` + "[*_~`]{0,2}")
+	`|remember|remembers|remembering|memory|note|noting|noted` +
+	`)\b[^\]\n]{0,300}\]` + "[*_~`]{0,2}")
 
 // wrappedSpan finds the emphasis and parenthesis forms a stage direction is written
 // in: *…*, **…**, _…_, (…). Each is capped at one line and 160 characters, which is
@@ -50,10 +52,11 @@ var wrappedSpan = regexp.MustCompile(`(?i)(\*\*|\*|__|_)([^*_\n]{1,160}?)(\*\*|\
 // machineryPhrase recognises a stage direction that is narrating the protocol rather
 // than the scene.
 //
-// Three families, which is all of what has actually been seen leaking:
+// Four families, which is all of what has actually been seen leaking:
 //   - a bare mood readout: "mood: happy 3", "emotion — mischievous"
 //   - sending a picture as an announced act: "sending you a photo", "attaches an image"
 //   - moving the meter: "progressing mood to 4", "changes her mood", "raising intensity"
+//   - filing a memory: "makes a mental note that…", "noting that you like…"
 //
 // Anchored at the start of the span so it classifies what the direction *is about*.
 // A sentence that merely mentions a picture in passing ("*I look at the photo*") does
@@ -67,6 +70,12 @@ var machineryPhrase = regexp.MustCompile(`(?i)^\s*(?:` +
 	`|(?:photo|picture|pic|image|selfie)\s+(?:sent|attached|shown|shared|delivered|enclosed)\b` +
 	// Moving the meter.
 	`|(?:progress|progresses|progressing|advance\w*|change|changes|changing|shift\w*|updat\w*|increas\w*|rais\w*|lower\w*|bump\w*|set|setting|adjust\w*)\b[^\n]{0,40}?\b(?:mood|emotion|feeling|expression|intensity|horniness|heat|meter|tier|level)\b` +
+	// Filing a memory. "makes a (mental) note …"; or remembering/noting/jotting a
+	// *that/this/how/what* clause. The clausal complement is required so ordinary prose
+	// — "*I remember you from before*", "*note the freckle on your shoulder*" — is left
+	// alone: those do not begin "<verb> that/this/how/what".
+	`|(?:i\s+am\s+|i'?m\s+|i'?ll\s+|i\s+|she\s+)?(?:make|makes|making|made|take|takes|taking|took)\s+(?:a\s+)?(?:mental\s+)?note\b` +
+	`|(?:i\s+am\s+|i'?m\s+|i'?ll\s+|i\s+|she\s+)?(?:remember\w*|not(?:e|es|ing)|jot\w*|memoriz\w*)\s+(?:that|this|how|what)\b` +
 	`)`)
 
 // looseMoodTag and looseSendTag are the unanchored twins of moodTag and sendTag.
@@ -81,7 +90,34 @@ var machineryPhrase = regexp.MustCompile(`(?i)^\s*(?:` +
 var (
 	looseMoodTag = regexp.MustCompile(`(?i)\[\s*mood\s*[:=-]?\s*([^\]\d]{0,60}?)\s*[,;:/|-]?\s*(\d{1,2})?\s*\]`)
 	looseSendTag = regexp.MustCompile(`(?i)\[\s*(?:send|show|photo|pic|image|attach)\s*[:=-]?\s*([^\]\n]{1,200}?)\s*\]`)
+	// looseRememberTag captures a [remember: …] note wherever it lands. Read here to be
+	// persisted; deleted by scrubDirectives (via strayTag) afterwards so it never shows.
+	looseRememberTag = regexp.MustCompile(`(?i)\[\s*(?:remember|memory|note)\s*[:=-]?\s*([^\]\n]{1,300}?)\s*\]`)
 )
+
+// maxRememberedPerReply bounds how many facts one reply may file. A model told it can
+// remember will occasionally try to summarise the whole conversation into a list; two is
+// enough for a reply that genuinely learned something without letting that happen.
+const maxRememberedPerReply = 2
+
+// findRememberTags reads every [remember: …] note out of a reply, in order, capped. The
+// facts are returned raw; appendLibbyMemories owns trimming, length, and dedup.
+func findRememberTags(reply string) []string {
+	matches := looseRememberTag.FindAllStringSubmatch(reply, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	var facts []string
+	for _, match := range matches {
+		if fact := strings.TrimSpace(match[1]); fact != "" {
+			facts = append(facts, fact)
+			if len(facts) >= maxRememberedPerReply {
+				break
+			}
+		}
+	}
+	return facts
+}
 
 // findLooseMood reads a mood tag from anywhere in a reply. The last one wins: a model
 // that emits several is revising, and the final one is where it landed.

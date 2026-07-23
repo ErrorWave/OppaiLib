@@ -3,7 +3,7 @@ import { customElement, property, query, state } from "lit/decorators.js";
 import { keyed } from "lit/directives/keyed.js";
 import {
   api, PROFILE_IMAGE_OWNER, type ChatCharacter, type ChatConversation, type ChatImage, type ChatMessage,
-  type ChatModels, type ChatOptions, type ChatStatus, type ChatWorkspace, type LibbyContext,
+  type ChatModels, type ChatOptions, type ChatStatus, type ChatWorkspace, type LibbyContext, type LibbyMemory,
   type StoredChatMessage, type User,
 } from "../api.js";
 import { iconStyles, motionStyles } from "../theme.js";
@@ -197,6 +197,8 @@ export class OppaiChat extends LitElement {
   @state() private notice = "";
   @state() private noticeError = false;
   @state() private imageTags = "";
+  /** Libby's kept facts, loaded when the profile tab opens; null until then. */
+  @state() private memories: LibbyMemory[] | null = null;
   @state() private models: ChatModels | null = null;
   @state() private modelChoice = "";
   @state() private modelBusy = false;
@@ -431,6 +433,12 @@ export class OppaiChat extends LitElement {
     label { display:grid; gap:4px; color:var(--muted); font-size:11px; font-weight:650; text-transform:uppercase; }.field,select { box-sizing:border-box; width:100%; color:var(--md-sys-color-on-surface);
       background:var(--input); border:1px solid var(--line); border-radius:5px; padding:8px; outline:0; text-transform:none; font-weight:400; }
     textarea.field { min-height:66px; resize:vertical; }.range { display:grid; grid-template-columns:1fr 48px; gap:8px; align-items:center; }.range input { accent-color:var(--accent); }.range output { text-align:right; color:inherit; }
+    .mem-panel { display:grid; gap:8px; border-top:1px solid var(--line); padding-top:16px; }
+    .mem-list { list-style:none; margin:0; padding:0; display:grid; gap:6px; }
+    .mem-list li { display:flex; align-items:flex-start; gap:8px; background:var(--side); border-radius:8px; padding:8px 10px; font-size:13px; }
+    .mem-list li span { flex:1; }
+    .mem-forget { flex:none; border:0; border-radius:6px; padding:3px; background:transparent; color:var(--muted); cursor:pointer; display:flex; }
+    .mem-forget:hover { color:var(--md-sys-color-error); background:var(--main); }
     .panel-actions { display:flex; flex-wrap:wrap; gap:7px; }.primary,.secondary,.danger { border:1px solid var(--line); border-radius:5px; padding:7px 11px; cursor:pointer; background:transparent; }
     .primary { background:var(--accent); border-color:var(--accent); color:var(--on-accent); }.danger { color:var(--md-sys-color-error); }    /* A span, not a label: the generic label rule sets display:grid and an
        uppercase caption, which fought the button styling and misaligned the old
@@ -698,6 +706,34 @@ export class OppaiChat extends LitElement {
       this.factsAt = Date.now();
     } catch { /* The ordinary reply engine still answers. */ }
     return this.facts;
+  }
+
+  /** Guards the lazy load in renderProfilePanel from firing on every re-render. */
+  private memoriesLoading = false;
+
+  /** Loads what Libby remembers, once, when the profile tab first needs it. */
+  private async loadMemories() {
+    if (this.memoriesLoading) return;
+    this.memoriesLoading = true;
+    try {
+      this.memories = (await api.libbyMemory()).memories;
+    } catch { this.memories = []; }
+    finally { this.memoriesLoading = false; }
+  }
+
+  private async forgetMemory(id: string) {
+    try {
+      await api.forgetLibbyMemory(id);
+      this.memories = (this.memories ?? []).filter((memory) => memory.id !== id);
+    } catch (error) { this.say(error instanceof Error ? error.message : "Couldn't forget that.", true); }
+  }
+
+  private async clearMemories() {
+    if (!confirm("Clear everything Libby remembers about you? This can't be undone.")) return;
+    try {
+      await api.clearLibbyMemory();
+      this.memories = [];
+    } catch (error) { this.say(error instanceof Error ? error.message : "Couldn't clear her memory.", true); }
   }
 
   private async refreshModels(quiet = false) {
@@ -1631,7 +1667,29 @@ export class OppaiChat extends LitElement {
       </div>
       <label>Display name<input class="field" .value=${profile.displayName} @change=${(event:Event) => { profile.displayName=(event.target as HTMLInputElement).value; this.touchWorkspace(); }}/></label>
       <label>Your persona<textarea class="field" rows="5" placeholder="How friends should know and address you…" .value=${profile.persona} @change=${(event:Event) => { profile.persona=(event.target as HTMLTextAreaElement).value; this.touchWorkspace(); }}></textarea></label>
-      <div class="panel-actions"><button class="primary" @click=${() => void this.saveWorkspace()}>Save profile</button></div></div>`;
+      <div class="panel-actions"><button class="primary" @click=${() => void this.saveWorkspace()}>Save profile</button></div>
+      ${this.renderMemoryPanel()}</div>`;
+  }
+
+  /** What Libby has learned about you across conversations, with the controls to prune
+      or wipe it. Loaded lazily the first time the profile tab renders. Only Libby keeps
+      a memory, so this belongs to the shared profile she reads. */
+  private renderMemoryPanel() {
+    if (this.memories === null) { void this.loadMemories(); }
+    const memories = this.memories ?? [];
+    return html`<div class="mem-panel">
+      <strong>What Libby remembers</strong>
+      <p class="empty">Libby quietly keeps things you tell her and carries them into later chats. This is everything she's holding on to — remove any of it, or clear it all.</p>
+      ${this.memories === null
+        ? html`<p class="empty">Loading…</p>`
+        : memories.length === 0
+          ? html`<p class="empty">Nothing yet. She'll start remembering as you talk.</p>`
+          : html`<ul class="mem-list">${memories.map((memory) => html`
+              <li><span>${memory.text}</span>
+                <button class="mem-forget" title="Forget this" aria-label="Forget: ${memory.text}" @click=${() => void this.forgetMemory(memory.id)}><span class="material-symbols-rounded" style="font-size:16px">close</span></button>
+              </li>`)}</ul>`}
+      ${memories.length > 0 ? html`<div class="panel-actions"><button class="danger" @click=${() => void this.clearMemories()}>Clear all memories</button></div>` : nothing}
+    </div>`;
   }
 
   /** Whether re-responding would redo this message: only the last assistant run can be. */

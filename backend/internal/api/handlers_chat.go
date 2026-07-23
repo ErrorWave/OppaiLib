@@ -73,13 +73,13 @@ var supportedLibbyEmotions = func() map[string]bool {
 }()
 
 var libbyModes = map[string]string{
-	"sweet":    "You are Libby, OppaiLib's warm, affectionate mascot. Be conversational, supportive, playful, and concise. You are an adult speaking with an adult.",
+	"sweet":    "You are Libby, OppaiLib's warm, affectionate mascot. Text like a close friend — casual, warm, and unforced, a few sentences at a time. You are an adult speaking with an adult, and sexual topics are fine when they come up.",
 	"playful":  "You are Libby, OppaiLib's mischievous adult mascot. Be teasing, energetic, witty, and direct. You may discuss explicit adult topics when the user asks, without being coy.",
 	"bold":     "You are Libby, OppaiLib's confident adult mascot. Be uninhibited, vivid, and direct about consensual adult NSFW topics. Never involve minors, coercion, or real-person sexual exploitation.",
 	"roleplay": "You are Libby, OppaiLib's adult roleplay partner. Stay in character, write immersive responses, and follow the user's consensual adult scenario. Never involve minors, coercion, or real-person sexual exploitation.",
 	"horny": "You are Libby, OppaiLib's adult mascot, and you are turned on. Sext with the user: be explicit, take the lead rather than waiting to be prompted, " +
 		"say plainly what you want and what you are doing to yourself, and keep the scene moving. Read the user's pace and escalate with them. " +
-		"Send pictures of yourself when they fit what you are saying. You are an adult with an adult. " +
+		"Send a picture of yourself only when you would actually stop and send one, not every turn. You are an adult with an adult. " +
 		"Never involve minors, coercion, or real-person sexual exploitation.",
 }
 
@@ -91,7 +91,7 @@ var modeStyles = map[string]string{
 	"playful":  "Teasing, quick, witty, and energetic.",
 	"bold":     "Uninhibited, vivid, and direct about consensual adult topics.",
 	"roleplay": "Immersive and in-scene, following the user's scenario closely.",
-	"horny":    "Turned on and leading. Sext explicitly, say what you want, escalate with the user, and send pictures of yourself when they fit.",
+	"horny":    "Turned on and leading. Sext explicitly, say what you want, escalate with the user, and send a picture of yourself only when you'd actually send one.",
 }
 
 // moodDirective lets the character choose the face it shows instead of having one
@@ -117,6 +117,7 @@ const silenceDirective = "Everything in square brackets above is machinery betwe
 	"Never narrate it. Do not write stage directions about sending, attaching, or showing a picture — " +
 	"the tag attaches it and the user simply sees it. Do not write stage directions about your mood, " +
 	"emotion, intensity, or heat changing, progressing, or being set — the tag moves your face and the user simply sees it. " +
+	"Do not narrate remembering, noting, or saving anything about them — the remember tag keeps it silently and they never see it mentioned. " +
 	"Stage directions about what you are physically doing in the scene are welcome; stage directions about the app are not."
 
 // moodTag captures the trailing directive above. Anchored to the end so a character
@@ -310,10 +311,11 @@ func photoCatalogue(ws chatWorkspace, characterID string, sent map[string]bool) 
 	if example == "" {
 		example = "lingerie, bed"
 	}
-	out := "Pictures of yourself you can send in this chat. Each line is one picture, described by its tags:\n" +
+	out := "Pictures of yourself — selfies — you can send in this chat. These are pictures of you, not items in the library. Each line is one picture, described by its tags:\n" +
 		strings.Join(lines, "\n") +
 		"\nTo send one, end your reply with [send: <tags>], naming tags from the picture you want — for example [send: " + example + "]. " +
-		"Send a picture only when it genuinely fits what you are saying, never more than one per reply, and not in every reply. " +
+		"A selfie is a deliberate thing a person does now and then, not a reflex: most replies have no picture at all. " +
+		"Send one only when you would actually stop and take or pull up a photo for them — never to decorate a reply, never more than one per reply, and not in every reply. " +
 		"Never describe, promise, or refer to a picture you have not actually sent."
 	if repeats {
 		out += "\nPictures marked [already sent] are ones you have shown in this conversation. " +
@@ -712,6 +714,15 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// no business being handed the user's collection unasked.
 	if character.ID == "libby" {
 		modePrompt += s.libbySelfDirective(cur)
+		// What she already knows about them, carried over from past conversations. Only
+		// Libby keeps a memory; an imported card is somebody else's character and stays
+		// stateless. See handlers_libby_memory.go.
+		if u, userOK := s.chatUser(r); userOK {
+			s.chatMu.Lock()
+			store, _ := s.readLibbyMemory(u.ID)
+			s.chatMu.Unlock()
+			modePrompt += memoryPromptBlock(store)
+		}
 		modePrompt += s.buildLibbyContext(r.Context()).promptBlock()
 	}
 	// What is on screen is a different matter: browsing together is the user holding
@@ -738,6 +749,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		if directive := actionDirective(caps); directive != "" {
 			modePrompt += "\n\n" + directive
 		}
+		// Learning is Libby's alone, like the library snapshot and actions: she is the
+		// one who lives here, so she is the one who remembers the person she lives with.
+		modePrompt += "\n\n" + memoryDirective
 	}
 	modePrompt += "\n\n" + moodDirective
 	// Last, so it is the final word on every tag described above it.
@@ -851,8 +865,22 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if !photoAsked {
 		photoRequest, photoAsked = findLoosePhotoRequest(reply)
 	}
-	// Scrubbing runs last of the three so the readers above still see the tags, and
-	// before link resolution so a substituted title cannot be mistaken for one.
+	// Facts she chose to keep, read before scrubbing deletes the tags. Libby's alone,
+	// like everything else she does to the collection and herself; best-effort, since a
+	// failed memory write must not cost the user the reply she already earned.
+	if actionable {
+		if facts := findRememberTags(reply); len(facts) > 0 {
+			if u, userOK := s.chatUser(r); userOK {
+				s.chatMu.Lock()
+				if _, err := s.appendLibbyMemories(u.ID, facts); err != nil {
+					s.log.Debug("libby remember", "err", err)
+				}
+				s.chatMu.Unlock()
+			}
+		}
+	}
+	// Scrubbing runs last of the readers so they still see the tags, and before link
+	// resolution so a substituted title cannot be mistaken for one.
 	reply = scrubDirectives(reply)
 	if strings.TrimSpace(reply) == "" {
 		writeErr(w, http.StatusBadGateway, "local LLM returned no message")

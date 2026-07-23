@@ -74,9 +74,22 @@ Web UI ──────┼──▶ Go API ──▶ crypto (envelope AES-256-
 
 ## Meet Libby
 
-<p align="center">
-  <img src="web/public/Libby_New/Calm/neutral.png" alt="Libby, the OppaiLib mascot" width="200" />
-</p>
+<table align="center">
+  <tr>
+    <td align="center"><img src="web/public/Libby_New/Calm/neutral.png" alt="Libby — calm and neutral" width="150" /></td>
+    <td align="center"><img src="web/public/Libby_New/Warm/warm%20happy.png" alt="Libby — warm and happy" width="150" /></td>
+    <td align="center"><img src="web/public/Libby_New/flirty/Flirty%20Mis.png" alt="Libby — flirty and mischievous" width="150" /></td>
+    <td align="center"><img src="web/public/Libby_New/heated/heated%20suprised.png" alt="Libby — heated and surprised" width="150" /></td>
+    <td align="center"><img src="web/public/Libby_New/Peak/Peak%20Thinking.png" alt="Libby — peak intensity and thinking" width="150" /></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Calm</sub></td>
+    <td align="center"><sub>Warm</sub></td>
+    <td align="center"><sub>Flirty</sub></td>
+    <td align="center"><sub>Heated</sub></td>
+    <td align="center"><sub>Peak</sub></td>
+  </tr>
+</table>
 
 Libby is OppaiLib's mascot and resident librarian — an adult chat companion who
 actually knows your library. She lives beside the collection, not bolted on to it:
@@ -91,10 +104,15 @@ actually knows your library. She lives beside the collection, not bolted on to i
 - **Helpful, with permission:** she can offer to import a URL, add tags, favorite an
   item, or generate and file a picture. Her reply only creates an approval card;
   nothing changes until you press **Allow**, and **Not now** safely declines it.
+- **Remembers you:** Libby can quietly carry meaningful details — your name,
+  preferences, boundaries, and running jokes — into later conversations. Memories are
+  encrypted per user, visible in chat settings, and can be removed one at a time or
+  cleared completely whenever you choose.
 - **More expressive:** she chooses her mood and intensity each reply from twelve
   emotions — neutral, happy, surprised, thinking, mischievous, shy, smug, sad,
   annoyed, sleepy, loving, and excited — and the portrait changes with the moment.
-  The pose shown above is her *Calm* look.
+  The gallery above samples the five built-in intensity tiers; each tier includes the
+  five core expressions, for 25 bundled sprites in total.
 - **Sends pictures of herself** when they fit, recognises a picture of herself when
   you share one, and can wear custom **outfits** you create in Settings. Each outfit
   can have cover art and different artwork for every emotion and intensity; missing

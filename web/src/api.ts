@@ -679,6 +679,14 @@ export interface LibbyAction {
   tags?: string[];
 }
 
+/** One durable fact Libby has kept about you, carried between conversations. */
+export interface LibbyMemory {
+  id: string;
+  text: string;
+  /** When she noted it, epoch millis. */
+  at: number;
+}
+
 export interface LibbyOutfit {
   id: string;
   name: string;
@@ -1110,6 +1118,15 @@ export const api = {
   // server-side. Which outfit is worn is a per-device choice (see libby.ts).
 
   libbyContext: () => request<LibbyContext>("/api/libby/context", {}, 15_000),
+
+  // ── Libby memory ─────────────────────────────────────────────────────────
+  // The durable facts Libby keeps about you between conversations. Written from her
+  // own replies on the chat path (server-side, silent); these only read and clear it.
+  libbyMemory: () => request<{ memories: LibbyMemory[] }>("/api/libby/memory", {}, 15_000),
+  clearLibbyMemory: () =>
+    request<{ status: string }>("/api/libby/memory", { method: "DELETE" }),
+  forgetLibbyMemory: (id: string) =>
+    request<{ status: string }>(`/api/libby/memory/${encodeURIComponent(id)}`, { method: "DELETE" }),
 
   /** Candidate poster frames for a video, evenly spaced across its running time.
       One request, because every frame read costs a decrypt of the whole blob. */

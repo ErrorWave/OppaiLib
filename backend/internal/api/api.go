@@ -224,6 +224,12 @@ func (s *Server) Handler() http.Handler {
 	// Performs one action the user has approved in the chat. Nothing reaches here
 	// without an explicit press; see handlers_libby_actions.go.
 	mux.HandleFunc("POST /api/libby/act", s.requireAuth(s.handleLibbyAct))
+	// Libby's memory: the durable facts she keeps about the user between conversations.
+	// Written from her own replies on the chat path; these endpoints only read and clear
+	// it, for the settings screen. See handlers_libby_memory.go.
+	mux.HandleFunc("GET /api/libby/memory", s.requireAuth(s.handleGetLibbyMemory))
+	mux.HandleFunc("DELETE /api/libby/memory", s.requireAuth(s.handleClearLibbyMemory))
+	mux.HandleFunc("DELETE /api/libby/memory/{id}", s.requireAuth(s.handleForgetLibbyMemory))
 	mux.HandleFunc("GET /api/libby/outfits", s.requireAuth(s.handleListLibbyOutfits))
 	mux.HandleFunc("POST /api/libby/outfits", s.requireAuth(s.handleSaveLibbyOutfit))
 	mux.HandleFunc("DELETE /api/libby/outfits/{id}", s.requireAuth(s.handleDeleteLibbyOutfit))

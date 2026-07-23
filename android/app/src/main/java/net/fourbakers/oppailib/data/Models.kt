@@ -530,6 +530,18 @@ data class LibbyOutfit(
 @Serializable
 data class LibbyOutfitsResponse(val outfits: List<LibbyOutfit> = emptyList())
 
+/** One durable fact Libby has kept about you, carried between conversations. */
+@Serializable
+data class LibbyMemory(
+    val id: String,
+    val text: String = "",
+    /** When she noted it, epoch millis. */
+    val at: Long = 0,
+)
+
+@Serializable
+data class LibbyMemoryResponse(val memories: List<LibbyMemory> = emptyList())
+
 /** One candidate poster frame. [image] is an inline data URL, so the whole strip
     arrives in a single response — every frame read costs a decrypt server-side. */
 @Serializable
