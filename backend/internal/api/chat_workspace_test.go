@@ -109,6 +109,43 @@ func TestChatReservedImageOwnersAreAcceptedAndKeptOutOfGalleries(t *testing.T) {
 	}
 }
 
+// A conversation stored without a "messages" key must never come back as
+// "messages":null. Go marshals a nil slice as null, the web client reads
+// conversation.messages.length while rendering, and the resulting throw leaves the
+// chat screen stuck on its loading spinner. The Android client omits the key
+// whenever a conversation is empty, because kotlinx does not encode defaults.
+func TestChatWorkspaceNeverReturnsNullSlices(t *testing.T) {
+	s, token := newTestServer(t)
+	h := s.Handler()
+
+	conversationID := strings.Repeat("e", 32)
+	body := `{
+		"profile":{"displayName":"","persona":""},
+		"characters":[{"id":"libby","name":"Libby","promptWeight":1,"defaultMode":"sweet"}],
+		"conversations":[{"id":"` + conversationID + `","characterId":"libby","title":"Empty","mode":"sweet","emotion":"neutral","intensity":1,"createdAt":1,"updatedAt":2}]
+	}`
+	rec := do(t, h, token, http.MethodPut, "/api/chat/workspace", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save workspace: %d %s", rec.Code, rec.Body)
+	}
+	if strings.Contains(rec.Body.String(), `"messages":null`) {
+		t.Fatalf("PUT echoed a null message list: %s", rec.Body)
+	}
+
+	rec = do(t, h, token, http.MethodGet, "/api/chat/workspace", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("load workspace: %d %s", rec.Code, rec.Body)
+	}
+	for _, nulled := range []string{`"messages":null`, `"conversations":null`, `"images":null`, `"characters":null`} {
+		if strings.Contains(rec.Body.String(), nulled) {
+			t.Fatalf("workspace contains %s: %s", nulled, rec.Body)
+		}
+	}
+	if !strings.Contains(rec.Body.String(), `"messages":[]`) {
+		t.Fatalf("empty conversation lost its message list: %s", rec.Body)
+	}
+}
+
 const validChatPNG = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAAQSURBVBhXY/jPwPCfARkAAB7zAf+x9MCaAAAAAElFTkSuQmCC"
 
 func containsString(items []string, wanted string) bool {

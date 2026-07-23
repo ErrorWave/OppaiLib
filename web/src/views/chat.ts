@@ -94,6 +94,27 @@ function fallbackWorkspace(): ChatWorkspace {
   };
 }
 
+/**
+ * Repairs a workspace that arrived with holes in it.
+ *
+ * The server normalizes these too, and that is the real fix — but this component
+ * indexes the arrays directly all through its render pass, so it should not be one
+ * malformed field away from drawing nothing at all. An older server, a cached
+ * response, or a future client that omits a key all land here instead of throwing.
+ */
+function normalizeWorkspace(workspace: ChatWorkspace): ChatWorkspace {
+  return {
+    ...workspace,
+    profile: workspace.profile ?? { displayName: "", persona: "" },
+    characters: (workspace.characters ?? []).filter((character) => character && character.id),
+    images: (workspace.images ?? []).map((image) => ({ ...image, tags: image.tags ?? [] })),
+    conversations: (workspace.conversations ?? []).map((conversation) => ({
+      ...conversation,
+      messages: (conversation.messages ?? []).filter((message) => message && typeof message.content === "string"),
+    })),
+  };
+}
+
 function optionNumber(options: ChatOptions | undefined, key: string, fallback: number): number {
   const value = options?.[key];
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
@@ -359,6 +380,10 @@ export class OppaiChat extends LitElement {
     .backend-state.load-error { display:flex; align-items:center; flex-wrap:wrap; gap:8px;
       border-left:3px solid var(--md-sys-color-error); }
     .backend-state.load-error .autobar-btn { margin-left:auto; }
+    .load-failed { grid-column:1/-1; padding:24px; display:grid; gap:10px; justify-items:start; align-content:start; }
+    .load-failed h2 { margin:0; font-size:18px; }
+    .load-failed p { margin:0; color:var(--muted); overflow-wrap:anywhere; }
+    .load-failed .hint { font-size:12px; }
     form.composer-form { padding:0 16px 14px; }.composer { display:flex; align-items:flex-end; gap:9px; background:var(--input); border:1px solid transparent; border-radius:14px; padding:10px 12px; }
     .composer:focus-within { border-color:var(--accent); box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 18%,transparent); }
     .composer textarea { resize:none; border:0; outline:0; background:transparent; color:inherit; max-height:140px; min-height:22px; line-height:22px; flex:1; padding:0; }
@@ -601,7 +626,7 @@ export class OppaiChat extends LitElement {
     try {
       if (status.status === "fulfilled") this.status = status.value;
       if (workspace.status === "fulfilled") {
-        this.workspace = workspace.value;
+        this.workspace = normalizeWorkspace(workspace.value);
         this.workspaceLoaded = true;
       } else {
         this.workspace = fallbackWorkspace();
@@ -677,7 +702,7 @@ export class OppaiChat extends LitElement {
       // was in flight. A reply that arrives mid-request was never in the payload,
       // so overwriting with the response would silently discard it — and
       // touchWorkspace has already scheduled the save that will persist it.
-      if (seq === this.editSeq) this.workspace = saved;
+      if (seq === this.editSeq) this.workspace = normalizeWorkspace(saved);
     }
     catch (error) { this.say(`Couldn't save chat: ${(error as Error).message}`, true); }
   }
@@ -1639,7 +1664,32 @@ export class OppaiChat extends LitElement {
     </article>`;
   }
 
+  /**
+   * Draws the screen, or says why it couldn't.
+   *
+   * Lit has no error boundary: a throw during an update aborts the pass and leaves
+   * the previously drawn DOM in place, with the cause only in the console. Since the
+   * first thing this component ever draws is its loading spinner, *any* render bug
+   * presents identically — as a chat screen that spins forever in every browser,
+   * including a fresh incognito window. That is precisely how a single
+   * "messages": null in the stored workspace hid, so the failure is now caught and
+   * shown rather than left to look like a hang.
+   */
   render() {
+    try {
+      return this.renderClient();
+    } catch (error) {
+      console.error("chat render failed", error);
+      return html`<div class="client"><section class="main load-failed">
+        <h2>Chat couldn't be drawn.</h2>
+        <p>${(error as Error)?.message || String(error)}</p>
+        <p class="hint">This is a bug — the detail above and the browser console say which part of the workspace is malformed.</p>
+        <button class="autobar-btn" @click=${() => void this.retryLoad()}>Reload chat</button>
+      </section></div>`;
+    }
+  }
+
+  private renderClient() {
     const character=this.activeCharacter, conversation=this.activeConversation;
     if (this.loading) return html`<div class="client"><section class="main" style="grid-column:1/-1;place-items:center;display:grid"><md-circular-progress indeterminate></md-circular-progress></section></div>`;
     if (!character || !conversation) return html`<div class="client"><section class="main" style="grid-column:1/-1;padding:24px">Chat workspace is unavailable.</section></div>`;

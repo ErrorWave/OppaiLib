@@ -181,13 +181,43 @@ func (s *Server) readChatWorkspace(userID int64) (chatWorkspace, error) {
 	if !found {
 		ws.Characters = append([]chatCharacter{defaultLibbyCard()}, ws.Characters...)
 	}
+	normalizeChatWorkspace(&ws)
+	return ws, nil
+}
+
+// normalizeChatWorkspace replaces every nil slice with an empty one.
+//
+// This is not cosmetic. Go marshals a nil slice as JSON `null`, not `[]`, and the
+// clients index these fields directly — the web UI reads conversation.messages.length
+// while rendering. A single null there throws inside the render pass, and Lit leaves
+// the previously drawn DOM in place, so the chat screen sits on its loading spinner
+// forever with the error only visible in the console.
+//
+// A nil arrives easily: the Android client serializes with kotlinx defaults, which
+// omit a field whose value equals its default, so an empty conversation is sent with
+// no "messages" key at all. Normalizing on *read* as well as on write is deliberate —
+// it repairs a workspace that was already stored with a nil, without waiting for the
+// owner to save it again.
+func normalizeChatWorkspace(ws *chatWorkspace) {
+	if ws.Characters == nil {
+		ws.Characters = []chatCharacter{}
+	}
 	if ws.Conversations == nil {
 		ws.Conversations = []chatConversation{}
 	}
 	if ws.Images == nil {
 		ws.Images = []chatImage{}
 	}
-	return ws, nil
+	for i := range ws.Conversations {
+		if ws.Conversations[i].Messages == nil {
+			ws.Conversations[i].Messages = []storedChatMessage{}
+		}
+	}
+	for i := range ws.Images {
+		if ws.Images[i].Tags == nil {
+			ws.Images[i].Tags = []string{}
+		}
+	}
 }
 
 func (s *Server) writeChatWorkspace(userID int64, ws chatWorkspace) error {
@@ -291,6 +321,10 @@ func cleanLimited(v string, n int) (string, bool) {
 }
 
 func validateChatWorkspace(ws *chatWorkspace) error {
+	// Before anything else: a client that omitted a field left a nil slice behind,
+	// and everything downstream — validation, storage, and the JSON sent back to
+	// every client — must never see one. See normalizeChatWorkspace.
+	normalizeChatWorkspace(ws)
 	if len(ws.Characters) == 0 || len(ws.Characters) > maxChatCharacters {
 		return errors.New("character count must be 1 to 40")
 	}
