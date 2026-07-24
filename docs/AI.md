@@ -133,6 +133,34 @@ image. Outfit art is stored encrypted on the server beside the config; which
 outfit Libby *wears* is a per-device choice, and an emotion an outfit doesn't
 cover falls back to the default art.
 
+### Wants of her own
+
+Libby keeps her own standing wants the same way she keeps what she has learned
+about you: quietly, from her own replies, in an encrypted file per user
+(`libby-wants.json.enc`, sibling to her memory) that carries between
+conversations. They are hers, not a to-do list of yours — an outfit she'd like to
+wear, media she wishes were on the shelves, how she wants a night to go — and she
+raises them herself, now and then, in her own voice rather than as an offer to
+help. They are grounded in what is actually here: she is told where the collection
+is thin or empty, so a craving is prompted by a real gap rather than invented. A
+want for media can resolve through the ordinary approve-first proposal — she offers
+to have something made or added and nothing happens until you press **Allow**, the
+same gate as everything else she does to the library. A want for an outfit has no
+such lever (outfits are art you drop in), so it stays conversation. She keeps a
+small handful and voices them rarely; most replies carry none. **Chat → settings →
+your profile** lists what she has been wanting, alongside what she remembers, and
+lets you drop any of it or clear it all. Web only for now, like Outfits and Memory.
+
+### Texting, not request-and-response
+
+A longer reply arrives the way a person texts — as two or three short messages
+sent back to back rather than one paragraph — with the typing indicator stopping
+and starting between them. And if a conversation with Libby goes quiet for a few
+minutes after *she* spoke, and the tab is still open in front of you, she sends one
+unprompted follow-up to pick it back up: exactly once per lull, not a loop. (That
+is separate from **autopilot**, the toggle that lets her keep the conversation
+going continuously — this is just her not wanting to be left on read.)
+
 ## Image generation
 
 The Create tab drives a local image generator, configured by URL under

@@ -31,6 +31,8 @@ func (s *Server) libbySelfDirective(cur settings.Settings) string {
 		"never coy, prudish, or embarrassed about what is on these shelves.\n")
 	b.WriteString("- You talk like a close friend over text: warm, casual, and unforced, mostly a few sentences, matching their rhythm rather than sounding polished or on the clock. " +
 		"Sex is not off-limits or awkward for you — raise it or lean into it yourself when the moment is there, and follow their lead on how far it goes.\n")
+	b.WriteString("- Text the way people actually text. Keep lines short. Starting lowercase is fine, trailing off with \"...\" instead of finishing every sentence is fine. " +
+		"When what you have to say is really two or three separate thoughts, send them as separate texts — put a blank line between them — rather than composing one tidy paragraph. Don't force it; one line is often the whole message.\n")
 	b.WriteString("- The pixel-art woman shown beside this conversation is you. Her expression is your expression and it shifts with how you feel — " +
 		"that is what the mood you end each reply with drives. A picture of a woman who looks like you is a picture of you.\n")
 	b.WriteString("- Pictures of yourself are selfies you send. The pictures in the library are items in the collection — media on your shelves that you open with a link, not pictures of you. " +
@@ -75,6 +77,17 @@ var libbySuggestKinds = []string{"game", "video", "comic"}
 // libbySuggestPerKind bounds each kind's recommendation shortlist.
 const libbySuggestPerKind = 6
 
+// libbyKnownKinds is the full kind vocabulary the library can hold, so a gap — a kind
+// with nothing or almost nothing in it — can be noticed rather than inferred from what
+// happens to be present. Kept in step with models.MediaKind.
+var libbyKnownKinds = []string{"video", "comic", "game", "image", "gif"}
+
+// libbyKindNoun is how she'd say a kind in the plural, for a gap line she reads back as
+// her own words rather than a schema name.
+var libbyKindNoun = map[string]string{
+	"video": "videos", "comic": "comics", "game": "games", "image": "pictures", "gif": "gifs",
+}
+
 type libbyRecentItem struct {
 	ID    int64    `json:"id"`
 	Title string   `json:"title"`
@@ -105,6 +118,11 @@ type libbyContext struct {
 	// lands on something that is actually in the collection rather than the most
 	// recently added item, whatever kind that happened to be.
 	Suggest []libbyKindPicks `json:"suggest"`
+	// Gaps are the thin and empty places in the collection — a kind with nothing in it,
+	// a library that is barely tagged — phrased as short facts. They ground her own
+	// wants (handlers_libby_wants.go): a craving for "something rougher than what's on
+	// the shelves" should be prompted by what is actually missing, not invented.
+	Gaps []string `json:"gaps,omitempty"`
 }
 
 // buildLibbyContext snapshots the library and the server for Libby.
@@ -127,6 +145,7 @@ func (s *Server) buildLibbyContext(ctx context.Context) libbyContext {
 	}
 
 	present := map[string]bool{}
+	countByKind := map[string]int64{}
 	if kinds, tags, err := s.db.Stats(ctx); err == nil {
 		if kinds != nil {
 			out.Kinds = kinds
@@ -136,8 +155,10 @@ func (s *Server) buildLibbyContext(ctx context.Context) libbyContext {
 			out.Items += k.Count
 			out.Bytes += k.Bytes
 			present[k.Kind] = true
+			countByKind[k.Kind] = k.Count
 		}
 	}
+	out.Gaps = libbyGaps(countByKind, out.Items, out.Tags)
 
 	// Per-kind recommendation shortlists. Queried per kind rather than sliced out of
 	// the recent list, because the recent list is whatever was added last — a library
@@ -213,6 +234,42 @@ func (s *Server) buildLibbyContext(ctx context.Context) libbyContext {
 	return out
 }
 
+// libbyGaps names where the collection is thin, as short facts she can want against.
+//
+// Deliberately conservative and capped: this is texture for her own desires, not an
+// audit. An empty library has no gaps worth voicing — everything is missing, which is
+// not a craving, it is a blank shelf — so it returns nothing until there is enough here
+// for a hole in it to mean something.
+func libbyGaps(countByKind map[string]int64, items, tags int64) []string {
+	if items < 8 {
+		return nil
+	}
+	var gaps []string
+	// A kind is thin if it is empty or a small sliver of the collection. Walked in a
+	// stable order so the same library always describes itself the same way.
+	for _, kind := range libbyKnownKinds {
+		if len(gaps) >= 3 {
+			break
+		}
+		noun := libbyKindNoun[kind]
+		if noun == "" {
+			noun = kind
+		}
+		switch n := countByKind[kind]; {
+		case n == 0:
+			gaps = append(gaps, fmt.Sprintf("There are no %s on the shelves at all.", noun))
+		case n <= 2 || n*20 < items:
+			gaps = append(gaps, fmt.Sprintf("There are only %d %s here.", n, noun))
+		}
+	}
+	// Tags are the only searchable text over an encrypted library, so a sparsely tagged
+	// collection is one she can barely find her way around — worth wanting fixed.
+	if len(gaps) < 3 && items >= 12 && tags*3 < items {
+		gaps = append(gaps, "A lot of what's here is barely tagged.")
+	}
+	return gaps
+}
+
 // suggestKindLabel is the human heading for a recommendation shortlist.
 func suggestKindLabel(kind string) string {
 	switch kind {
@@ -283,6 +340,14 @@ func (c libbyContext) promptBlock() string {
 	}
 	if c.ImageGen {
 		b.WriteString("- Image generation is connected, so you can suggest making something.\n")
+	}
+
+	if len(c.Gaps) > 0 {
+		b.WriteString("- Where this collection is thin, in case it feeds something you find yourself wanting — " +
+			"a hole here is a fair reason to crave what would fill it, but this is only for you to notice, never to read out as a chore list:\n")
+		for _, gap := range c.Gaps {
+			fmt.Fprintf(&b, "  - %s\n", gap)
+		}
 	}
 
 	if len(c.Suggest) > 0 {
