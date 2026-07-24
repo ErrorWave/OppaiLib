@@ -185,6 +185,10 @@ data class ChatRequest(
     val intensity: Int = 1,
     val options: JsonObject = JsonObject(emptyMap()),
     val characterId: String = "libby",
+    /** Tags and id for the photo attached to the newest user message. Text-only
+        models receive the tags, while the id keeps that same photo out of replies. */
+    val photoTags: List<String> = emptyList(),
+    val photoImageId: String = "",
     /**
      * Pictures already seen in this conversation, oldest first. The server keeps no
      * memory between requests, so what has already been shown has to travel with the

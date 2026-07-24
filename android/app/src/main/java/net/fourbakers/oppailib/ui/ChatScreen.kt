@@ -56,6 +56,8 @@ import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.CallEnd
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -91,6 +93,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -129,6 +132,7 @@ import net.fourbakers.oppailib.data.LibbyLink
 import net.fourbakers.oppailib.data.LibbyMemory
 import net.fourbakers.oppailib.data.LibbyMeter
 import net.fourbakers.oppailib.data.LibbyVoice
+import net.fourbakers.oppailib.data.Media
 import net.fourbakers.oppailib.data.Repository
 import net.fourbakers.oppailib.data.StoredChatMessage
 import java.text.SimpleDateFormat
@@ -222,7 +226,13 @@ typealias OpenMedia = (Long) -> Unit
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(repo: Repository, onBack: () -> Unit, onOpenMedia: OpenMedia = {}) {
+fun ChatScreen(
+    repo: Repository,
+    onBack: () -> Unit,
+    onOpenMedia: OpenMedia = {},
+    sharedMedia: Media? = null,
+    onSharedMediaConsumed: () -> Unit = {},
+) {
     var status by remember { mutableStateOf<ChatStatus?>(null) }
     var models by remember { mutableStateOf<ChatModels?>(null) }
     var workspace by remember { mutableStateOf<ChatWorkspace?>(null) }
@@ -238,6 +248,11 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit, onOpenMedia: OpenMedia = {}
     var friendName by remember { mutableStateOf("") }
     var imageTags by remember { mutableStateOf("") }
     var uploading by remember { mutableStateOf(false) }
+    /** A library image handed in from the hold menu, uploaded and waiting in the
+        composer exactly like the web client's Share with… flow. */
+    var pendingPhoto by remember { mutableStateOf<ChatImage?>(null) }
+    var callOpen by remember { mutableStateOf(false) }
+    var callSeconds by remember { mutableStateOf(0) }
     var overflowOpen by remember { mutableStateOf(false) }
     // A conversation pending a delete confirmation, so a mis-tap doesn't wipe history.
     var confirmDelete by remember { mutableStateOf<ChatConversation?>(null) }
@@ -358,6 +373,30 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit, onOpenMedia: OpenMedia = {}
         if (status?.modelBackend == true) models = runCatching { repo.api.chatModels() }.getOrNull()
     }
 
+    LaunchedEffect(sharedMedia?.id, workspace != null) {
+        val media = sharedMedia ?: return@LaunchedEffect
+        val loaded = workspace ?: return@LaunchedEffect
+        try {
+            val libby = loaded.characters.firstOrNull { it.id == "libby" }
+                ?: error("Libby isn't available in this chat workspace.")
+            characterId = libby.id
+            var next = loaded
+            val conversation = conversations(next, libby.id).firstOrNull()
+            if (conversation == null) next = newConversation(next, libby) else conversationId = conversation.id
+            workspace = next
+            message = "Scanning ${media.title.ifBlank { "library image" }} locally…"
+            val image = repo.api.uploadChatImage(mediaChatUpload(repo, media, libby.id))
+            val latest = workspace ?: next
+            save(latest.copy(images = (latest.images + image).distinctBy { it.id }))
+            pendingPhoto = image
+            message = "Ready to show Libby — add a message or send the photo as-is."
+        } catch (error: Exception) {
+            message = error.message ?: "Couldn't share that image with Libby."
+        } finally {
+            onSharedMediaConsumed()
+        }
+    }
+
     val active = currentConversation(workspace)
     LaunchedEffect(active?.messages?.size, typingPhase) {
         // The intro only occupies index 0 while the log is empty, so the last row is
@@ -369,10 +408,12 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit, onOpenMedia: OpenMedia = {}
 
     fun sendMessage() {
         val ws = workspace ?: return; val char = currentCharacter(ws) ?: return; val convo = currentConversation(ws) ?: return
-        val text = draft.trim(); if (text.isBlank() || busy) return
-        val now = System.currentTimeMillis(); val userLine = StoredChatMessage(chatID(), "user", text, now)
+        val photo = pendingPhoto
+        val text = draft.trim().ifBlank { if (photo != null) "*shares a photo with you*" else "" }
+        if (text.isBlank() || busy) return
+        val now = System.currentTimeMillis(); val userLine = StoredChatMessage(chatID(), "user", text, now, imageId = photo?.id.orEmpty())
         val pending = convo.copy(title = if (convo.title == "New conversation") text.take(42) else convo.title, messages = convo.messages + userLine, updatedAt = now)
-        workspace = ws.copy(conversations = ws.conversations.map { if (it.id == convo.id) pending else it }); draft = ""; busy = true; message = ""
+        workspace = ws.copy(conversations = ws.conversations.map { if (it.id == convo.id) pending else it }); draft = ""; pendingPhoto = null; busy = true; message = ""
         scope.launch {
             if (status?.enabled != true && (status?.configured == true || status?.modelBackend == true)) {
                 runCatching { repo.api.chatStatus() }.getOrNull()?.let { status = it }
@@ -396,8 +437,15 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit, onOpenMedia: OpenMedia = {}
             val generation = runCatching {
                 repo.api.chat(
                     ChatRequest(
-                        pending.mode, history, pending.emotion, pending.intensity, pending.options, char.id,
-                        seenPictures,
+                        mode = pending.mode,
+                        messages = history,
+                        emotion = pending.emotion,
+                        intensity = pending.intensity,
+                        options = pending.options,
+                        characterId = char.id,
+                        photoTags = photo?.tags.orEmpty(),
+                        photoImageId = photo?.id.orEmpty(),
+                        recentImageIds = seenPictures,
                         // What she has on: the worn outfit is a per-device pref, so the
                         // server cannot know it unless this says so.
                         outfit = if (char.id == "libby") repo.prefs.libbyOutfit else "",
@@ -433,6 +481,11 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit, onOpenMedia: OpenMedia = {}
     }
 
     BackHandler(onBack = onBack)
+    LaunchedEffect(callOpen) {
+        if (!callOpen) return@LaunchedEffect
+        callSeconds = 0
+        while (callOpen) { delay(1_000); callSeconds++ }
+    }
     confirmDelete?.let { pending ->
         AlertDialog(
             onDismissRequest = { confirmDelete = null },
@@ -450,6 +503,24 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit, onOpenMedia: OpenMedia = {}
             save(newConversation(ws.copy(characters = ws.characters + char), char)); friendName = ""; addFriend = false; settingsOpen = true
         }) { Text("Add") } }, dismissButton = { TextButton(onClick = { addFriend = false }) { Text("Cancel") } },
     )
+
+    val callWorkspace = workspace
+    val callCharacter = currentCharacter(callWorkspace)
+    val callConversation = currentConversation(callWorkspace)
+    if (callOpen && callCharacter?.id == "libby" && callConversation != null) {
+        BackHandler { callOpen = false }
+        LibbyVideoCall(
+            repo = repo,
+            conversation = callConversation,
+            busy = busy,
+            seconds = callSeconds,
+            draft = draft,
+            onDraft = { draft = it },
+            onSend = { sendMessage() },
+            onEnd = { callOpen = false },
+        )
+        return
+    }
 
     ModalNavigationDrawer(
         drawerState = drawer,
@@ -478,6 +549,9 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit, onOpenMedia: OpenMedia = {}
                 Box {
                     IconButton(onClick = { overflowOpen = true }) { Icon(Icons.Filled.MoreVert, "Conversation actions", tint = ChatColors.muted) }
                     DropdownMenu(expanded = overflowOpen, onDismissRequest = { overflowOpen = false }) {
+                        if (char.id == "libby" && !repo.prefs.hideLibby) {
+                            DropdownMenuItem(text = { Text("Video chat") }, leadingIcon = { Icon(Icons.Filled.Videocam, null) }, onClick = { overflowOpen = false; callOpen = true })
+                        }
                         DropdownMenuItem(text = { Text("New conversation") }, leadingIcon = { Icon(Icons.Filled.AddComment, null) }, onClick = { overflowOpen = false; save(newConversation(ws, char)) })
                         DropdownMenuItem(text = { Text("Clear messages") }, leadingIcon = { Icon(Icons.Filled.DeleteSweep, null) }, enabled = convo.messages.isNotEmpty(), onClick = { overflowOpen = false; updateConversation { it.copy(messages = emptyList(), title = "New conversation") } })
                         DropdownMenuItem(text = { Text("Delete conversation", color = ChatColors.danger) }, leadingIcon = { Icon(Icons.Filled.Delete, null, tint = ChatColors.danger) }, onClick = { overflowOpen = false; confirmDelete = convo })
@@ -506,12 +580,25 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit, onOpenMedia: OpenMedia = {}
                 if (busy && typingPhase == TypingPhase.TYPING) item { Text("${char.name} is typing…", color = ChatColors.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 68.dp, top = 8.dp)) }
             }
             if (message.isNotBlank()) Text(message, color = if (message.contains("fail", true) || message.contains("couldn", true)) ChatColors.danger else ChatColors.muted, fontSize = 13.sp, modifier = Modifier.fillMaxWidth().background(ChatColors.side).padding(10.dp))
+            pendingPhoto?.let { photo ->
+                Row(
+                    Modifier.fillMaxWidth().background(ChatColors.side).padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    AsyncImage(repo.chatImageUrl(photo.id), photo.name, imageLoader = repo.imageLoader, contentScale = ContentScale.Crop, modifier = Modifier.size(54.dp).clip(RoundedCornerShape(8.dp)))
+                    Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
+                        Text(photo.name, color = ChatColors.text, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                        Text(photo.tags.take(6).joinToString().ifBlank { "Ready to send" }, color = ChatColors.muted, fontSize = 11.sp, maxLines = 1)
+                    }
+                    TextButton(onClick = { pendingPhoto = null }) { Text("Remove") }
+                }
+            }
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                 TextField(draft, { draft = it }, placeholder = { Text("Message @${char.name}") }, enabled = !busy, maxLines = 4,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = KeyboardActions(onSend = { sendMessage() }),
                     shape = RoundedCornerShape(22.dp),
                     colors = TextFieldDefaults.colors(focusedContainerColor = ChatColors.input, unfocusedContainerColor = ChatColors.input), modifier = Modifier.weight(1f))
-                IconButton(onClick = { sendMessage() }, enabled = draft.isNotBlank() && !busy, modifier = Modifier.padding(start = 6.dp).clip(CircleShape).background(ChatColors.accent)) { Icon(Icons.AutoMirrored.Filled.Send, "Send", tint = MaterialTheme.colorScheme.onPrimary) }
+                IconButton(onClick = { sendMessage() }, enabled = (draft.isNotBlank() || pendingPhoto != null) && !busy, modifier = Modifier.padding(start = 6.dp).clip(CircleShape).background(ChatColors.accent)) { Icon(Icons.AutoMirrored.Filled.Send, "Send", tint = MaterialTheme.colorScheme.onPrimary) }
             }
         }
     }
@@ -532,6 +619,102 @@ fun ChatScreen(repo: Repository, onBack: () -> Unit, onOpenMedia: OpenMedia = {}
                         .onFailure { message = it.message ?: "Backend status check failed" }
                 } },
             )
+        }
+    }
+}
+
+/** Full-screen sprite call, mirroring the web client's call presentation. It is the
+ * same conversation underneath: sending here writes to the ordinary log and mood
+ * changes swap Libby's sprite on the next recomposition. */
+@Composable
+private fun LibbyVideoCall(
+    repo: Repository,
+    conversation: ChatConversation,
+    busy: Boolean,
+    seconds: Int,
+    draft: String,
+    onDraft: (String) -> Unit,
+    onSend: () -> Unit,
+    onEnd: () -> Unit,
+) {
+    val emotion = conversation.emotion.ifBlank { "neutral" }
+    val tier = conversation.intensity.coerceIn(1, LibbyMeter.MAX)
+    val caption = conversation.messages.lastOrNull { it.role == "assistant" }?.content
+    val clock = "%d:%02d".format(seconds / 60, seconds % 60)
+
+    Column(
+        Modifier.fillMaxSize().background(ChatColors.rail).windowInsetsPadding(WindowInsets.safeDrawing),
+    ) {
+        Box(
+            Modifier.weight(1f).fillMaxWidth().background(
+                Brush.verticalGradient(
+                    listOf(MaterialTheme.colorScheme.primaryContainer.copy(alpha = .72f), ChatColors.rail),
+                ),
+            ),
+        ) {
+            LibbyPortrait(
+                repo = repo,
+                emotion = emotion,
+                tier = tier,
+                fallbackAsset = mascotAsset(emotion, tier),
+                modifier = Modifier.fillMaxSize().padding(top = 56.dp),
+            )
+            Row(
+                Modifier.align(Alignment.TopCenter).fillMaxWidth().background(Color(0x66000000)).padding(horizontal = 18.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Libby", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                    Text(if (busy) "Speaking…" else clock, color = Color.White.copy(alpha = .78f), fontSize = 12.sp)
+                }
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(emotion.replaceFirstChar(Char::uppercase), color = Color.White, fontSize = 12.sp)
+                    Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                        repeat(LibbyMeter.MAX) { index ->
+                            Box(
+                                Modifier.size(6.dp).clip(CircleShape).background(
+                                    if (index < tier) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = .28f),
+                                ),
+                            )
+                        }
+                    }
+                }
+            }
+            caption?.let {
+                Text(
+                    richChatText(it),
+                    color = Color.White,
+                    modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth(.9f)
+                        .padding(bottom = 16.dp).clip(RoundedCornerShape(12.dp))
+                        .background(Color(0xAA000000)).padding(horizontal = 14.dp, vertical = 11.dp),
+                )
+            }
+        }
+        Row(
+            Modifier.fillMaxWidth().background(ChatColors.rail).imePadding().padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextField(
+                value = draft,
+                onValueChange = onDraft,
+                placeholder = { Text("Say something to Libby…") },
+                enabled = !busy,
+                maxLines = 3,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(onSend = { onSend() }),
+                shape = RoundedCornerShape(24.dp),
+                colors = TextFieldDefaults.colors(focusedContainerColor = ChatColors.input, unfocusedContainerColor = ChatColors.input),
+                modifier = Modifier.weight(1f),
+            )
+            IconButton(
+                onClick = onSend,
+                enabled = draft.isNotBlank() && !busy,
+                modifier = Modifier.padding(start = 7.dp).clip(CircleShape).background(ChatColors.accent),
+            ) { Icon(Icons.AutoMirrored.Filled.Send, "Send", tint = MaterialTheme.colorScheme.onPrimary) }
+            IconButton(
+                onClick = onEnd,
+                modifier = Modifier.padding(start = 7.dp).clip(CircleShape).background(ChatColors.danger),
+            ) { Icon(Icons.Filled.CallEnd, "End video chat", tint = MaterialTheme.colorScheme.onError) }
         }
     }
 }
