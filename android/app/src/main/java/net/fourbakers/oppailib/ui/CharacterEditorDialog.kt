@@ -1,7 +1,6 @@
 package net.fourbakers.oppailib.ui
 
 import android.net.Uri
-import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -72,11 +71,11 @@ fun CharacterEditorDialog(
     var saveBusy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    val thumbPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+    val thumbPicker = rememberSystemPickerLauncher(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri != null) pickedThumb = uri
     }
-    val scanPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
-        if (uri == null || scanBusy) return@rememberLauncherForActivityResult
+    val scanPicker = rememberSystemPickerLauncher(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri == null || scanBusy) return@rememberSystemPickerLauncher
         scanBusy = true
         scope.launch {
             runCatching {

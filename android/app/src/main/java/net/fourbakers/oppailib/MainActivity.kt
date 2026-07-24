@@ -66,6 +66,18 @@ import kotlinx.coroutines.launch
 class MainActivity : FragmentActivity() {
 
     private var pendingShare: Intent? = null
+    private var activeSystemPickers = 0
+
+    internal val systemPickerInProgress: Boolean
+        get() = activeSystemPickers > 0
+
+    internal fun systemPickerStarted() {
+        activeSystemPickers++
+    }
+
+    internal fun systemPickerFinished() {
+        activeSystemPickers = (activeSystemPickers - 1).coerceAtLeast(0)
+    }
 
     private val askNotifications =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* declined is fine */ }
@@ -81,7 +93,12 @@ class MainActivity : FragmentActivity() {
         setContent {
             OppaiTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    AppRoot(repo, ::promptBiometric) { consumePendingShare(repo) }
+                    AppRoot(
+                        repo = repo,
+                        biometric = ::promptBiometric,
+                        onAuthenticated = { consumePendingShare(repo) },
+                        systemPickerInProgress = { systemPickerInProgress },
+                    )
                 }
             }
         }
@@ -248,6 +265,7 @@ private fun AppRoot(
     repo: Repository,
     biometric: (onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit,
     onAuthenticated: () -> Unit,
+    systemPickerInProgress: () -> Boolean,
 ) {
     var authed by remember { mutableStateOf(repo.hasSession || repo.canBiometricReauth) }
     var locked by remember { mutableStateOf(repo.canBiometricReauth) }
@@ -309,7 +327,9 @@ private fun AppRoot(
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_STOP -> if (authed && !authInProgress && !closeInProgress) {
+                Lifecycle.Event.ON_STOP -> if (
+                    authed && !authInProgress && !closeInProgress && !systemPickerInProgress()
+                ) {
                     locked = true
                     closeInProgress = true
                     scope.launch {

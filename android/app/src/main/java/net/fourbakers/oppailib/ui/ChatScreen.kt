@@ -2,7 +2,6 @@ package net.fourbakers.oppailib.ui
 
 import android.util.Base64
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -321,7 +320,7 @@ fun ChatScreen(
     // resulting ~11 MB string are all synchronous, and all of it used to run on the
     // main thread — which is why picking a large image froze the whole app until the
     // upload finished. None of it touches the UI, so all of it belongs on IO.
-    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+    val imagePicker = rememberSystemPickerLauncher(ActivityResultContracts.GetContent()) { uri ->
         val ws = workspace; val char = currentCharacter(ws)
         if (uri != null && ws != null && char != null && !uploading) scope.launch {
             uploading = true
@@ -346,7 +345,7 @@ fun ChatScreen(
         }
     }
 
-    val cardImporter = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+    val cardImporter = rememberSystemPickerLauncher(ActivityResultContracts.GetContent()) { uri ->
         val ws = workspace
         if (uri != null && ws != null) scope.launch {
             runCatching {

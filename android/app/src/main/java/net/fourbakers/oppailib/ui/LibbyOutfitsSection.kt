@@ -2,7 +2,6 @@ package net.fourbakers.oppailib.ui
 
 import android.net.Uri
 import android.util.Base64
-import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -314,11 +313,11 @@ private fun OutfitEditorDialog(
     var pendingLevel by remember { mutableStateOf(0) }
     val scope = rememberCoroutineScope()
 
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+    val picker = rememberSystemPickerLauncher(ActivityResultContracts.GetContent()) { uri: Uri? ->
         val emotion = pendingEmotion
         val level = pendingLevel
         pendingEmotion = null
-        if (uri == null || emotion == null) return@rememberLauncherForActivityResult
+        if (uri == null || emotion == null) return@rememberSystemPickerLauncher
         scope.launch {
             runCatching {
                 val data = uriToDataUrl(context, uri)
@@ -335,8 +334,8 @@ private fun OutfitEditorDialog(
     // pictures: a slot is a portrait cropped to stand beside a conversation, and a
     // good cover is often a wider, posed shot that would look wrong there.
     var hasCover by remember { mutableStateOf(outfit.hasThumb) }
-    val coverPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
-        if (uri == null) return@rememberLauncherForActivityResult
+    val coverPicker = rememberSystemPickerLauncher(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri == null) return@rememberSystemPickerLauncher
         scope.launch {
             runCatching {
                 repo.api.setLibbyOutfitThumb(outfit.id, LibbyEmotionRequest(uriToDataUrl(context, uri)))

@@ -2,7 +2,6 @@ package net.fourbakers.oppailib.ui
 
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -210,12 +209,12 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
 
-    val exportLauncher = rememberLauncherForActivityResult(
+    val exportLauncher = rememberSystemPickerLauncher(
         ActivityResultContracts.CreateDocument("*/*"),
     ) { uri ->
         val media = exporting
         exporting = null
-        if (uri == null || media == null) return@rememberLauncherForActivityResult
+        if (uri == null || media == null) return@rememberSystemPickerLauncher
         scope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
@@ -357,10 +356,10 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
         }
     }
 
-    val uploadLauncher = rememberLauncherForActivityResult(
+    val uploadLauncher = rememberSystemPickerLauncher(
         ActivityResultContracts.OpenMultipleDocuments(),
     ) { uris ->
-        if (uris.isNullOrEmpty()) return@rememberLauncherForActivityResult
+        if (uris.isNullOrEmpty()) return@rememberSystemPickerLauncher
         scope.launch {
             for (uri in uris) {
                 runCatching {

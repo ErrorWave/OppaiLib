@@ -3,7 +3,6 @@ package net.fourbakers.oppailib.ui
 import android.app.Activity
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -331,8 +330,8 @@ private fun GamePage(repo: Repository, media: Media) {
     LaunchedEffect(media.id) {
         runCatching { repo.api.gameGallery(media.id).items }.onSuccess { userGallery = it }
     }
-    val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        if (uris.isNullOrEmpty() || uploading) return@rememberLauncherForActivityResult
+    val galleryLauncher = rememberSystemPickerLauncher(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNullOrEmpty() || uploading) return@rememberSystemPickerLauncher
         uploading = true
         scope.launch {
             try {
