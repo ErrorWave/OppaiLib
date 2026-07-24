@@ -1,15 +1,18 @@
 package net.fourbakers.oppailib.ui
 
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -24,6 +27,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.automirrored.filled.Sort
@@ -34,6 +38,7 @@ import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Collections
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Gif
@@ -61,6 +66,8 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationDrawerItem
@@ -96,6 +103,8 @@ import androidx.work.WorkManager
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import net.fourbakers.oppailib.data.BulkRequest
 import net.fourbakers.oppailib.data.LibbyVoice
 import net.fourbakers.oppailib.data.Media
@@ -175,6 +184,12 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
     var showSettings by remember { mutableStateOf(false) }
     var showBrowse by remember { mutableStateOf(false) }
     var showChat by remember { mutableStateOf(false) }
+    // A hold-menu handoff is deliberately in-memory: it is an attachment for this
+    // visit to Chat, not a preference that should reappear after relaunching the app.
+    var chatShare by remember { mutableStateOf<Media?>(null) }
+    var holdMedia by remember { mutableStateOf<Media?>(null) }
+    var confirmExport by remember { mutableStateOf<Media?>(null) }
+    var exporting by remember { mutableStateOf<Media?>(null) }
     var showImageGen by remember { mutableStateOf(false) }
     // Which pinned feed to open the browser on; null means the browser's own default.
     var browsePin by remember { mutableStateOf<PinnedFeed?>(null) }
@@ -194,6 +209,29 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("*/*"),
+    ) { uri ->
+        val media = exporting
+        exporting = null
+        if (uri == null || media == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    repo.api.streamMedia(media.id).use { body ->
+                        context.contentResolver.openOutputStream(uri, "w")!!.use { output ->
+                            body.byteStream().use { input -> input.copyTo(output) }
+                        }
+                    }
+                }
+            }.onSuccess {
+                Toast.makeText(context, "Saved ${exportName(media)} to this device", Toast.LENGTH_LONG).show()
+            }.onFailure {
+                Toast.makeText(context, it.message ?: "Couldn't save the file", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
 
     fun refresh() {
         loading = true
@@ -358,7 +396,13 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
     }
 
     if (showChat) {
-        ChatScreen(repo = repo, onBack = { showChat = false }, onOpenMedia = { id -> openLinked(id) })
+        ChatScreen(
+            repo = repo,
+            onBack = { showChat = false },
+            onOpenMedia = { id -> openLinked(id) },
+            sharedMedia = chatShare,
+            onSharedMediaConsumed = { chatShare = null },
+        )
         return
     }
 
@@ -418,6 +462,74 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
                 TextButton(onClick = { confirmDelete = null }) { Text("Cancel") }
             },
         )
+    }
+
+    confirmExport?.let { target ->
+        AlertDialog(
+            onDismissRequest = { confirmExport = null },
+            title = { Text("Save to this device?") },
+            text = {
+                Text(
+                    "This exports an unencrypted copy outside OppaiLib. Other apps, " +
+                        "device backups, and anyone with access to your files may be able to read it.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmExport = null
+                    exporting = target
+                    exportLauncher.launch(exportName(target))
+                }) { Text("Save unencrypted copy") }
+            },
+            dismissButton = { TextButton(onClick = { confirmExport = null }) { Text("Cancel") } },
+        )
+    }
+
+    holdMedia?.let { target ->
+        ModalBottomSheet(onDismissRequest = { holdMedia = null }) {
+            Text(
+                target.title.ifBlank { "Library item ${target.id}" },
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
+            )
+            ListItem(
+                headlineContent = { Text("Save to device") },
+                supportingContent = { Text("Exports an unencrypted copy") },
+                leadingContent = { Icon(Icons.Filled.Download, contentDescription = null) },
+                modifier = Modifier.clickable { holdMedia = null; confirmExport = target },
+            )
+            ListItem(
+                headlineContent = { Text("Share with Libby in Chat") },
+                supportingContent = { Text("Attach it now so you can add a message and send") },
+                leadingContent = { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null) },
+                modifier = Modifier.clickable(enabled = canShareWithChat(target)) {
+                    holdMedia = null
+                    chatShare = target
+                    showChat = true
+                },
+            )
+            ListItem(
+                headlineContent = { Text("Save for Libby to send later") },
+                supportingContent = { Text("Adds the image to Libby's encrypted chat gallery") },
+                leadingContent = { Icon(Icons.Filled.Image, contentDescription = null) },
+                modifier = Modifier.clickable(enabled = canShareWithChat(target)) {
+                    holdMedia = null
+                    scope.launch {
+                        Toast.makeText(context, "Saving image for Libby…", Toast.LENGTH_SHORT).show()
+                        runCatching { repo.api.uploadChatImage(mediaChatUpload(repo, target, "libby")) }
+                            .onSuccess { Toast.makeText(context, "Saved for Libby to send later", Toast.LENGTH_LONG).show() }
+                            .onFailure { Toast.makeText(context, it.message ?: "Couldn't save for Libby", Toast.LENGTH_LONG).show() }
+                    }
+                },
+            )
+            ListItem(
+                headlineContent = { Text("Select item") },
+                supportingContent = { Text("Start multi-select actions") },
+                leadingContent = { Icon(Icons.Filled.CheckCircle, contentDescription = null) },
+                modifier = Modifier.clickable { holdMedia = null; selected = selected + target.id },
+            )
+            Spacer(Modifier.size(16.dp))
+        }
     }
 
     // The viewer owns the whole screen (immersive), so it replaces the library
@@ -702,11 +814,10 @@ fun LibraryScreen(repo: Repository, onLogout: () -> Unit) {
                                         selected = if (m.id in selected) selected - m.id else selected + m.id
                                     }
                                 },
-                                // Long-press used to go straight to a delete dialog. It now
-                                // starts a selection, and delete is one of the things you can
-                                // then do to it — a press-and-hold is how a grid begins
-                                // choosing, not how it destroys something.
-                                onLongClick = { selected = selected + m.id },
+                                // Hold opens the mobile counterpart to the web context menu.
+                                // Multi-select remains available inside it alongside export
+                                // and Libby handoff actions.
+                                onLongClick = { holdMedia = m },
                             )
                         }
                     }

@@ -68,6 +68,17 @@ interface ApiService {
     @GET("api/media/{id}")
     suspend fun getMedia(@Path("id") id: Long): Media
 
+    /** Raw library bytes for an explicit export or chat handoff. Callers must close
+        the body; @Streaming keeps large videos out of the app's heap. */
+    @Streaming
+    @GET("api/media/{id}/stream")
+    suspend fun streamMedia(@Path("id") id: Long): ResponseBody
+
+    /** The representative still used when a non-image item is shared into chat. */
+    @Streaming
+    @GET("api/media/{id}/thumb")
+    suspend fun mediaThumb(@Path("id") id: Long): ResponseBody
+
     /** Returns the item as it now stands, tags included — no need to re-fetch it. */
     @PATCH("api/media/{id}")
     suspend fun patchMedia(@Path("id") id: Long, @Body body: MediaPatch): Media
