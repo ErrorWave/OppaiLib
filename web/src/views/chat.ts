@@ -4,7 +4,7 @@ import { keyed } from "lit/directives/keyed.js";
 import {
   api, PROFILE_IMAGE_OWNER, type ChatCharacter, type ChatConversation, type ChatImage, type ChatMessage,
   type ChatModels, type ChatOptions, type ChatStatus, type ChatWorkspace, type LibbyContext, type LibbyMemory,
-  type StoredChatMessage, type User,
+  type LibbyWant, type StoredChatMessage, type User,
 } from "../api.js";
 import { iconStyles, motionStyles } from "../theme.js";
 import {
@@ -56,6 +56,52 @@ const EDITOR_TABS: { id: EditorTab; label: string; icon: string; group: string }
 const AUTO_DELAY_MS = 14_000;
 const AUTO_MAX_TURNS = 8;
 const AUTO_KEY = "oppai_chat_autopilot";
+
+/** How long after Libby's own last message a quiet, visible chat waits before she
+    sends one unprompted follow-up. A few minutes: long enough to be sure the lull is
+    real, short enough that she reads as present rather than absent. Unlike autopilot
+    this fires once per idle stretch, not on a loop — see armIdle/idleNudge. */
+const IDLE_NUDGE_MS = 210_000;
+
+/** Post-processes a finished reply into the 2–3 short messages a person would send
+    back to back, instead of one paragraph. Real texting arrives in bursts, so a reply
+    with a natural seam is split on it; one without stays whole.
+
+    Blank lines win — they are where the model was told to break intentionally-separate
+    texts, so a paragraph break is an explicit boundary. Failing that it falls back to
+    sentence boundaries, grouped so the pieces stay message-sized. Short replies are
+    never split: an eight-word line arriving as three bubbles is fragmentation, not
+    texture. Capped so a long reply becomes a few texts, not a wall of them. */
+const MAX_BUBBLES = 3;
+function splitIntoBubbles(text: string): string[] {
+  const trimmed = text.trim();
+  // Below this a reply is a single thought; splitting it only fragments.
+  if (trimmed.length < 160) return [trimmed];
+  // A blank line is an intended break: honour it first.
+  let parts = trimmed.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean);
+  if (parts.length < 2) {
+    // No paragraph seam — fall back to grouping sentences into message-sized runs.
+    const sentences = trimmed.match(/[^.!?…]+[.!?…]+["')\]]*\s*|[^.!?…]+$/g)?.map((s) => s.trim()).filter(Boolean);
+    if (!sentences || sentences.length < 2) return [trimmed];
+    parts = [];
+    let current = "";
+    for (const sentence of sentences) {
+      // Break when the run is already message-sized, but stop breaking once one more
+      // group would blow the cap — everything left then accretes into the last bubble.
+      if (current && current.length + sentence.length > 200 && parts.length < MAX_BUBBLES - 1) {
+        parts.push(current.trim());
+        current = sentence;
+      } else {
+        current = current ? `${current} ${sentence}` : sentence;
+      }
+    }
+    if (current.trim()) parts.push(current.trim());
+  }
+  if (parts.length <= MAX_BUBBLES) return parts;
+  // More paragraphs than the cap allows: keep the first few, fold the rest together so
+  // nothing is dropped.
+  return [...parts.slice(0, MAX_BUBBLES - 1), parts.slice(MAX_BUBBLES - 1).join("\n\n")];
+}
 
 /** Reserved image owner for a character's avatar, so a picture set as the face
     never joins that character's gallery nor gets attached to a reply. Mirrors
@@ -199,6 +245,8 @@ export class OppaiChat extends LitElement {
   @state() private imageTags = "";
   /** Libby's kept facts, loaded when the profile tab opens; null until then. */
   @state() private memories: LibbyMemory[] | null = null;
+  /** Libby's own standing wants, loaded alongside her memory; null until then. */
+  @state() private wants: LibbyWant[] | null = null;
   @state() private models: ChatModels | null = null;
   @state() private modelChoice = "";
   @state() private modelBusy = false;
@@ -234,6 +282,10 @@ export class OppaiChat extends LitElement {
   /** Bumped on every local mutation so an in-flight save can tell it went stale. */
   private editSeq = 0;
   private idleTimer = 0;
+  /** One nudge per idle stretch: set when she sends her unprompted follow-up, cleared
+      whenever the user acts (which re-arms the timer). Keeps re-engagement a one-shot,
+      not the loop autopilot is. */
+  private idleNudged = false;
   private noticeTimer = 0;
   private resize?: ResizeObserver;
 
@@ -736,6 +788,34 @@ export class OppaiChat extends LitElement {
     } catch (error) { this.say(error instanceof Error ? error.message : "Couldn't clear her memory.", true); }
   }
 
+  /** Guards the lazy load of her wants from firing on every re-render. */
+  private wantsLoading = false;
+
+  /** Loads Libby's own wants, once, when the profile tab first needs them. */
+  private async loadWants() {
+    if (this.wantsLoading) return;
+    this.wantsLoading = true;
+    try {
+      this.wants = (await api.libbyWants()).wants;
+    } catch { this.wants = []; }
+    finally { this.wantsLoading = false; }
+  }
+
+  private async forgetWant(id: string) {
+    try {
+      await api.forgetLibbyWant(id);
+      this.wants = (this.wants ?? []).filter((want) => want.id !== id);
+    } catch (error) { this.say(error instanceof Error ? error.message : "Couldn't drop that.", true); }
+  }
+
+  private async clearWants() {
+    if (!confirm("Clear everything Libby has been wanting? This can't be undone.")) return;
+    try {
+      await api.clearLibbyWants();
+      this.wants = [];
+    } catch (error) { this.say(error instanceof Error ? error.message : "Couldn't clear her wants.", true); }
+  }
+
   private async refreshModels(quiet = false) {
     try {
       const [models, status] = await Promise.all([api.chatModels(), api.chatStatus()]);
@@ -794,21 +874,59 @@ export class OppaiChat extends LitElement {
     });
   }
 
+  /**
+   * (Re)arms the one-shot idle nudge. Any activity that calls this — the user
+   * speaking, tapping, switching conversations — resets it, so the clock only runs
+   * during genuine silence and each idle stretch earns at most one follow-up.
+   *
+   * Only Libby re-engages: an imported card is somebody else's character with no life
+   * on this server. It works whether or not a model is loaded — a model gets a real
+   * continuation turn, the offline voice gets a canned idle line — but never while
+   * autopilot is already filling the silence in her own voice.
+   */
   private armIdle = () => {
     window.clearTimeout(this.idleTimer);
-    // Libby's canned idle line is what fills a silence when she is answering
-    // locally. With a model connected the autopilot does that job in her own
-    // voice, so the two must not both speak into the same lull.
-    if (this.characterID !== "libby" || this.status?.enabled) return;
-    this.idleTimer = window.setTimeout(() => {
-      if (this.busy || document.visibilityState !== "visible") return this.armIdle();
-      const conversation = this.activeConversation; if (!conversation) return;
-      const line = libbyReact("idle", { intensity: conversation.intensity });
-      conversation.emotion = line.emotion;
-      conversation.messages.push({ id:newID(), role:"assistant", content:line.message, at:Date.now() });
-      conversation.updatedAt = Date.now(); this.touchWorkspace(); void this.scrollToEnd(); this.armIdle();
-    }, 60_000);
+    this.idleNudged = false;
+    if (this.characterID !== "libby") return;
+    this.idleTimer = window.setTimeout(() => void this.idleNudge(), IDLE_NUDGE_MS);
   };
+
+  /**
+   * Sends exactly one unprompted follow-up when the chat has gone quiet after *her*
+   * last message. Fired once per idle stretch (armIdle resets the guard on any user
+   * action), never looping the way autopilot does, and only while the tab is being
+   * looked at — mirroring autoTick's visibility check so a backgrounded tab neither
+   * burns tokens nor talks to itself.
+   */
+  private async idleNudge() {
+    // Wait for a better moment rather than firing into a hidden tab, over a reply
+    // still generating, or on top of autopilot — but don't consume the one nudge to
+    // do it, so it still gets its turn once the moment is right.
+    if (this.busy || document.visibilityState !== "visible" || this.autoRunning) {
+      window.clearTimeout(this.idleTimer);
+      this.idleTimer = window.setTimeout(() => void this.idleNudge(), IDLE_NUDGE_MS);
+      return;
+    }
+    if (this.idleNudged) return;
+    const conversation = this.activeConversation;
+    if (!conversation || conversation.characterId !== "libby") return;
+    // Only break a silence that followed *her* — going quiet after your own message is
+    // you thinking, not a lull for her to fill.
+    const last = conversation.messages[conversation.messages.length - 1];
+    if (!last || last.role !== "assistant") return;
+    this.idleNudged = true;
+    if (this.status?.enabled) {
+      // A model is loaded: ask for one unprompted turn, exactly as autopilot does —
+      // just once, not a run.
+      await this.generateReply(conversation.id, "", true);
+      return;
+    }
+    // No model: her canned idle voice, the same pool autopilot's continuation replaces.
+    const line = libbyReact("idle", { intensity: conversation.intensity });
+    const live = this.liveConversation(conversation.id); if (!live) return;
+    live.emotion = line.emotion;
+    await this.typeAndPushBubbles(live.id, [line.message], 0);
+  }
 
   private activateCharacter(id: string) {
     this.characterID = id;
@@ -977,6 +1095,31 @@ export class OppaiChat extends LitElement {
   }
 
   /**
+   * Lands a reply as the 2–3 back-to-back texts a person would send instead of one
+   * block, each bubble taking its own turn through the typing/thinking phases so the
+   * indicator stops and restarts between them like someone pausing between messages.
+   *
+   * Only the first bubble is credited the time already spent generating; the rest are
+   * fresh pauses, since a person does not pre-write their follow-ups. Any per-message
+   * extras — a sent picture, link chips, action cards — ride the final bubble, so they
+   * appear once, after she has finished talking. Each push goes through liveConversation
+   * because the debounced autosave keeps swapping the object out from under us.
+   */
+  private async typeAndPushBubbles(
+    conversationID: string, chunks: string[], spentMs: number, extra: Partial<StoredChatMessage> = {},
+  ): Promise<boolean> {
+    for (let i = 0; i < chunks.length; i++) {
+      await this.typeLikeAPerson(chunks[i], i === 0 ? spentMs : 0);
+      const live = this.liveConversation(conversationID);
+      if (!live) return false;
+      const last = i === chunks.length - 1;
+      live.messages.push({ id:newID(), role:"assistant", content:chunks[i], at:Date.now(), ...(last ? extra : {}) });
+      live.updatedAt = Date.now(); this.touchWorkspace(); void this.scrollToEnd();
+    }
+    return true;
+  }
+
+  /**
    * Produces one assistant turn from the conversation's own history and appends it.
    *
    * Sending, re-responding, and the autopilot all end here; they differ only in what
@@ -1009,12 +1152,14 @@ export class OppaiChat extends LitElement {
         line = (facts && libbyLibraryAnswer(seed, facts, { intensity: progression.intensity }))
           ?? libbyReply(seed, mode, mood, progression.intensity, false);
       }
-      await this.typeLikeAPerson(line.message, 0);
+      // Mood and meter settle before the bubbles land, so the portrait matches what
+      // she is about to say. Offline lines are short and usually stay one bubble.
       const live = this.liveConversation(conversationID);
       if (!live) { this.busy = false; this.typingPhase = "idle"; return false; }
       live.emotion = line.emotion; live.progress = progression.progress; live.intensity = setIntensity(progression.intensity);
-      live.messages.push({ id:newID(), role:"assistant", content:line.message, at:Date.now() });
-      live.updatedAt = Date.now(); this.busy = false; this.touchWorkspace(); void this.scrollToEnd(); return true;
+      live.updatedAt = Date.now(); this.touchWorkspace();
+      const ok = await this.typeAndPushBubbles(conversationID, splitIntoBubbles(line.message), 0);
+      this.busy = false; this.typingPhase = "idle"; return ok;
     }
     try {
       const history: ChatMessage[] = conversation.messages.map(({ role, content:text }) => ({ role, content:text }));
@@ -1029,10 +1174,6 @@ export class OppaiChat extends LitElement {
         photoTags, photoImageId: photoImageID, recentImageIds: recentlySent(conversation.messages),
         outfit: character.id === "libby" ? loadLibbyOutfit() : "",
       });
-      // Whatever the model already spent counts as time she was "writing", so this
-      // only ever tops the wait up to something human — never adds a full delay on
-      // top of a slow generation.
-      await this.typeLikeAPerson(result.message, Date.now() - startedAt);
       // Deleting the conversation mid-generation is the one case with nowhere to
       // put the reply; dropping it is correct, and the user asked for that.
       const live = this.liveConversation(conversationID);
@@ -1048,9 +1189,16 @@ export class OppaiChat extends LitElement {
         const progression = applyProgression(live.progress ?? live.intensity, requested - live.intensity);
         live.progress = progression.progress; live.intensity = setIntensity(progression.intensity);
       }
-      live.messages.push({ id:newID(), role:"assistant", content:result.message, at:Date.now(), imageId:result.imageId || undefined, links:result.links?.length ? result.links : undefined, actions:result.actions?.length ? result.actions : undefined });
-      live.updatedAt = Date.now(); this.touchWorkspace(); void this.scrollToEnd();
-      return true;
+      live.updatedAt = Date.now(); this.touchWorkspace();
+      // A long reply lands as the few short texts a person would send back to back,
+      // each taking its own turn through the typing indicator. The picture, link chips,
+      // and action cards ride the last bubble. Whatever the model already spent counts
+      // as time she was "writing" on that first bubble, so a slow model never pays twice.
+      return await this.typeAndPushBubbles(conversationID, splitIntoBubbles(result.message), Date.now() - startedAt, {
+        imageId: result.imageId || undefined,
+        links: result.links?.length ? result.links : undefined,
+        actions: result.actions?.length ? result.actions : undefined,
+      });
     } catch (error) {
       if (this.status?.configured || this.status?.modelBackend) {
         try { this.status = await api.chatStatus(); } catch { /* Keep the generation error when the readiness check also fails. */ }
@@ -1668,7 +1816,8 @@ export class OppaiChat extends LitElement {
       <label>Display name<input class="field" .value=${profile.displayName} @change=${(event:Event) => { profile.displayName=(event.target as HTMLInputElement).value; this.touchWorkspace(); }}/></label>
       <label>Your persona<textarea class="field" rows="5" placeholder="How friends should know and address you…" .value=${profile.persona} @change=${(event:Event) => { profile.persona=(event.target as HTMLTextAreaElement).value; this.touchWorkspace(); }}></textarea></label>
       <div class="panel-actions"><button class="primary" @click=${() => void this.saveWorkspace()}>Save profile</button></div>
-      ${this.renderMemoryPanel()}</div>`;
+      ${this.renderMemoryPanel()}
+      ${this.renderWantsPanel()}</div>`;
   }
 
   /** What Libby has learned about you across conversations, with the controls to prune
@@ -1689,6 +1838,27 @@ export class OppaiChat extends LitElement {
                 <button class="mem-forget" title="Forget this" aria-label="Forget: ${memory.text}" @click=${() => void this.forgetMemory(memory.id)}><span class="material-symbols-rounded" style="font-size:16px">close</span></button>
               </li>`)}</ul>`}
       ${memories.length > 0 ? html`<div class="panel-actions"><button class="danger" @click=${() => void this.clearMemories()}>Clear all memories</button></div>` : nothing}
+    </div>`;
+  }
+
+  /** Libby's own standing wants — outfits she'd like, media she wishes were here, how
+      she wants a night to go — with the controls to prune or wipe them. Mirrors the
+      memory panel: server-owned, lazily loaded, Libby's alone. */
+  private renderWantsPanel() {
+    if (this.wants === null) { void this.loadWants(); }
+    const wants = this.wants ?? [];
+    return html`<div class="mem-panel">
+      <strong>What Libby wants</strong>
+      <p class="empty">Libby has wants of her own — an outfit she'd like, something she wishes were on the shelves, how she wants a night to go — and she'll bring them up herself. This is what she's been wanting lately; drop any of it, or clear it all.</p>
+      ${this.wants === null
+        ? html`<p class="empty">Loading…</p>`
+        : wants.length === 0
+          ? html`<p class="empty">Nothing yet. She'll let you know when she's wanting something.</p>`
+          : html`<ul class="mem-list">${wants.map((want) => html`
+              <li><span>${want.text}</span>
+                <button class="mem-forget" title="Drop this" aria-label="Drop: ${want.text}" @click=${() => void this.forgetWant(want.id)}><span class="material-symbols-rounded" style="font-size:16px">close</span></button>
+              </li>`)}</ul>`}
+      ${wants.length > 0 ? html`<div class="panel-actions"><button class="danger" @click=${() => void this.clearWants()}>Clear all wants</button></div>` : nothing}
     </div>`;
   }
 

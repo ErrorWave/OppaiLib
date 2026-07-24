@@ -230,6 +230,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/libby/memory", s.requireAuth(s.handleGetLibbyMemory))
 	mux.HandleFunc("DELETE /api/libby/memory", s.requireAuth(s.handleClearLibbyMemory))
 	mux.HandleFunc("DELETE /api/libby/memory/{id}", s.requireAuth(s.handleForgetLibbyMemory))
+	// Libby's own wants: her standing desires, kept the same way as her memory and
+	// written from her own replies on the chat path. These endpoints only read and clear
+	// them, for the settings screen. See handlers_libby_wants.go.
+	mux.HandleFunc("GET /api/libby/wants", s.requireAuth(s.handleGetLibbyWants))
+	mux.HandleFunc("DELETE /api/libby/wants", s.requireAuth(s.handleClearLibbyWants))
+	mux.HandleFunc("DELETE /api/libby/wants/{id}", s.requireAuth(s.handleForgetLibbyWant))
 	mux.HandleFunc("GET /api/libby/outfits", s.requireAuth(s.handleListLibbyOutfits))
 	mux.HandleFunc("POST /api/libby/outfits", s.requireAuth(s.handleSaveLibbyOutfit))
 	mux.HandleFunc("DELETE /api/libby/outfits/{id}", s.requireAuth(s.handleDeleteLibbyOutfit))

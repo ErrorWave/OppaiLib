@@ -37,6 +37,7 @@ var strayTag = regexp.MustCompile(`(?i)[*_~` + "`" + `]{0,2}\[\s*(?:` +
 	`|send|sends|sending|show|shows|showing|attach|attaches|attaching` +
 	`|photo|photos|pic|pics|picture|pictures|image|images|selfie|selfies` +
 	`|remember|remembers|remembering|memory|note|noting|noted` +
+	`|want|wants|wanting|craving|cravings|crave|craves|desire|desires` +
 	`)\b[^\]\n]{0,300}\]` + "[*_~`]{0,2}")
 
 // wrappedSpan finds the emphasis and parenthesis forms a stage direction is written
@@ -93,6 +94,10 @@ var (
 	// looseRememberTag captures a [remember: …] note wherever it lands. Read here to be
 	// persisted; deleted by scrubDirectives (via strayTag) afterwards so it never shows.
 	looseRememberTag = regexp.MustCompile(`(?i)\[\s*(?:remember|memory|note)\s*[:=-]?\s*([^\]\n]{1,300}?)\s*\]`)
+	// looseWantTag captures a [want: …]/[craving: …] desire wherever it lands. Read here
+	// to be persisted; deleted by scrubDirectives (via strayTag) afterwards so it never
+	// shows, exactly like the remember tag it is modelled on.
+	looseWantTag = regexp.MustCompile(`(?i)\[\s*(?:want|wants|wanting|craving|crave|desire|desires)\s*[:=-]?\s*([^\]\n]{1,300}?)\s*\]`)
 )
 
 // maxRememberedPerReply bounds how many facts one reply may file. A model told it can
@@ -117,6 +122,30 @@ func findRememberTags(reply string) []string {
 		}
 	}
 	return facts
+}
+
+// maxWantsPerReply bounds how many desires one reply may file. Kept at one on purpose:
+// a person voices a want now and then, not a wishlist per message, and the directive
+// asks for the same restraint the parser enforces here.
+const maxWantsPerReply = 1
+
+// findWantTags reads the [want: …] desires out of a reply, in order, capped. The wants
+// are returned raw; appendLibbyWants owns trimming, length, and dedup.
+func findWantTags(reply string) []string {
+	matches := looseWantTag.FindAllStringSubmatch(reply, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	var wants []string
+	for _, match := range matches {
+		if want := strings.TrimSpace(match[1]); want != "" {
+			wants = append(wants, want)
+			if len(wants) >= maxWantsPerReply {
+				break
+			}
+		}
+	}
+	return wants
 }
 
 // findLooseMood reads a mood tag from anywhere in a reply. The last one wins: a model

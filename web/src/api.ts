@@ -647,6 +647,9 @@ export interface LibbyContext {
   imageGen: boolean;
   chatModel?: string;
   recent: LibbyRecentItem[];
+  /** Where the collection is thin or empty, as short facts — texture for the wants she
+      voices, so a craving is grounded in what's actually missing. */
+  gaps?: string[];
 }
 
 export interface LibbyRecentItem {
@@ -684,6 +687,15 @@ export interface LibbyMemory {
   id: string;
   text: string;
   /** When she noted it, epoch millis. */
+  at: number;
+}
+
+/** One standing want of Libby's own — an outfit, some media, how a night goes — kept
+    and carried between conversations the same way her memory is. */
+export interface LibbyWant {
+  id: string;
+  text: string;
+  /** When she voiced it, epoch millis. */
   at: number;
 }
 
@@ -1127,6 +1139,15 @@ export const api = {
     request<{ status: string }>("/api/libby/memory", { method: "DELETE" }),
   forgetLibbyMemory: (id: string) =>
     request<{ status: string }>(`/api/libby/memory/${encodeURIComponent(id)}`, { method: "DELETE" }),
+
+  // ── Libby wants ──────────────────────────────────────────────────────────
+  // Her own standing desires, kept the same way as her memory. Written from her own
+  // replies on the chat path (server-side, silent); these only read and clear them.
+  libbyWants: () => request<{ wants: LibbyWant[] }>("/api/libby/wants", {}, 15_000),
+  clearLibbyWants: () =>
+    request<{ status: string }>("/api/libby/wants", { method: "DELETE" }),
+  forgetLibbyWant: (id: string) =>
+    request<{ status: string }>(`/api/libby/wants/${encodeURIComponent(id)}`, { method: "DELETE" }),
 
   /** Candidate poster frames for a video, evenly spaced across its running time.
       One request, because every frame read costs a decrypt of the whole blob. */

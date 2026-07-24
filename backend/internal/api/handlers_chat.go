@@ -720,8 +720,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		if u, userOK := s.chatUser(r); userOK {
 			s.chatMu.Lock()
 			store, _ := s.readLibbyMemory(u.ID)
+			// Her own standing wants, kept the same way and carried beside memory.
+			// See handlers_libby_wants.go.
+			wants, _ := s.readLibbyWants(u.ID)
 			s.chatMu.Unlock()
 			modePrompt += memoryPromptBlock(store)
+			modePrompt += wantsPromptBlock(wants)
 		}
 		modePrompt += s.buildLibbyContext(r.Context()).promptBlock()
 	}
@@ -752,6 +756,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		// Learning is Libby's alone, like the library snapshot and actions: she is the
 		// one who lives here, so she is the one who remembers the person she lives with.
 		modePrompt += "\n\n" + memoryDirective
+		// Wanting things of her own is Libby's alone for the same reason: an imported
+		// card is somebody else's character with a life elsewhere, not a person who
+		// lives on these shelves and covets what is or isn't on them.
+		modePrompt += "\n\n" + wantsDirective
 	}
 	modePrompt += "\n\n" + moodDirective
 	// Last, so it is the final word on every tag described above it.
@@ -874,6 +882,17 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 				s.chatMu.Lock()
 				if _, err := s.appendLibbyMemories(u.ID, facts); err != nil {
 					s.log.Debug("libby remember", "err", err)
+				}
+				s.chatMu.Unlock()
+			}
+		}
+		// Wants she voiced, kept the same way and for the same reasons: read before
+		// scrubbing deletes the tags, best-effort so a failed write costs nothing.
+		if wants := findWantTags(reply); len(wants) > 0 {
+			if u, userOK := s.chatUser(r); userOK {
+				s.chatMu.Lock()
+				if _, err := s.appendLibbyWants(u.ID, wants); err != nil {
+					s.log.Debug("libby want", "err", err)
 				}
 				s.chatMu.Unlock()
 			}
