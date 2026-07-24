@@ -144,6 +144,13 @@ type RequestDecorator interface {
 	Decorate(req *http.Request)
 }
 
+// MediaResolver is an optional source capability for catalogue entries whose
+// playable URL is minted on demand. The boolean says whether the source recognized
+// raw; an unrecognized URL is left untouched by the registry.
+type MediaResolver interface {
+	ResolveMedia(ctx context.Context, raw string) (resolved string, recognized bool, err error)
+}
+
 // Commenter is an optional interface: a source that has discussions implements it.
 // Sources without a comment section (a gallery site) simply don't, and the API
 // answers "this source has no comments" rather than inventing an empty thread.
@@ -206,7 +213,7 @@ func (r *Registry) SetRule34Credentials(userID, apiKey string) {
 // for almost everyone, does not work. A user file with the same id wins, so a site
 // that restyles can be fixed by dropping in a corrected spec — no rebuild.
 func NewRegistry(pages PageFetcher, dir string, log Logger) *Registry {
-	r := &Registry{srcs: []Source{NewFourChan(pages.Client()), NewRule34(pages.Client())}}
+	r := &Registry{srcs: []Source{NewFourChan(pages.Client()), NewRule34(pages.Client()), NewHanime(pages.Client())}}
 
 	specs := map[string]SourceSpec{}
 	order := []string{}
@@ -338,6 +345,25 @@ func (r *Registry) Decorate(req *http.Request) {
 			}
 		}
 	}
+}
+
+// ResolveMedia lets a source turn a stable catalogue/page URL into the concrete
+// media URL required for playback or import.
+func (r *Registry) ResolveMedia(ctx context.Context, raw string) (string, error) {
+	for _, s := range r.All() {
+		resolver, ok := s.(MediaResolver)
+		if !ok {
+			continue
+		}
+		resolved, recognized, err := resolver.ResolveMedia(ctx, raw)
+		if err != nil {
+			return "", err
+		}
+		if recognized {
+			return resolved, nil
+		}
+	}
+	return raw, nil
 }
 
 // hostMatches supports a leading "*." wildcard, which must match a *subdomain* —

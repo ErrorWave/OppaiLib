@@ -143,6 +143,10 @@ fun BrowseScreen(repo: Repository, openAt: PinnedFeed? = null, onBack: () -> Uni
     // there is no chip selected, so neither applies.
     val currentFeed: SourceFeed? = source?.feeds?.firstOrNull { it.id == boardFeed }
     val isSearch = container == null && currentFeed?.query == true
+    val searchTarget = currentFeed?.label
+        ?.takeUnless { it.equals("Search", ignoreCase = true) }
+        ?.let { "${source?.name.orEmpty()} ${it.lowercase()}" }
+        ?: source?.name.orEmpty()
 
     LaunchedEffect(Unit) {
         runCatching { repo.api.sources().sources }
@@ -471,7 +475,7 @@ fun BrowseScreen(repo: Repository, openAt: PinnedFeed? = null, onBack: () -> Uni
                 OutlinedTextField(
                     value = draft,
                     onValueChange = { draft = it },
-                    label = { Text("Search ${source?.name.orEmpty()}") },
+                    label = { Text("Search $searchTarget") },
                     singleLine = true,
                     leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
@@ -500,7 +504,7 @@ fun BrowseScreen(repo: Repository, openAt: PinnedFeed? = null, onBack: () -> Uni
                     Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
                 // A search that hasn't been run yet isn't an empty feed — say so.
                 isSearch && query.isBlank() -> Box(Modifier.fillMaxSize(), Alignment.Center) {
-                    Text("Search ${source?.name.orEmpty()} to see results.", Modifier.padding(24.dp))
+                    Text("Search $searchTarget to see results.", Modifier.padding(24.dp))
                 }
                 items.isEmpty() -> Box(Modifier.fillMaxSize(), Alignment.Center) {
                     Text(

@@ -36,7 +36,7 @@ func (e *Engine) Download(ctx context.Context, rawURL string) (*Media, error) {
 	req.Header.Set("Accept", "image/avif,image/webp,image/*,video/*,*/*;q=0.8")
 	// A referer from the same origin gets past a lot of naive hotlink guards.
 	req.Header.Set("Referer", u.Scheme+"://"+u.Host+"/")
-	resp, err := e.client.Do(req)
+	resp, err := e.MediaHTTPClient().Do(req)
 	if err != nil {
 		return nil, err
 	}

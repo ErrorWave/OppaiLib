@@ -18,6 +18,16 @@ import (
 // HTTPClient is the engine's bounded HTTP client.
 func (e *Engine) HTTPClient() *http.Client { return e.client }
 
+// MediaHTTPClient shares the guarded transport and redirect policy, but leaves the
+// body lifetime to the request context. Large videos routinely take longer than the
+// catalogue client's 30-second deadline; imports already carry a 20-minute context,
+// while streaming requests end when the viewer disconnects.
+func (e *Engine) MediaHTTPClient() *http.Client {
+	client := *e.client
+	client.Timeout = 0
+	return &client
+}
+
 // maxDocumentBytes caps a fetched HTML page. A listing is tens of kilobytes; a
 // server that streams forever should not be able to exhaust us.
 const maxDocumentBytes = 8 << 20

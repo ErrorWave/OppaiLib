@@ -38,6 +38,7 @@ var strayTag = regexp.MustCompile(`(?i)[*_~` + "`" + `]{0,2}\[\s*(?:` +
 	`|photo|photos|pic|pics|picture|pictures|image|images|selfie|selfies` +
 	`|remember|remembers|remembering|memory|note|noting|noted` +
 	`|want|wants|wanting|craving|cravings|crave|craves|desire|desires` +
+	`|petname|petnames|nickname|nicknames|endearment` +
 	`)\b[^\]\n]{0,300}\]` + "[*_~`]{0,2}")
 
 // wrappedSpan finds the emphasis and parenthesis forms a stage direction is written
@@ -98,6 +99,10 @@ var (
 	// to be persisted; deleted by scrubDirectives (via strayTag) afterwards so it never
 	// shows, exactly like the remember tag it is modelled on.
 	looseWantTag = regexp.MustCompile(`(?i)\[\s*(?:want|wants|wanting|craving|crave|desire|desires)\s*[:=-]?\s*([^\]\n]{1,300}?)\s*\]`)
+	// loosePetnameTag captures the [petname: …] endearment she settles on wherever it
+	// lands. Read here to be persisted into her bond; deleted by scrubDirectives (via
+	// strayTag) afterwards so it never shows, exactly like the want tag it is modelled on.
+	loosePetnameTag = regexp.MustCompile(`(?i)\[\s*(?:petname|nickname|endearment)\s*[:=-]?\s*([^\]\n]{1,60}?)\s*\]`)
 )
 
 // maxRememberedPerReply bounds how many facts one reply may file. A model told it can
@@ -146,6 +151,17 @@ func findWantTags(reply string) []string {
 		}
 	}
 	return wants
+}
+
+// findPetnameTag reads the endearment she settled on out of a reply, if any. The last one
+// wins: a model that revises lands on the final one. Returned raw; updateLibbyBond owns
+// trimming and length.
+func findPetnameTag(reply string) string {
+	matches := loosePetnameTag.FindAllStringSubmatch(reply, -1)
+	if len(matches) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(matches[len(matches)-1][1])
 }
 
 // findLooseMood reads a mood tag from anywhere in a reply. The last one wins: a model

@@ -723,9 +723,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			// Her own standing wants, kept the same way and carried beside memory.
 			// See handlers_libby_wants.go.
 			wants, _ := s.readLibbyWants(u.ID)
+			// Where the two of them stand — time since last, carried mood, closeness.
+			// See handlers_libby_bond.go.
+			bond, _ := s.readLibbyBond(u.ID)
 			s.chatMu.Unlock()
 			modePrompt += memoryPromptBlock(store)
 			modePrompt += wantsPromptBlock(wants)
+			modePrompt += bondPromptBlock(bond, time.Now())
 		}
 		modePrompt += s.buildLibbyContext(r.Context()).promptBlock()
 	}
@@ -760,6 +764,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		// card is somebody else's character with a life elsewhere, not a person who
 		// lives on these shelves and covets what is or isn't on them.
 		modePrompt += "\n\n" + wantsDirective
+		// Carrying the history between you — the gap, the mood, the closeness, the pet
+		// name — is Libby's alone too: an imported card has no shared past here to keep.
+		modePrompt += "\n\n" + bondDirective
 	}
 	modePrompt += "\n\n" + moodDirective
 	// Last, so it is the final word on every tag described above it.
@@ -873,6 +880,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if !photoAsked {
 		photoRequest, photoAsked = findLoosePhotoRequest(reply)
 	}
+	// An endearment she settled on, read before scrubbing deletes the tag. Persisted into
+	// her bond below, once the turn's final mood and intensity are known.
+	petname := ""
+	if actionable {
+		petname = findPetnameTag(reply)
+	}
 	// Facts she chose to keep, read before scrubbing deletes the tags. Libby's alone,
 	// like everything else she does to the collection and herself; best-effort, since a
 	// failed memory write must not cost the user the reply she already earned.
@@ -915,6 +928,18 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		if (in.Mode == "playful" || in.Mode == "bold" || in.Mode == "roleplay" || in.Mode == "horny") &&
 			strings.Contains(strings.ToLower(in.Messages[len(in.Messages)-1].Content), "flirt") && in.Intensity < 5 {
 			in.Intensity++
+		}
+	}
+	// Where this turn left off, so the next conversation can open to it rather than cold.
+	// Written now that the turn's final mood and intensity are settled; Libby's alone, and
+	// best-effort like the memory and want captures — a failed bond write costs nothing.
+	if actionable {
+		if u, userOK := s.chatUser(r); userOK {
+			s.chatMu.Lock()
+			if _, err := s.updateLibbyBond(u.ID, emotion, in.Intensity, petname); err != nil {
+				s.log.Debug("libby bond", "err", err)
+			}
+			s.chatMu.Unlock()
 		}
 	}
 	// Links are resolved last, and only where they were offered: a character that was

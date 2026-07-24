@@ -699,6 +699,26 @@ export interface LibbyWant {
   at: number;
 }
 
+/** Where the two of you left off — the single standing record Libby carries between
+    conversations, so she can open to the time that has passed and the mood she left on
+    instead of cold. All fields zero for someone she has never talked to. */
+export interface LibbyBond {
+  /** Her last turn, epoch millis; 0 if there is no history yet. */
+  lastSeenAt: number;
+  /** The canonical emotion she ended the last turn on. */
+  mood: string;
+  /** Her arousal baseline as last stored, 1–5. */
+  heat: number;
+  /** That baseline decayed for the time she has been left alone — where she opens now. */
+  heatNow: number;
+  /** Closeness, 0–1, grown slowly across days talked. */
+  warmth: number;
+  /** The endearment she has settled on for you, if any. */
+  petname: string;
+  /** Last write, epoch millis. */
+  updatedAt: number;
+}
+
 export interface LibbyOutfit {
   id: string;
   name: string;
@@ -1148,6 +1168,13 @@ export const api = {
     request<{ status: string }>("/api/libby/wants", { method: "DELETE" }),
   forgetLibbyWant: (id: string) =>
     request<{ status: string }>(`/api/libby/wants/${encodeURIComponent(id)}`, { method: "DELETE" }),
+
+  // ── Libby bond ───────────────────────────────────────────────────────────
+  // Where the two of you left off. Written from her own turns on the chat path; GET seeds
+  // the opening sprite (heatNow, mood) and the settings panel, DELETE resets it.
+  libbyBond: () => request<LibbyBond>("/api/libby/bond", {}, 15_000),
+  resetLibbyBond: () =>
+    request<{ status: string }>("/api/libby/bond", { method: "DELETE" }),
 
   /** Candidate poster frames for a video, evenly spaced across its running time.
       One request, because every frame read costs a decrypt of the whole blob. */

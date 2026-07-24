@@ -151,6 +151,33 @@ small handful and voices them rarely; most replies carry none. **Chat → settin
 your profile** lists what she has been wanting, alongside what she remembers, and
 lets you drop any of it or clear it all. Web only for now, like Outfits and Memory.
 
+### Where you left off
+
+Beyond the facts she keeps and the wants she carries, Libby keeps a single standing
+sense of *the two of you* — a third encrypted file per user (`libby-bond.json.enc`,
+sibling to memory and wants), written from her own turns. It holds when you last
+talked, the mood she ended on, an arousal baseline, how close you've grown, and any
+pet name she's settled on. So conversations stop opening cold: she meets the time
+that's actually passed (picking up mid-thought after minutes, noting it's been a
+while after days), carries her mood in instead of resetting to blank, and warms up
+over the days you keep talking rather than treating every night like the first.
+
+Her heat is her own weather now. The baseline **cools while you're away** — hot if
+you stopped mid-scene, calm days later — so she can reopen still a little warmed up
+and take the lead herself, or start soft and sated after a peak, rather than only
+ever reacting to you. When a fresh chat opens, the meter is seeded from that decayed
+baseline (capped at the flirty tier, so she reopens warm but never at peak out of
+nowhere) and the sprite opens in her carried mood; an ongoing conversation keeps its
+own heat. The pet name rides the same silent tag protocol as her wants — she settles
+on it in her own replies, you never see the tag, and it persists.
+
+Want payoff leans on what's already there: she's told the library's recent arrivals
+and its gaps, so when something she'd been wanting turns up on the shelves she
+notices it and is pleased — that's hers arriving, not a task closed. **Chat →
+settings → your profile** shows where you stand — last talked, her mood, how close,
+the name she calls you — with **Start fresh** to reset just the bond (your memories
+and her wants are kept). Web only for now, like Memory, Wants, and Outfits.
+
 ### Texting, not request-and-response
 
 A longer reply arrives the way a person texts — as two or three short messages

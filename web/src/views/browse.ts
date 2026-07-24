@@ -647,6 +647,11 @@ export class OppaiBrowse extends LitElement {
   private get isSearch(): boolean {
     return !this.container && this.feed?.query === true;
   }
+  private get searchTarget(): string {
+    const name = this.source?.name ?? "";
+    const label = this.feed?.label.trim() ?? "";
+    return label && label.toLowerCase() !== "search" ? `${name} ${label.toLowerCase()}` : name;
+  }
   /** The feed actually being fetched: the thread if we're in one, else the chip. */
   private get activeFeed(): string {
     return this.container?.feedId ?? this.feedId;
@@ -1317,7 +1322,7 @@ export class OppaiBrowse extends LitElement {
                       >
                       <input
                         type="search"
-                        placeholder="Search ${this.source?.name ?? ""}…"
+                        placeholder="Search ${this.searchTarget}…"
                         .value=${this.draft}
                         @input=${(e: Event) => { this.draft = (e.target as HTMLInputElement).value; }}
                       />
@@ -1351,7 +1356,7 @@ export class OppaiBrowse extends LitElement {
               <span class="material-symbols-rounded" style="font-size:40px; display:block; margin-bottom:12px;"
                 >search</span
               >
-              <div style="font-size:14px;">Search ${this.source?.name ?? ""} to see results.</div>
+              <div style="font-size:14px;">Search ${this.searchTarget} to see results.</div>
             </div>`
           : this.loading && !this.items.length
             ? html`<div class="empty"><md-circular-progress indeterminate></md-circular-progress></div>`

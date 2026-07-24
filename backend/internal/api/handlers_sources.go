@@ -153,6 +153,19 @@ func (s *Server) handleSourceStream(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "host is not a known source")
 		return
 	}
+	// Some catalogues expose a stable page URL and mint the concrete media URL only
+	// when playback starts. Resolve it after validating the caller-supplied host,
+	// then validate the resolved host too so this cannot become a redirecting proxy.
+	raw, err = s.sources.ResolveMedia(r.Context(), raw)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	u, err = url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || !s.sources.AllowsHost(u.Hostname()) {
+		writeErr(w, http.StatusForbidden, "resolved media is not on a known source")
+		return
+	}
 
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, u.String(), nil)
 	if err != nil {
@@ -169,7 +182,7 @@ func (s *Server) handleSourceStream(w http.ResponseWriter, r *http.Request) {
 	// media request without a boards.4chan.org Referer, and only the source knows that.
 	s.sources.Decorate(req)
 
-	resp, err := s.scraper.HTTPClient().Do(req)
+	resp, err := s.scraper.MediaHTTPClient().Do(req)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, "upstream fetch failed")
 		return
@@ -267,10 +280,19 @@ func (s *Server) handleSourceSave(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "media is not on a known source")
 		return
 	}
+	mediaURL, err := s.sources.ResolveMedia(r.Context(), req.MediaURL)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if u, err := url.Parse(mediaURL); err != nil || !s.sources.AllowsHost(u.Hostname()) {
+		writeErr(w, http.StatusForbidden, "resolved media is not on a known source")
+		return
+	}
 
 	// Kind is left to recognition: the source's guess came from a file extension, and
 	// the bytes we're about to store are better evidence than that.
-	id, err := s.importOne(r, req.MediaURL, result, "")
+	id, err := s.importOne(r, mediaURL, result, "")
 	if err != nil {
 		s.log.Warn("source save failed", "source", src.ID(), "url", req.MediaURL, "err", err)
 		writeErr(w, http.StatusBadGateway, err.Error())

@@ -236,6 +236,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/libby/wants", s.requireAuth(s.handleGetLibbyWants))
 	mux.HandleFunc("DELETE /api/libby/wants", s.requireAuth(s.handleClearLibbyWants))
 	mux.HandleFunc("DELETE /api/libby/wants/{id}", s.requireAuth(s.handleForgetLibbyWant))
+	// Libby's bond: where the two of you left off — time since last, carried mood and
+	// heat, closeness, pet name. Written from her own turns on the chat path; GET seeds the
+	// opening sprite and the settings screen, DELETE resets it. See handlers_libby_bond.go.
+	mux.HandleFunc("GET /api/libby/bond", s.requireAuth(s.handleGetLibbyBond))
+	mux.HandleFunc("DELETE /api/libby/bond", s.requireAuth(s.handleResetLibbyBond))
 	mux.HandleFunc("GET /api/libby/outfits", s.requireAuth(s.handleListLibbyOutfits))
 	mux.HandleFunc("POST /api/libby/outfits", s.requireAuth(s.handleSaveLibbyOutfit))
 	mux.HandleFunc("DELETE /api/libby/outfits/{id}", s.requireAuth(s.handleDeleteLibbyOutfit))

@@ -74,28 +74,11 @@ Web UI ──────┼──▶ Go API ──▶ crypto (envelope AES-256-
 
 ## Meet Libby
 
-<table align="center">
-  <tr>
-    <th colspan="5">Calm</th>
-  </tr>
-  <tr>
-    <td><img src="web/public/Libby_New/Calm/neutral.png" alt="Libby sprite" width="150" /></td>
-    <td><img src="web/public/Libby_New/Calm/happy.png" alt="Libby sprite" width="150" /></td>
-    <td><img src="web/public/Libby_New/Calm/suprised.png" alt="Libby sprite" width="150" /></td>
-    <td><img src="web/public/Libby_New/Calm/Thinking.png" alt="Libby sprite" width="150" /></td>
-    <td><img src="web/public/Libby_New/Calm/Mischievous.png" alt="Libby sprite" width="150" /></td>
-  </tr>
-  <tr>
-    <th colspan="5">Warm</th>
-  </tr>
-  <tr>
-    <td><img src="web/public/Libby_New/Warm/warm%20neutral.png" alt="Libby sprite" width="150" /></td>
-    <td><img src="web/public/Libby_New/Warm/warm%20happy.png" alt="Libby sprite" width="150" /></td>
-    <td><img src="web/public/Libby_New/Warm/warm%20suprised.png" alt="Libby sprite" width="150" /></td>
-    <td><img src="web/public/Libby_New/Warm/warm%20thinking.png" alt="Libby sprite" width="150" /></td>
-    <td><img src="web/public/Libby_New/Warm/warm%20Mischievous.png" alt="Libby sprite" width="150" /></td>
-  </tr>
-</table>
+<p align="center">
+  <img src="docs/assets/libby-showcase.png" alt="Libby in calm, warmly happy, and mischievous moods in her library" width="100%" />
+</p>
+
+<p align="center"><em>Calm company, warm recommendations, and just enough mischief.</em></p>
 
 Libby is OppaiLib's mascot and resident librarian — an adult chat companion who
 actually knows your library. She lives beside the collection, not bolted on to it:

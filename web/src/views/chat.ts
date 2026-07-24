@@ -3,12 +3,12 @@ import { customElement, property, query, state } from "lit/decorators.js";
 import { keyed } from "lit/directives/keyed.js";
 import {
   api, PROFILE_IMAGE_OWNER, type ChatCharacter, type ChatConversation, type ChatImage, type ChatMessage,
-  type ChatModels, type ChatOptions, type ChatStatus, type ChatWorkspace, type LibbyContext, type LibbyMemory,
-  type LibbyWant, type StoredChatMessage, type User,
+  type ChatModels, type ChatOptions, type ChatStatus, type ChatWorkspace, type LibbyBond, type LibbyContext,
+  type LibbyMemory, type LibbyWant, type StoredChatMessage, type User,
 } from "../api.js";
 import { iconStyles, motionStyles } from "../theme.js";
 import {
-  applyImageFallback, libbyAssetCandidates, loadHideLibby, loadLibbyOutfit,
+  AMBIENT_MAX_INTENSITY, applyImageFallback, libbyAssetCandidates, loadHideLibby, loadLibbyOutfit,
   normalizeEmotion, normalizeIntensity, type LibbyEmotion,
 } from "../libby.js";
 import { applyProgression, getIntensity, setIntensity } from "../libby-meter.js";
@@ -122,6 +122,23 @@ const newID = () => {
 };
 const timeOf = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 const defaultOptions = (): ChatOptions => ({ temperature: 0.8, top_p: 0.95, repetition_penalty: 1.1, max_tokens: 400 });
+
+/** A relative-time phrase for the bond panel: "just now", "3 hours ago", "5 days ago". */
+function timeAgo(atMillis: number): string {
+  const seconds = Math.max(0, (Date.now() - atMillis) / 1000);
+  if (seconds < 90) return "just now";
+  if (seconds < 5400) return `${Math.round(seconds / 60)} minutes ago`;
+  if (seconds < 172800) return `${Math.round(seconds / 3600)} hours ago`;
+  return `${Math.round(seconds / 86400)} days ago`;
+}
+
+/** Puts her closeness (0–1) into words for the bond panel, matching the server's tiers. */
+function closenessLabel(warmth: number): string {
+  if (warmth < 0.15) return "Still getting to know each other";
+  if (warmth < 0.5) return "Comfortable with each other by now";
+  if (warmth < 0.85) return "Close — you know each other well";
+  return "Deeply close after all this time";
+}
 
 function emptyWorkspace(): ChatWorkspace {
   return { profile: { displayName: "", persona: "" }, characters: [], conversations: [], images: [] };
@@ -247,6 +264,11 @@ export class OppaiChat extends LitElement {
   @state() private memories: LibbyMemory[] | null = null;
   /** Libby's own standing wants, loaded alongside her memory; null until then. */
   @state() private wants: LibbyWant[] | null = null;
+  /** Where the two of you stand, shown in the profile tab; null until loaded. */
+  @state() private bond: LibbyBond | null = null;
+  /** Her bond as read at startup, used to open a fresh conversation warm rather than
+      cold. Separate from the panel copy above so seeding never waits on the tab. */
+  private openingBond: LibbyBond | null = null;
   @state() private models: ChatModels | null = null;
   @state() private modelChoice = "";
   @state() private modelBusy = false;
@@ -707,7 +729,7 @@ export class OppaiChat extends LitElement {
    * Libby rather than an empty view, so the screen always ends up interactive.
    */
   private async load() {
-    const [status, workspace] = await Promise.allSettled([api.chatStatus(), api.chatWorkspace()]);
+    const [status, workspace, bond] = await Promise.allSettled([api.chatStatus(), api.chatWorkspace(), api.libbyBond()]);
     try {
       if (status.status === "fulfilled") this.status = status.value;
       if (workspace.status === "fulfilled") {
@@ -717,6 +739,14 @@ export class OppaiChat extends LitElement {
         this.workspace = fallbackWorkspace();
         this.workspaceLoaded = false;
         this.loadError = (workspace.reason as Error)?.message || "Couldn't load your chat workspace.";
+      }
+      // Open where she actually is, not cold. If she has a bond, seed the session meter
+      // from her decayed heat — capped so she reopens warm but never at peak out of
+      // nowhere. A fresh conversation reads this via getIntensity(); an existing one keeps
+      // its own stored heat when activated below.
+      if (bond.status === "fulfilled" && bond.value.lastSeenAt) {
+        this.openingBond = bond.value;
+        setIntensity(Math.min(Math.max(1, Math.round(bond.value.heatNow || 1)), AMBIENT_MAX_INTENSITY));
       }
       this.characterID = this.workspace.characters[0]?.id ?? "libby";
       const existing = this.conversationsFor(this.characterID)[0];
@@ -814,6 +844,29 @@ export class OppaiChat extends LitElement {
       await api.clearLibbyWants();
       this.wants = [];
     } catch (error) { this.say(error instanceof Error ? error.message : "Couldn't clear her wants.", true); }
+  }
+
+  /** Guards the lazy load of the bond from firing on every re-render. */
+  private bondLoading = false;
+
+  /** Loads where the two of you stand, once, when the profile tab first needs it. */
+  private async loadBond() {
+    if (this.bondLoading) return;
+    this.bondLoading = true;
+    try {
+      this.bond = await api.libbyBond();
+    } catch { this.bond = null; }
+    finally { this.bondLoading = false; }
+  }
+
+  private async resetBond() {
+    if (!confirm("Start fresh with Libby? She'll forget where you left off — the time, the mood, how close you've grown. Your memories and her wants are kept.")) return;
+    try {
+      await api.resetLibbyBond();
+      this.bond = null; this.openingBond = null;
+      setIntensity(1);
+      this.say("Reset. Your next chat with Libby starts fresh.");
+    } catch (error) { this.say(error instanceof Error ? error.message : "Couldn't reset that.", true); }
   }
 
   private async refreshModels(quiet = false) {
@@ -948,7 +1001,12 @@ export class OppaiChat extends LitElement {
     const now = Date.now();
     let opener = character.firstMessage?.trim() ?? "";
     let emotion: LibbyEmotion = normalizeEmotion(MODES.find((mode) => mode.id === character.defaultMode)?.emotion);
-    if (character.id === "libby" && !opener) { const line = libbyOpener(character.defaultMode, getIntensity()); opener = line.message; emotion = line.emotion; }
+    if (character.id === "libby") {
+      // Open in the mood she last left off in, so a fresh chat picks up her disposition
+      // rather than resetting to the mode default. normalizeEmotion drops anything unknown.
+      if (this.openingBond?.mood) emotion = normalizeEmotion(this.openingBond.mood);
+      if (!opener) { const line = libbyOpener(character.defaultMode, getIntensity()); opener = line.message; emotion = line.emotion; }
+    }
     const conversation: ChatConversation = {
       id:newID(), characterId:character.id, title:"New conversation", mode:character.defaultMode || "sweet",
       emotion, intensity:character.id === "libby" ? getIntensity() : 1, progress:character.id === "libby" ? getIntensity() : 1,
@@ -1816,8 +1874,34 @@ export class OppaiChat extends LitElement {
       <label>Display name<input class="field" .value=${profile.displayName} @change=${(event:Event) => { profile.displayName=(event.target as HTMLInputElement).value; this.touchWorkspace(); }}/></label>
       <label>Your persona<textarea class="field" rows="5" placeholder="How friends should know and address you…" .value=${profile.persona} @change=${(event:Event) => { profile.persona=(event.target as HTMLTextAreaElement).value; this.touchWorkspace(); }}></textarea></label>
       <div class="panel-actions"><button class="primary" @click=${() => void this.saveWorkspace()}>Save profile</button></div>
+      ${this.renderBondPanel()}
       ${this.renderMemoryPanel()}
       ${this.renderWantsPanel()}</div>`;
+  }
+
+  /** Where the two of you stand — the last time you talked, the mood she carries, how
+      close you've grown, the name she calls you — with a reset that starts her fresh.
+      Read-only summary: it is written from her own turns, not edited here. Libby's alone,
+      lazily loaded like the memory and wants panels. */
+  private renderBondPanel() {
+    if (this.bond === null && !this.bondLoading) { void this.loadBond(); }
+    const bond = this.bond;
+    const has = !!bond && bond.lastSeenAt > 0;
+    return html`<div class="mem-panel">
+      <strong>Where you stand with Libby</strong>
+      <p class="empty">Libby carries a sense of the two of you between chats — how long it's been, the mood she left off in, and how close you've grown. Reset it to start fresh; your memories and her wants are kept.</p>
+      ${this.bond === null && this.bondLoading
+        ? html`<p class="empty">Loading…</p>`
+        : !has
+          ? html`<p class="empty">Nothing yet. This fills in as you talk.</p>`
+          : html`<ul class="mem-list">
+              <li><span>Last talked ${timeAgo(bond!.lastSeenAt)}</span></li>
+              ${bond!.mood ? html`<li><span>She left off feeling ${bond!.mood}</span></li>` : nothing}
+              <li><span>${closenessLabel(bond!.warmth)}</span></li>
+              ${bond!.petname ? html`<li><span>She calls you “${bond!.petname}”</span></li>` : nothing}
+            </ul>`}
+      ${has ? html`<div class="panel-actions"><button class="danger" @click=${() => void this.resetBond()}>Start fresh</button></div>` : nothing}
+    </div>`;
   }
 
   /** What Libby has learned about you across conversations, with the controls to prune
